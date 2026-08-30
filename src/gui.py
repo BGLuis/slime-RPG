@@ -362,6 +362,14 @@ class TranslationGUI(QMainWindow):
             abs_path = os.path.abspath(self.args.input)
             self.dir_input.setText(abs_path)
             self.auto_detect_game_type(abs_path)
+        else:
+            caller_dir = os.environ.get('CALLER_WORKING_DIR')
+            if caller_dir and os.path.isdir(caller_dir):
+                from src.services.GameDetector import detect_game_environment
+                det = detect_game_environment(caller_dir)
+                if det:
+                    self.dir_input.setText(det['detected_path'])
+                    self.auto_detect_game_type(det['detected_path'])
         if hasattr(self.args, 'synopsis') and self.args.synopsis:
             self.synopsis_input.setText(self.args.synopsis)
         if hasattr(self.args, 'no_backup') and self.args.no_backup:
@@ -388,32 +396,14 @@ class TranslationGUI(QMainWindow):
         if not dir_path or not os.path.isdir(dir_path):
             return
 
-        detected_path = dir_path
-        detected_extractor = None
-        
-        # Heurística RPG Maker MV/MZ
-        www_data = os.path.join(dir_path, 'www', 'data')
-        data = os.path.join(dir_path, 'data')
-        
-        if os.path.isdir(www_data):
-            detected_path = www_data
-            detected_extractor = 'RPG Maker'
-        elif os.path.isdir(data):
-            # Se for pasta root com subpasta data, usa a subpasta data
-            detected_path = data
-            detected_extractor = 'RPG Maker'
-        else:
-            # Check for common RPG Maker files in the current dir
-            try:
-                files = os.listdir(dir_path)
-                json_files = [f for f in files if f.endswith('.json')]
-                if any(f.startswith('Map') or f == 'System.json' for f in json_files):
-                    detected_extractor = 'RPG Maker'
-                elif json_files:
-                    detected_extractor = 'Json'
-            except Exception:
-                pass
-                
+        from src.services.GameDetector import detect_game_environment
+        detected = detect_game_environment(dir_path)
+        if not detected:
+            return
+
+        detected_path = detected['detected_path']
+        detected_extractor = detected.get('extractor')
+
         # Atualizar a GUI se algo foi detectado
         if detected_path != dir_path:
             self.log(self.tr_('log_folder_adjusted', name=os.path.basename(detected_path)), "green")

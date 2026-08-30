@@ -149,13 +149,19 @@ def validate_arguments(args):
     errors = []
 
     if args.extractor:
-        extractors = ExtractorFactory.get_available()
-        if args.extractor not in extractors:
+        match = ExtractorFactory.find_match(args.extractor)
+        if match:
+            args.extractor = match
+        else:
+            extractors = ExtractorFactory.get_available()
             errors.append(_i18n.tr('error_extractor_not_found', name=args.extractor, options=list(extractors.keys())))
 
     if args.translator:
-        translators = TranslatorFactory.get_available()
-        if args.translator not in translators:
+        match = TranslatorFactory.find_match(args.translator)
+        if match:
+            args.translator = match
+        else:
+            translators = TranslatorFactory.get_available()
             errors.append(_i18n.tr('error_translator_not_found', name=args.translator, options=list(translators.keys())))
 
     if args.source and args.source not in lang_options.values():
@@ -164,8 +170,15 @@ def validate_arguments(args):
     if args.target and args.target not in lang_options.values():
         errors.append(_i18n.tr('error_target_lang_unsupported', lang=args.target, options=list(lang_options.values())))
 
-    if args.input and not os.path.exists(args.input):
-        errors.append(_i18n.tr('error_input_folder_not_exist', path=args.input))
+    if args.input:
+        if not os.path.exists(args.input):
+            errors.append(_i18n.tr('error_input_folder_not_exist', path=args.input))
+        else:
+            from src.services.GameDetector import is_trash_path, is_project_repo_root
+            if is_trash_path(args.input):
+                errors.append(_i18n.tr('error_folder_in_trash', path=args.input))
+            elif is_project_repo_root(args.input):
+                errors.append(_i18n.tr('error_folder_is_repo_root', path=args.input))
 
     if args.source and args.target and args.source == args.target:
         errors.append(_i18n.tr('error_same_lang_bare'))
@@ -251,6 +264,14 @@ def run_workflow(args):
     extractors = ExtractorFactory.get_available()
     translators = TranslatorFactory.get_available()
 
+    from src.services.GameDetector import detect_game_environment
+    caller_dir = os.environ.get('CALLER_WORKING_DIR')
+    detected_env = detect_game_environment(args.input or caller_dir)
+
+    if detected_env and not args.input:
+        args.input = detected_env['detected_path']
+        cli.print_colored_line(_i18n.tr('log_auto_detected_folder', path=args.input), 'green')
+
     # Selecionar Modo de Operação
     mode = args.mode
     if mode == 'content' and not any([args.extractor, args.translator, args.input, args.gui]):
@@ -270,6 +291,9 @@ def run_workflow(args):
     # 1. Selecionar Extrator
     if args.extractor and args.extractor in extractors:
         extractor_class = extractors[args.extractor]
+    elif detected_env and detected_env.get('extractor') in extractors and not any([args.extractor, args.translator]):
+        extractor_class = extractors[detected_env['extractor']]
+        cli.print_colored_line(_i18n.tr('log_extractor_suggested', name=extractor_class.name), 'green')
     else:
         extractor_class = cli.select_option(lambda: _i18n.tr('prompt_select_extractor'), extractors)
         if extractor_class == "Exit": return False
@@ -350,6 +374,12 @@ def run_workflow(args):
             cli.print_colored_line(_i18n.tr('error_no_folder_selected'), 'red')
             return False
 
+    # Auto-ajuste para subpastas de dados (ex: www/data ou data) caso selecionada a raiz do jogo
+    detected_input = detect_game_environment(input_dir)
+    if detected_input and detected_input['detected_path'] != os.path.abspath(input_dir):
+        input_dir = detected_input['detected_path']
+        cli.print_colored_line(_i18n.tr('log_folder_adjusted', name=os.path.basename(input_dir)), 'green')
+
     # 8. Executar Processo
     cli.clear_screen()
     cli.print_colored_line(_i18n.tr('log_using_extractor', name=extractor_class.name), 'cyan')
@@ -372,6 +402,16 @@ def run_extraction_process(extractor, translate, input_dir, lang_source, backup=
             gui_signals.log.emit(msg, color)
         else:
             cli.print_colored_line(msg, color)
+
+    from src.services.GameDetector import is_trash_path, is_project_repo_root
+
+    if is_trash_path(input_dir):
+        log(_i18n.tr('error_folder_in_trash', path=input_dir), 'red')
+        return False
+
+    if is_project_repo_root(input_dir):
+        log(_i18n.tr('error_folder_is_repo_root', path=input_dir), 'red')
+        return False
 
     try:
         if backup:

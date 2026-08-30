@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 
 import src.cli as cli_module
@@ -242,5 +243,101 @@ def test_status_app_sorts_processing_files_on_top():
 
     first_file = run_async(body)
     assert first_file == "Map003.json"
+
+
+def test_select_folder_empty_input_returns_start_path(tmp_path):
+    """Testa que pressionar Enter com o campo vazio seleciona start_path imediatamente."""
+    async def body():
+        app = _SelectFolderApp("Selecione:", str(tmp_path), initial_input="")
+        async with app.run_test() as pilot:
+            inp = app.query_one("#folder-input", cli_module.Input)
+            inp.value = ""
+            await pilot.press("enter")
+        return app.return_value
+
+    assert run_async(body) == str(tmp_path)
+
+
+def test_select_folder_app_prefilled_with_start_path(tmp_path):
+    """Testa que o app preenche o input automaticamente com start_path."""
+    async def body():
+        app = _SelectFolderApp("Selecione:", str(tmp_path))
+        async with app.run_test() as pilot:
+            inp = app.query_one("#folder-input", cli_module.Input)
+            val = inp.value
+            await pilot.press("enter")
+        return val, app.return_value
+
+    val, res = run_async(body)
+    assert val == str(tmp_path)
+    assert res == str(tmp_path)
+
+
+def test_select_folder_prefers_detected_game_over_trash(monkeypatch, tmp_path):
+    """Testa que a detecção de jogo na pasta atual tem prioridade e lixeira é descartada."""
+    import json
+    game_data = tmp_path / "www" / "data"
+    game_data.mkdir(parents=True)
+    with open(game_data / "System.json", "w") as f:
+        json.dump({"gameTitle": "Test Game"}, f)
+
+    # Simula chamada a partir da pasta do jogo
+    monkeypatch.setenv("CALLER_WORKING_DIR", str(tmp_path))
+    # Simula clipboard com caminho de lixeira
+    monkeypatch.setattr(cli_module, "get_clipboard_folder", lambda: None)
+    monkeypatch.setattr(cli_module, "select_option", lambda title, options: "detected")
+
+    selected = cli_module.select_folder()
+    assert selected == str(game_data)
+
+
+def test_select_folder_tab_to_tree_and_confirm_with_s(tmp_path):
+    """Testa que pressionar Tab foca a árvore, atualiza o input ao navegar e confirma com 's'."""
+    sub_dir = tmp_path / "subfolder"
+    sub_dir.mkdir()
+
+    async def body():
+        app = _SelectFolderApp("Selecione:", str(tmp_path))
+        async with app.run_test() as pilot:
+            # Pressiona tab para ir do Input para a DirectoryTree
+            await pilot.press("tab")
+            tree = app.query_one(cli_module.DirectoryTree)
+            assert tree.has_focus
+            # Confirma com 's'
+            await pilot.press("s")
+        return app.return_value
+
+    res = run_async(body)
+    assert res is not None
+    assert os.path.exists(res)
+
+
+def test_game_detection_all_hierarchy_levels(tmp_path):
+    """Testa que a detecção de jogo funciona perfeitamente em www/data, www e raiz do jogo."""
+    import json
+    from src.services.GameDetector import detect_game_environment
+
+    game_data = tmp_path / "www" / "data"
+    game_data.mkdir(parents=True)
+    with open(game_data / "System.json", "w") as f:
+        json.dump({"gameTitle": "My RPG Game"}, f)
+
+    # 1. Dentro de www/data diretamente
+    det1 = detect_game_environment(str(game_data))
+    assert det1 is not None
+    assert det1['detected_path'] == str(game_data)
+    assert det1['extractor'] == 'RPG Maker'
+
+    # 2. Em www (uma pasta antes)
+    det2 = detect_game_environment(str(tmp_path / "www"))
+    assert det2 is not None
+    assert det2['detected_path'] == str(game_data)
+    assert det2['extractor'] == 'RPG Maker'
+
+    # 3. Na raiz do jogo
+    det3 = detect_game_environment(str(tmp_path))
+    assert det3 is not None
+    assert det3['detected_path'] == str(game_data)
+    assert det3['extractor'] == 'RPG Maker'
 
 

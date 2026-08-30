@@ -44,6 +44,7 @@ _STRINGS = {
         'dialog_select_folder': 'Selecionar Pasta do Jogo',
 
         'log_folder_adjusted': 'Pasta ajustada automaticamente para dados do jogo: {name}',
+        'log_auto_detected_folder': '🎮 Pasta de dados do jogo detectada automaticamente: {path}',
         'log_extractor_suggested': 'Extrator sugerido automaticamente: {name}',
         'error_invalid_folder': 'Erro: Pasta de entrada inválida.',
         'error_same_lang': 'Erro: Idioma de origem e destino não podem ser iguais.',
@@ -63,6 +64,9 @@ _STRINGS = {
         'cli_binding_paste': 'Colar da Área de Transferência',
         'cli_placeholder_folder_input': 'Digite ou cole o caminho aqui e tecle Enter (ou navegue na árvore)...',
         'cli_clipboard_folder_detected_title': 'Detectamos uma pasta na sua área de transferência:\n📂 {path}\n\nDeseja utilizá-la?',
+        'cli_detected_folder_prompt': '🎮 Detectamos arquivos de jogo nesta pasta:\n📂 {path} ({desc})\n\nDeseja utilizá-la para tradução?',
+        'cli_opt_use_detected_folder': '🎮 Usar pasta detectada ({path})',
+        'cli_opt_use_current_folder': '📂 Usar pasta atual onde o comando foi invocado ({path})',
         'cli_opt_use_clipboard': 'Usar pasta da área de transferência ({path})',
         'cli_opt_type_path': 'Digitar ou colar caminho manualmente',
         'cli_opt_browse_tree': 'Navegar pela árvore de pastas (Explorador)',
@@ -105,6 +109,8 @@ _STRINGS = {
         'save_both': 'Salvar os dois juntos (Manter original e criar cópia traduzida)',
 
         'error_folder_not_found': "Pasta '{path}' não encontrada.",
+        'error_folder_in_trash': "❌ Erro: A pasta '{path}' está localizada na lixeira do sistema (.Trash). Por favor, restaure o jogo ou selecione a pasta original fora da lixeira.",
+        'error_folder_is_repo_root': "❌ Erro: A pasta '{path}' é a raiz do código da ferramenta de tradução e não uma pasta de jogo válida.",
         'log_synopsis_configured': '✓ Sinopse configurada via CLI',
         'error_field_required': '\n✗ {field} é obrigatório!',
 
@@ -165,6 +171,7 @@ _STRINGS = {
         'dialog_select_folder': 'Select Game Folder',
 
         'log_folder_adjusted': 'Folder automatically adjusted to game data: {name}',
+        'log_auto_detected_folder': '🎮 Game data folder automatically detected: {path}',
         'log_extractor_suggested': 'Extractor automatically suggested: {name}',
         'error_invalid_folder': 'Error: Invalid input folder.',
         'error_same_lang': 'Error: Source and target language cannot be the same.',
@@ -184,6 +191,9 @@ _STRINGS = {
         'cli_binding_paste': 'Paste from Clipboard',
         'cli_placeholder_folder_input': 'Type or paste path here and press Enter (or browse tree below)...',
         'cli_clipboard_folder_detected_title': 'We detected a folder path in your clipboard:\n📂 {path}\n\nDo you want to use it?',
+        'cli_detected_folder_prompt': '🎮 Game files detected in this folder:\n📂 {path} ({desc})\n\nDo you want to use it for translation?',
+        'cli_opt_use_detected_folder': '🎮 Use detected folder ({path})',
+        'cli_opt_use_current_folder': '📂 Use current folder where command was launched ({path})',
         'cli_opt_use_clipboard': 'Use clipboard folder ({path})',
         'cli_opt_type_path': 'Type or paste path manually',
         'cli_opt_browse_tree': 'Browse folder tree (Explorer)',
@@ -226,6 +236,8 @@ _STRINGS = {
         'save_both': 'Save both (Keep original and create translated copy)',
 
         'error_folder_not_found': "Folder '{path}' not found.",
+        'error_folder_in_trash': "❌ Error: Folder '{path}' is inside the system trash (.Trash). Please restore the game or select the original folder outside the trash.",
+        'error_folder_is_repo_root': "❌ Error: Folder '{path}' is the translation tool repository root and not a valid game folder.",
         'log_synopsis_configured': '✓ Synopsis configured via CLI',
         'error_field_required': '\n✗ {field} is required!',
 

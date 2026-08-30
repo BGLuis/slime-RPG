@@ -5,7 +5,7 @@ from rich.text import Text
 
 from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
-from textual.widgets import DataTable, DirectoryTree, Footer, Input, OptionList, Static
+from textual.widgets import DataTable, DirectoryTree, Footer, Input, OptionList, Static, Tree
 from textual.widgets.option_list import Option
 
 from src.i18n import LANGUAGES, Translator
@@ -176,8 +176,8 @@ class _SelectFolderApp(_LanguagePaletteMixin, App):
     def __init__(self, title, start_path, initial_input=""):
         super().__init__()
         self._title_source = title
-        self.start_path = start_path
-        self.initial_input = initial_input
+        self.start_path = os.path.abspath(start_path) if start_path else os.getcwd()
+        self.initial_input = initial_input or (self.start_path if os.path.isdir(self.start_path) else "")
 
     def _resolve_title(self):
         return self._title_source() if callable(self._title_source) else self._title_source
@@ -193,21 +193,76 @@ class _SelectFolderApp(_LanguagePaletteMixin, App):
         yield DirectoryTree(self.start_path)
         yield Footer()
 
+    def _get_node_path(self, node) -> Optional[str]:
+        if node is None:
+            return None
+        if hasattr(node, "data") and node.data is not None:
+            if hasattr(node.data, "path"):
+                return str(node.data.path)
+        try:
+            tree = self.query_one(DirectoryTree)
+            if node == tree.root:
+                return self.start_path
+        except Exception:
+            pass
+        return None
+
+    def _submit_path(self, candidate_path: str) -> None:
+        if not candidate_path:
+            return
+        from src.services.GameDetector import is_trash_path
+        expanded = os.path.abspath(os.path.expanduser(candidate_path))
+        if is_trash_path(expanded):
+            self.query_one("#error-label", Static).update(
+                _i18n.tr('error_folder_in_trash', path=expanded)
+            )
+            return
+        if os.path.isdir(expanded):
+            self.exit(expanded)
+        else:
+            self.query_one("#error-label", Static).update(
+                _i18n.tr('error_folder_not_found', path=candidate_path)
+            )
+
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        """Sincroniza o caminho da pasta em foco com o campo de texto apenas quando o usuário está navegando na árvore."""
+        try:
+            tree = self.query_one(DirectoryTree)
+            if not tree.has_focus:
+                return
+        except Exception:
+            return
+
+        node = event.node
+        if node is not None:
+            node_path = self._get_node_path(node)
+            if node_path and os.path.isdir(node_path):
+                inp = self.query_one("#folder-input", Input)
+                inp.value = node_path
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         raw = event.value.strip().strip("'\"")
+        if not raw:
+            self._submit_path(self.start_path)
+            return
         if raw.startswith("file://"):
             raw = raw[7:]
-        path = os.path.abspath(os.path.expanduser(raw))
-        if os.path.isdir(path):
-            self.exit(path)
-        else:
-            self.query_one("#error-label", Static).update(_i18n.tr('error_folder_not_found', path=raw))
+        self._submit_path(raw)
+
+    def on_directory_tree_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
+        if event.path and event.path.is_dir():
+            self._submit_path(str(event.path))
 
     def action_confirm_tree(self) -> None:
         tree = self.query_one(DirectoryTree)
         node = tree.cursor_node
-        if node is not None and node.data is not None and node.data.path.is_dir():
-            self.exit(str(node.data.path))
+        node_path = self._get_node_path(node) if node is not None else None
+        if node_path and os.path.isdir(node_path):
+            self._submit_path(node_path)
+        else:
+            inp = self.query_one("#folder-input", Input)
+            raw = inp.value.strip().strip("'\"")
+            self._submit_path(raw or self.start_path)
 
     def action_cancel(self) -> None:
         self.exit(None)
@@ -231,28 +286,54 @@ class _SelectFolderApp(_LanguagePaletteMixin, App):
 def select_folder(title=None):
     """
     Permite selecionar uma pasta no modo CLI:
-    1. Verifica se há um caminho de diretório válido na área de transferência (clipboard).
-       Se houver, exibe uma pergunta ao usuário dando a opção de usar diretamente essa pasta,
-       digitar/colar outra manualmente ou navegar pelo explorador de pastas.
-    2. Se não houver ou se o usuário desejar navegar, abre a interface com campo de texto
-       (para digitação/colagem de caminho com validação) e árvore de diretórios interativa.
+    1. Verifica se uma pasta de jogo válida foi detectada no local de invocação.
+    2. Verifica se a pasta atual onde o comando foi chamado é elegível.
+    3. Verifica se há um caminho de diretório válido na área de transferência (clipboard).
+    4. Permite digitação manual ou navegação interativa na árvore.
     """
+    from src.services.GameDetector import detect_game_environment, is_project_repo_root, is_trash_path
+
+    caller_dir = os.environ.get('CALLER_WORKING_DIR') or os.getcwd()
+    detected = detect_game_environment(caller_dir)
     clipboard_folder = get_clipboard_folder()
 
-    if clipboard_folder:
+    options_map = {}
+    detected_path_val = None
+    caller_path_val = None
+    
+    if detected:
+        desc = detected.get('description', 'Jogo')
+        detected_path_val = detected['detected_path']
+        options_map[f"🎮 {_i18n.tr('cli_opt_use_detected_folder', path=detected_path_val)} ({desc})"] = "detected"
+
+    if caller_dir and os.path.isdir(caller_dir) and not is_project_repo_root(caller_dir) and not is_trash_path(caller_dir):
+        if not detected or detected['detected_path'] != os.path.abspath(caller_dir):
+            caller_path_val = caller_dir
+            options_map[f"📂 {_i18n.tr('cli_opt_use_current_folder', path=caller_dir)}"] = "current"
+
+    if clipboard_folder and (not detected or detected['detected_path'] != clipboard_folder):
+        options_map[f"📋 {_i18n.tr('cli_opt_use_clipboard', path=clipboard_folder)}"] = "clipboard"
+
+    if options_map:
+        options_map[f"⌨️  {_i18n.tr('cli_opt_type_path')}"] = "manual"
+        options_map[f"📁 {_i18n.tr('cli_opt_browse_tree')}"] = "tree"
+        options_map[f"❌ {_i18n.tr('cli_binding_cancel')}"] = "cancel"
+
         def folder_options():
-            return {
-                f"📋 {_i18n.tr('cli_opt_use_clipboard', path=clipboard_folder)}": "clipboard",
-                f"⌨️  {_i18n.tr('cli_opt_type_path')}": "manual",
-                f"📁 {_i18n.tr('cli_opt_browse_tree')}": "tree",
-                f"❌ {_i18n.tr('cli_binding_cancel')}": "cancel",
-            }
+            return options_map
+
+        prompt_title = lambda: _i18n.tr('cli_detected_folder_prompt', path=detected['detected_path'], desc=detected.get('description', '')) if detected else (title or (lambda: _i18n.tr('cli_default_select_folder_title')))()
 
         choice = select_option(
-            lambda: _i18n.tr('cli_clipboard_folder_detected_title', path=clipboard_folder),
+            prompt_title,
             folder_options
         )
-        if choice == "clipboard":
+
+        if choice == "detected":
+            return detected_path_val
+        elif choice == "current":
+            return caller_path_val
+        elif choice == "clipboard":
             return clipboard_folder
         elif choice in ("cancel", "Exit"):
             return None
@@ -271,14 +352,18 @@ def select_folder(title=None):
                 print_colored_line(_i18n.tr('error_folder_not_found', path=path), 'red')
                 print_colored_line(_i18n.tr('prompt_try_again_or_empty'), 'yellow')
         elif choice == "tree":
+            initial_dir = detected['detected_path'] if detected else (caller_dir if os.path.isdir(caller_dir) else os.getcwd())
             return _SelectFolderApp(
                 title or (lambda: _i18n.tr('cli_default_select_folder_title')),
-                os.getcwd()
+                initial_dir,
+                initial_input=initial_dir
             ).run()
 
+    initial_dir = caller_dir if caller_dir and os.path.isdir(caller_dir) and not is_project_repo_root(caller_dir) else os.getcwd()
     return _SelectFolderApp(
         title or (lambda: _i18n.tr('cli_default_select_folder_title')),
-        os.getcwd()
+        initial_dir,
+        initial_input=initial_dir
     ).run()
 
 

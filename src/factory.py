@@ -41,10 +41,30 @@ class ExtractorFactory:
         return _EXTRACTORS.copy()
 
     @staticmethod
+    def find_match(name):
+        """Busca flexível (case-insensitive, sem espaços/hífens) para nomes de extratores"""
+        if not name:
+            return None
+        available = ExtractorFactory.get_available()
+        if name in available:
+            return name
+        n_clean = name.lower().replace(" ", "").replace("_", "").replace("-", "")
+        for key in available.keys():
+            k_clean = key.lower().replace(" ", "").replace("_", "").replace("-", "")
+            if n_clean == k_clean:
+                return key
+        # Busca por substring caso não seja exato (ex: 'rpg' -> 'RPG Maker')
+        for key in available.keys():
+            k_clean = key.lower().replace(" ", "").replace("_", "").replace("-", "")
+            if n_clean in k_clean or k_clean in n_clean:
+                return key
+        return None
+
+    @staticmethod
     def create(extractor_name, translate_instance):
-        extractors = ExtractorFactory.get_available()
-        if extractor_name in extractors:
-            return extractors[extractor_name](translate_instance)
+        match = ExtractorFactory.find_match(extractor_name)
+        if match:
+            return _EXTRACTORS[match](translate_instance)
         raise ValueError(f"Extrator '{extractor_name}' não suportado.")
 
 class TranslatorFactory:
@@ -53,8 +73,28 @@ class TranslatorFactory:
         return _TRANSLATORS.copy()
 
     @staticmethod
+    def find_match(name):
+        """Busca flexível (case-insensitive, sem espaços/hífens) para nomes de tradutores"""
+        if not name:
+            return None
+        available = TranslatorFactory.get_available()
+        if name in available:
+            return name
+        n_clean = name.lower().replace(" ", "").replace("_", "").replace("-", "")
+        for key in available.keys():
+            k_clean = key.lower().replace(" ", "").replace("_", "").replace("-", "")
+            if n_clean == k_clean:
+                return key
+        # Busca por substring caso não seja exato (ex: 'google' -> 'googleTraslator')
+        for key in available.keys():
+            k_clean = key.lower().replace(" ", "").replace("_", "").replace("-", "")
+            if n_clean in k_clean or k_clean in n_clean:
+                return key
+        return None
+
+    @staticmethod
     def create(translator_name):
-        translators = TranslatorFactory.get_available()
-        if translator_name in translators:
-            return translators[translator_name]()
+        match = TranslatorFactory.find_match(translator_name)
+        if match:
+            return _TRANSLATORS[match]()
         raise ValueError(f"Tradutor '{translator_name}' não suportado.")

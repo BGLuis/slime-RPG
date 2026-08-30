@@ -109,6 +109,9 @@ def get_clipboard_folder() -> Optional[str]:
 
     expanded = os.path.expanduser(candidate)
     if os.path.isdir(expanded):
-        return os.path.abspath(expanded)
+        abs_path = os.path.abspath(expanded)
+        from src.services.GameDetector import is_trash_path
+        if not is_trash_path(abs_path):
+            return abs_path
 
     return None
