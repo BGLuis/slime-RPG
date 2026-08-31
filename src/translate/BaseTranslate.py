@@ -190,7 +190,7 @@ class BaseTranslate(ABC):
         if texts is None:
             return None
 
-        # 1. Identify what needs to be translated vs what is cached
+        # 1. Identify what needs to be translated vs what is cached / non-translatable
         translated_texts = [None] * len(texts)
         cache_indices = []
         non_cached_indices = []
@@ -200,72 +200,81 @@ class BaseTranslate(ABC):
             for i, text in enumerate(texts):
                 if text is None:
                     none_indices.append(i)
-                elif isinstance(text, str) and text in self.cache:
+                elif not isinstance(text, str):
+                    translated_texts[i] = text
+                elif not text.strip():
+                    translated_texts[i] = text
+                elif text in self.cache:
                     translated_texts[i] = self.cache[text]
                     cache_indices.append(i)
                 else:
                     non_cached_indices.append(i)
 
-        non_cached_texts = [texts[i] for i in non_cached_indices]
+        # Se todos os textos já estavam no cache ou são vazios/None, encerra sem processar lotes
+        if not non_cached_indices:
+            if progress_callback:
+                progress_callback(1, 1, 0)
+            for index in none_indices:
+                translated_texts[index] = None
+            return translated_texts
 
-        # 2. Process non-cached texts
-        if non_cached_texts:
-            batches = self._create_batches(non_cached_texts)
-            translated_batches_results = self.translate_batch_parallel(batches, progress_callback)
+        # 2. Deduplicar textos não-cacheados para evitar enviar repetidos ao provedor
+        unique_non_cached = list(dict.fromkeys(texts[i] for i in non_cached_indices))
 
-            # Process batches and apply fallback ONLY to failed batches
-            semaphore = self.__class__._get_request_semaphore()
+        # 3. Processar textos únicos em lotes paralelos
+        batches = self._create_batches(unique_non_cached)
+        translated_batches_results = self.translate_batch_parallel(batches, progress_callback)
 
-            translated_results = []
-            for batch_idx, batch_result in enumerate(translated_batches_results):
-                original_batch = batches[batch_idx]
-                if batch_result is None or len(batch_result) != len(original_batch):
-                    safe_results = []
-                    for text in original_batch:
-                        if len(text) > self.char_limit:
-                            # Chunk oversized strings to avoid persistent >5000 character errors
-                            pieces = [text[i:i+self.char_limit] for i in range(0, len(text), self.char_limit)]
-                            translated_pieces = []
-                            for p in pieces:
-                                try:
-                                    with semaphore:
-                                        t = self._translate_single_batch([p])
-                                    translated_pieces.append(t[0] if t else p)
-                                except Exception:
-                                    translated_pieces.append(p)
-                            safe_results.append("".join(translated_pieces))
-                        else:
+        # Process batches and apply fallback ONLY to failed batches
+        semaphore = self.__class__._get_request_semaphore()
+
+        translated_results = []
+        for batch_idx, batch_result in enumerate(translated_batches_results):
+            original_batch = batches[batch_idx]
+            if batch_result is None or len(batch_result) != len(original_batch):
+                safe_results = []
+                for text in original_batch:
+                    if len(text) > self.char_limit:
+                        # Chunk oversized strings to avoid persistent >5000 character errors
+                        pieces = [text[j:j+self.char_limit] for j in range(0, len(text), self.char_limit)]
+                        translated_pieces = []
+                        for p in pieces:
                             try:
                                 with semaphore:
-                                    single = self._translate_single_batch([text])
-                                safe_results.append(single[0] if single else text)
+                                    t = self._translate_single_batch([p])
+                                translated_pieces.append(t[0] if t else p)
                             except Exception:
-                                safe_results.append(text)
-                    translated_results.extend(safe_results)
-                else:
-                    translated_results.extend(batch_result)
+                                translated_pieces.append(p)
+                        safe_results.append("".join(translated_pieces))
+                    else:
+                        try:
+                            with semaphore:
+                                single = self._translate_single_batch([text])
+                            safe_results.append(single[0] if single else text)
+                        except Exception:
+                            safe_results.append(text)
+                translated_results.extend(safe_results)
+            else:
+                translated_results.extend(batch_result)
 
-            # 3. Merge results back
-            # We must be careful if translated_results count matches non_cached_texts count
-            # Ideally they should match 1-to-1 if _translate_single_batch works correctly
-            
-            current_result_idx = 0
-            for i in range(len(non_cached_indices)):
-                original_idx = non_cached_indices[i]
-                original_text = texts[original_idx]
-                
-                if current_result_idx < len(translated_results):
-                    result = translated_results[current_result_idx]
-                    translated_texts[original_idx] = result
-                    if isinstance(original_text, str):
-                        with self.cache_lock:
-                            self.cache[original_text] = result
-                    current_result_idx += 1
+        # 4. Mapear resultados únicos e salvar no cache
+        unique_to_translated = {}
+        with self.cache_lock:
+            for idx, orig_text in enumerate(unique_non_cached):
+                if idx < len(translated_results) and translated_results[idx] is not None:
+                    trans_text = translated_results[idx]
                 else:
-                    # Fallback if translation returned fewer items than expected
-                    translated_texts[original_idx] = original_text # Or handle error
+                    trans_text = orig_text
+                unique_to_translated[orig_text] = trans_text
+                if isinstance(orig_text, str) and orig_text.strip():
+                    self.cache[orig_text] = trans_text
 
-        # 4. Restore None values
+        # 5. Preencher translated_texts para todas as posições originais
+        for idx in non_cached_indices:
+            orig_text = texts[idx]
+            translated_texts[idx] = unique_to_translated.get(orig_text, orig_text)
+
+        # 6. Restore None values
         for index in none_indices:
             translated_texts[index] = None
 

@@ -209,8 +209,8 @@ class BaseExtractor(ABC):
     def _pipeline_translate(self, file_name, data, text, translate_instance, file_path_str):
         from src.pipeline import (
             TranslationContext, TranslationPipeline,
-            GetPatternsStep, MaskingStep, TranslationStep,
-            UnmaskingStep, FixingStep
+            GetPatternsStep, CacheLookupStep, MaskingStep, TranslationStep,
+            UnmaskingStep, FixingStep, CacheStoreStep
         )
         
         context = TranslationContext(
@@ -223,11 +223,13 @@ class BaseExtractor(ABC):
         )
         
         pipeline = TranslationPipeline()
-        pipeline.add_step(GetPatternsStep()) \
+        pipeline.add_step(CacheLookupStep()) \
+                .add_step(GetPatternsStep()) \
                 .add_step(MaskingStep()) \
                 .add_step(TranslationStep()) \
                 .add_step(UnmaskingStep()) \
-                .add_step(FixingStep())
+                .add_step(FixingStep()) \
+                .add_step(CacheStoreStep())
                 
         return pipeline.execute(context)
 

@@ -58,3 +58,144 @@ def test_cache_is_reused_across_engines_for_the_same_pair(isolated_cache_dir):
 
     other_engine_view = TranslationMemory(google.cache_path, 'en', 'pt', engine='ollamaTranslator')
     assert other_engine_view['hello'] == 'ola'
+
+
+def test_batch_deduplication(isolated_cache_dir, monkeypatch):
+    """Garante que textos repetidos no lote são enviados apenas uma vez para o provedor."""
+    translator = GoogleTranslate(lang_source='en', lang_target='pt')
+    
+    called_batches = []
+    def mock_translate_single_batch(texts):
+        called_batches.append(list(texts))
+        mapping = {"Attack": "Ataque", "Defend": "Defender"}
+        return [mapping.get(t, t) for t in texts]
+
+    monkeypatch.setattr(translator, '_translate_single_batch', mock_translate_single_batch)
+
+    input_texts = ["Attack", "Attack", "Defend", "Attack", "Defend"]
+    results = translator.translate_batch(input_texts)
+
+    assert results == ["Ataque", "Ataque", "Defender", "Ataque", "Defender"]
+    # Garante que só enviou os 2 únicos
+    assert called_batches == [["Attack", "Defend"]]
+    assert translator.cache["Attack"] == "Ataque"
+    assert translator.cache["Defend"] == "Defender"
+
+
+def test_whitespace_and_empty_strings_bypass_batcher(isolated_cache_dir, monkeypatch):
+    """Garante que strings vazias e whitespace não entram no lote de tradução."""
+    translator = GoogleTranslate(lang_source='en', lang_target='pt')
+
+    called_batches = []
+    def mock_translate_single_batch(texts):
+        called_batches.append(list(texts))
+        return ["Olá" if t == "Hello" else t for t in texts]
+
+    monkeypatch.setattr(translator, '_translate_single_batch', mock_translate_single_batch)
+
+    input_texts = ["", "   ", None, "Hello", " \t\n "]
+    results = translator.translate_batch(input_texts)
+
+    assert results == ["", "   ", None, "Olá", " \t\n "]
+    assert called_batches == [["Hello"]]
+
+
+def test_pipeline_100_percent_cache_hit_bypasses_translation_step(isolated_cache_dir, monkeypatch):
+    """Se todos os textos estiverem no cache, o pipeline deve resolver em 0 requisições."""
+    from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
+
+    translator = GoogleTranslate(lang_source='en', lang_target='pt')
+    translator.cache["Hello"] = "Olá"
+    translator.cache["\\C[2]Gold\\C[0]"] = "\\C[2]Ouro\\C[0]"
+
+    mock_called = []
+    def mock_translate_batch(texts, cb=None):
+        mock_called.append(texts)
+        return texts
+
+    monkeypatch.setattr(translator, 'translate_batch', mock_translate_batch)
+
+    extractor = RPGMakerExtractor(translator)
+    raw_text = [{"id": 0, "text": ["Hello", "\\C[2]Gold\\C[0]"]}]
+
+    translated = extractor._pipeline_translate("Map001.json", {}, raw_text, translator, "Map001.json")
+
+    assert translated == [{"id": 0, "text": ["Olá", "\\C[2]Ouro\\C[0]"]}]
+    # Não chamou translate_batch porque foi 100% cache hit no CacheLookupStep
+    assert len(mock_called) == 0
+
+
+def test_pipeline_clean_cache_storage_and_subsequent_hit(isolated_cache_dir, monkeypatch):
+    """
+    Testa o ciclo completo:
+    1. Texto com códigos RPG Maker é traduzido, corrigido e salvo no cache como texto limpo.
+    2. Nenhuma chave com '__XTOK_' é gravada no banco.
+    3. Na segunda execução, a frase inteira bate no cache diretamente.
+    """
+    from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
+
+    translator = GoogleTranslate(lang_source='en', lang_target='pt')
+    extractor = RPGMakerExtractor(translator)
+
+    call_count = 0
+    def mock_translate_single_batch(texts):
+        nonlocal call_count
+        call_count += 1
+        # Simula tradução que preserva placeholders
+        results = []
+        for t in texts:
+            results.append(t.replace("Hero", "Herói"))
+        return results
+
+    monkeypatch.setattr(translator, '_translate_single_batch', mock_translate_single_batch)
+
+    input_text = [{"id": 0, "text": ["\\C[2]Hero\\C[0] venceu!"]}]
+
+    # Primeira execução: Cold cache
+    res1 = extractor._pipeline_translate("Map001.json", {}, copy.deepcopy(input_text), translator, "Map001.json")
+    assert res1 == [{"id": 0, "text": ["\\C[2]Herói\\C[0] venceu!"]}]
+    assert call_count == 1
+
+    # Verificar que o cache armazenou a string limpa (sem __XTOK_)
+    assert "\\C[2]Hero\\C[0] venceu!" in translator.cache
+    assert translator.cache["\\C[2]Hero\\C[0] venceu!"] == "\\C[2]Herói\\C[0] venceu!"
+
+    # Segunda execução: Warm cache (100% cache hit)
+    res2 = extractor._pipeline_translate("Map001.json", {}, copy.deepcopy(input_text), translator, "Map001.json")
+    assert res2 == [{"id": 0, "text": ["\\C[2]Herói\\C[0] venceu!"]}]
+    # call_count continua 1, não fez novas requisições
+    assert call_count == 1
+
+
+def test_clean_corrupted_cache_script(tmp_path):
+    """Testa a limpeza de registros corrompidos com __XTOK_."""
+    from scripts.clean_corrupted_cache import clean_corrupted_cache
+    import sqlite3
+
+    db_path = str(tmp_path / "test_memory.db")
+    conn = sqlite3.connect(db_path)
+    from src.translate.TranslationMemory import SCHEMA
+    conn.executescript(SCHEMA)
+
+    # Inserir 1 registro válido e 2 corrompidos
+    conn.execute(
+        "INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, created_at, updated_at) "
+        "VALUES ('en', 'pt', 'Valid Text', 'Texto Valido', 'h1', 'google', '2026-01-01', '2026-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, created_at, updated_at) "
+        "VALUES ('en', 'pt', '__XTOK_1234abcd__Text', '__XTOK_1234abcd__Texto', 'h2', 'google', '2026-01-01', '2026-01-01')"
+    )
+    conn.commit()
+    conn.close()
+
+    removed = clean_corrupted_cache(db_path)
+    assert removed == 1
+
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute("SELECT source FROM segment").fetchall()
+    conn.close()
+
+    assert len(rows) == 1
+    assert rows[0][0] == "Valid Text"
+
