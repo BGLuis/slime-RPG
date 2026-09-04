@@ -172,7 +172,7 @@ class RPGMakerExtractor(BaseExtractor):
                     self.insert_text_map_item(cmd, list_item)
 
     _attributes_find = [r'name', r'note', r'profile', r'description', r'nickname', r'message\d{1}']
-    _attributes_system_find = ['armorTypes', 'equipTypes', 'gameTitle', 'skillTypes', 'terms', 'switches', 'elements', 'weaponTypes']
+    _attributes_system_find = ['armorTypes', 'equipTypes', 'gameTitle', 'currencyUnit', 'skillTypes', 'terms', 'switches', 'elements', 'weaponTypes']
     # Tags de nota do tipo <Desc: ...>, <Help: ...>, <InfoAlgumaCoisa: ...>. O grupo 1
     # precisa capturar só o nome da tag (sem o "<"), pois insert_text_object o reusa
     # para reconstruir a tag original.
@@ -218,10 +218,16 @@ class RPGMakerExtractor(BaseExtractor):
     def insert_text_System(self, data, translated_data):
         for key, value in translated_data.items():
             if key in self._attributes_system_find:
-                if isinstance(value, list):
+                if isinstance(value, list) and key in data and isinstance(data[key], list):
                     for i, item in enumerate(value):
                         if i < len(data[key]) and RPGTextFilters.is_technical_or_code(data[key][i]):
                             value[i] = data[key][i]
+                elif isinstance(value, dict) and key in data and isinstance(data[key], dict):
+                    for sub_k, sub_v in value.items():
+                        if isinstance(sub_v, list) and sub_k in data[key] and isinstance(data[key][sub_k], list):
+                            for i, item in enumerate(sub_v):
+                                if i < len(data[key][sub_k]) and RPGTextFilters.is_technical_or_code(data[key][sub_k][i]):
+                                    sub_v[i] = data[key][sub_k][i]
                 data[key] = value
 
     @property
@@ -230,7 +236,7 @@ class RPGMakerExtractor(BaseExtractor):
             {"file_patterns": [r'Map\d{3,}'], "extractor": self.extract_text_map, "insert": self.insert_text_map},
             {"file_patterns": [r'CommonEvents'], "extractor": self.extract_text_common_events, "insert": self.insert_text_common_events},
             {"file_patterns": [r'Troops'], "extractor": self.extract_text_troops, "insert": self.insert_text_troops},
-            {"file_patterns": [r'MapInfos', r'Weapons', r'Items', r'Skills', r'States', r'Enemies', r'Actors', r'Armors'], "extractor": self.extract_text_object, "insert": self.insert_text_object},
+            {"file_patterns": [r'MapInfos', r'Weapons', r'Items', r'Skills', r'States', r'Enemies', r'Actors', r'Armors', r'Classes'], "extractor": self.extract_text_object, "insert": self.insert_text_object},
             {"file_patterns": [r'System'], "extractor": self.extract_text_System, "insert": self.insert_text_System}
         ]
 

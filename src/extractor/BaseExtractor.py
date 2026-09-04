@@ -56,6 +56,10 @@ class BaseExtractor(ABC):
     def extract_files(cls, file_path):
         if not file_path.endswith(tuple(cls.files_types)):
             return [os.path.basename(file_path), None]
+        if file_path.endswith('.rvdata2'):
+            from src.extractor.rpgmaker.RVDataAdapter import RVDataAdapter
+            data = RVDataAdapter.load_file(file_path)
+            return [os.path.basename(file_path), data]
         with open(file_path, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
             return [os.path.basename(file_path), data]
@@ -82,8 +86,28 @@ class BaseExtractor(ABC):
     def update_json(file_name, data, new_data):
         pass
 
-    @staticmethod
-    def import_file(file_name, json_data, folder):
+    @classmethod
+    def import_file(cls, file_name, json_data, folder):
+        dest_path = os.path.join(folder, file_name)
+        if file_name.endswith('.rvdata2'):
+            try:
+                from src.extractor.rpgmaker.RVDataAdapter import RVDataAdapter
+                original_raw = getattr(json_data, '_raw_rvdata', None)
+                if original_raw is None:
+                    for candidate_folder in [cls.folderInput, cls.folderProcess]:
+                        candidate = os.path.join(candidate_folder, file_name)
+                        if os.path.exists(candidate):
+                            import rubymarshal.reader as r_reader
+                            with open(candidate, 'rb') as f:
+                                original_raw = r_reader.load(f)
+                            break
+                RVDataAdapter.save_file(dest_path, json_data, original_raw=original_raw)
+                logging.info(f"✓ Validated and saved RVData2: {file_name}")
+                return
+            except Exception as e:
+                logging.error(f"✗ Failed to save RVData2 {file_name}: {e}")
+                raise
+
         try:
             # Validar se json_data é serializável antes de escrever
             json_string = json.dumps(json_data, ensure_ascii=False, separators=(',', ':'))
@@ -92,7 +116,7 @@ class BaseExtractor(ABC):
             json.loads(json_string)
 
             # Se validação passou, escrever arquivo
-            with open(os.path.join(folder, file_name), 'w', encoding='utf-8') as f:
+            with open(dest_path, 'w', encoding='utf-8') as f:
                 f.write(json_string)
 
             logging.info(f"✓ Validated and saved: {file_name}")
@@ -285,7 +309,8 @@ class BaseExtractor(ABC):
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
         self.futures = []
         
-        files = glob.glob(self.__class__.folderInput + '/*')
+        folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
+        files = glob.glob(folder_input + '/*')
         
         # Pré-popula o status para que a UI reconheça arquivos na fila
         for file in files:
@@ -304,9 +329,13 @@ class BaseExtractor(ABC):
             self.executor.shutdown(wait=True)
             self.futures = []
 
-        for file in glob.glob(self.__class__.folderProcess + '/*'):
+        folder_process = getattr(self, 'folderProcess', self.__class__.folderProcess)
+        folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
+        folder_output = getattr(self, 'folderOutput', self.__class__.folderOutput)
+
+        for file in glob.glob(folder_process + '/*'):
             file_name = os.path.basename(file)
-            input_file = os.path.join(BaseExtractor.folderInput, file_name)
+            input_file = os.path.join(folder_input, file_name)
             if os.path.exists(input_file):
                 process_data = self.extract_files(file)
 
@@ -316,7 +345,7 @@ class BaseExtractor(ABC):
                 if original_json is None:
                     logging.warning(f"⚠️ fix_text_translate called WITHOUT original JSON for {file_name}")
 
-                self.import_file(file_name, process_data[1], BaseExtractor.folderOutput)
+                self.import_file(file_name, process_data[1], folder_output)
 
     def sanitize_output_files(self):
         """
