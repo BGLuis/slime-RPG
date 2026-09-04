@@ -60,6 +60,10 @@ class BaseExtractor(ABC):
             from src.extractor.rpgmaker.RVDataAdapter import RVDataAdapter
             data = RVDataAdapter.load_file(file_path)
             return [os.path.basename(file_path), data]
+        if file_path.endswith(('.mps', '.dat', '.project')):
+            from src.extractor.wolfrpg.WolfBinaryAdapter import WolfBinaryAdapter
+            data = WolfBinaryAdapter.load_file(file_path)
+            return [os.path.basename(file_path), data]
         with open(file_path, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
             return [os.path.basename(file_path), data]
@@ -106,6 +110,24 @@ class BaseExtractor(ABC):
                 return
             except Exception as e:
                 logging.error(f"✗ Failed to save RVData2 {file_name}: {e}")
+                raise
+
+        if file_name.endswith(('.mps', '.dat', '.project')):
+            try:
+                from src.extractor.wolfrpg.WolfBinaryAdapter import WolfBinaryAdapter
+                original_raw = getattr(json_data, '_raw_wolf', None)
+                if original_raw is None:
+                    for candidate_folder in [cls.folderInput, cls.folderProcess]:
+                        candidate = os.path.join(candidate_folder, file_name)
+                        if os.path.exists(candidate):
+                            loaded = WolfBinaryAdapter.load_file(candidate)
+                            original_raw = getattr(loaded, '_raw_wolf', None)
+                            break
+                WolfBinaryAdapter.save_file(dest_path, json_data, original_raw=original_raw)
+                logging.info(f"✓ Validated and saved WOLF RPG binary: {file_name}")
+                return
+            except Exception as e:
+                logging.error(f"✗ Failed to save WOLF RPG binary {file_name}: {e}")
                 raise
 
         try:
