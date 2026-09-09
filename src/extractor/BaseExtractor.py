@@ -93,6 +93,7 @@ class BaseExtractor(ABC):
     @classmethod
     def import_file(cls, file_name, json_data, folder):
         dest_path = os.path.join(folder, file_name)
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         if file_name.endswith('.rvdata2'):
             try:
                 from src.extractor.rpgmaker.RVDataAdapter import RVDataAdapter
@@ -101,9 +102,9 @@ class BaseExtractor(ABC):
                     for candidate_folder in [cls.folderInput, cls.folderProcess]:
                         candidate = os.path.join(candidate_folder, file_name)
                         if os.path.exists(candidate):
-                            import rubymarshal.reader as r_reader
+                            import src.utils.RubyMarshal as r_marshal
                             with open(candidate, 'rb') as f:
-                                original_raw = r_reader.load(f)
+                                original_raw = r_marshal.load(f)
                             break
                 RVDataAdapter.save_file(dest_path, json_data, original_raw=original_raw)
                 logging.info(f"✓ Validated and saved RVData2: {file_name}")
@@ -211,17 +212,47 @@ class BaseExtractor(ABC):
                         merged_dict[key][i] = item
         return merged_dict
 
+    def normalize_status_file(self, file_path):
+        if not file_path or file_path == 'Unknown File':
+            return file_path
+        folders = [
+            getattr(self, 'folderInput', getattr(self.__class__, 'folderInput', 'input')),
+            getattr(self, 'folderProcess', getattr(self.__class__, 'folderProcess', 'process')),
+            getattr(self, 'folderOutput', getattr(self.__class__, 'folderOutput', 'output')),
+        ]
+        norm = os.path.normpath(str(file_path))
+        for folder in folders:
+            try:
+                if os.path.isabs(norm):
+                    abs_folder = os.path.abspath(folder)
+                    if os.path.commonpath([os.path.abspath(norm), abs_folder]) == abs_folder:
+                        return os.path.normpath(os.path.relpath(norm, abs_folder))
+                else:
+                    norm_folder = os.path.normpath(folder)
+                    if norm == norm_folder:
+                        return norm
+                    if norm.startswith(norm_folder + os.sep) or norm.startswith(norm_folder + "/"):
+                        return os.path.normpath(os.path.relpath(norm, norm_folder))
+            except Exception:
+                continue
+        return norm
+
     def add_threads_status(self, status):
         status_state = status.get('status', 'info')
-        file_path = status.get('file', 'Unknown File')
+        raw_file = status.get('file', 'Unknown File')
+        norm_file = self.normalize_status_file(raw_file)
+        status['file'] = norm_file
         msg = status.get('msg', '')
         
         # Loga no arquivo de forma amigável
         if status_state != 'process': # Ignora logs de "process" repetitivos para não poluir o arquivo
-            logging.info(f"[{status_state.upper()}] {file_path} - {msg}")
+            logging.info(f"[{status_state.upper()}] {norm_file} - {msg}")
 
         with self.threads_status_lock:
-            self.threads_status = [s for s in self.threads_status if s['file'] != status['file']]
+            self.threads_status = [
+                s for s in self.threads_status 
+                if self.normalize_status_file(s.get('file', '')) != norm_file
+            ]
             self.threads_status.append(status)
             snapshot = list(self.threads_status)
 
@@ -279,51 +310,86 @@ class BaseExtractor(ABC):
                 
         return pipeline.execute(context)
 
-    def _handle_no_text(self, file_path_str, file_name, data):
+    def _handle_no_text(self, file_path_str, file_name, data=None):
+        folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
+        try:
+            rel_path = os.path.relpath(file_path_str, folder_input)
+        except Exception:
+            rel_path = file_name
+        dest_path = os.path.join(self.folderOutput, rel_path)
         self.add_threads_status(
-            {'file': file_path_str, 'status': 'ignore', 'msg': "No text to process"})
-        self.import_file(file_name, data, self.folderOutput)
+            {'file': rel_path, 'status': 'ignore', 'msg': "No text to process"})
+        if os.path.abspath(file_path_str) != os.path.abspath(dest_path):
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            shutil.copy2(file_path_str, dest_path)
 
     def process_file(self, file, retries=6, delay=20, max_delay=300):
         translate = copy.deepcopy(self.translate)
         file_path_str = str(file)
+        folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
+
+        if not os.path.exists(file_path_str) and os.path.exists(os.path.join(folder_input, file_path_str)):
+            file_path_str = os.path.join(folder_input, file_path_str)
+
+        norm_file = os.path.normpath(file_path_str)
+        norm_input = os.path.normpath(folder_input)
+        if norm_file.startswith(norm_input + os.sep) or norm_file.startswith(norm_input + "/"):
+            rel_path = os.path.relpath(norm_file, norm_input)
+        elif os.path.isabs(norm_file):
+            try:
+                abs_input = os.path.abspath(folder_input)
+                if os.path.commonpath([os.path.abspath(norm_file), abs_input]) == abs_input:
+                    rel_path = os.path.relpath(norm_file, abs_input)
+                else:
+                    rel_path = os.path.basename(file_path_str)
+            except Exception:
+                rel_path = os.path.basename(file_path_str)
+        else:
+            rel_path = norm_file
+
+        file_name = os.path.basename(file_path_str)
+
+        if hasattr(self, 'is_translatable_file') and callable(getattr(self, 'is_translatable_file')):
+            if not self.is_translatable_file(file_name):
+                self._handle_no_text(file_path_str, rel_path, None)
+                return
 
         for attempt in range(retries):
             try:
-                file_name, data = self.extract_files(file_path_str)
+                extracted_name, data = self.extract_files(file_path_str)
                 if data is None:
-                    self.add_threads_status({'file': file_path_str, 'status': 'erro', 'msg': "Formato não suportado ou arquivo vazio"})
+                    self.add_threads_status({'file': rel_path, 'status': 'erro', 'msg': "Formato não suportado ou arquivo vazio"})
                     return
                 
                 raw_text = self.extract_text(file_name, data)
 
                 if not raw_text:
-                    self._handle_no_text(file_path_str, file_name, data)
+                    self._handle_no_text(file_path_str, rel_path, data)
                     return
 
-                translated_text = self._pipeline_translate(file_name, data, raw_text, translate, file_path_str)
+                translated_text = self._pipeline_translate(file_name, data, raw_text, translate, rel_path)
 
                 merged_data = self.merge_dicts_texts(translated_text, raw_text)
 
                 updated_data = self.update_json(file_name, data, merged_data)
-                self.import_file(file_name, updated_data, self.folderProcess)
-                self.add_threads_status({'file': file_path_str, 'status': 'success', 'msg': "Processed successfully"})
+                self.import_file(rel_path, updated_data, self.folderProcess)
+                self.add_threads_status({'file': rel_path, 'status': 'success', 'msg': "Processed successfully"})
                 return
 
             except Exception as e:
                 logging.error(f"Error processing file {file}: {e}")
                 self.add_threads_status(
-                    {'file': file_path_str, 'status': 'danger', 'msg': f"Error processing file {file}"})
+                    {'file': rel_path, 'status': 'danger', 'msg': f"Error processing file {file}"})
 
                 if attempt < retries - 1:
                     backoff = min(delay * (2 ** attempt), max_delay)
                     self.add_threads_status(
-                        {'file': file_path_str, 'status': 'waiting', 'msg': f"Retrying in {backoff} seconds..."})
+                        {'file': rel_path, 'status': 'waiting', 'msg': f"Retrying in {backoff} seconds..."})
                     time.sleep(backoff)
                     translate.reduce_limite()
                 else:
                     self.add_threads_status(
-                        {'file': file_path_str, 'status': 'erro', 'msg': f"Failed to process after {retries}"})
+                        {'file': rel_path, 'status': 'erro', 'msg': f"Failed to process after {retries}"})
 
     def process_files(self):
         import concurrent.futures
@@ -332,11 +398,21 @@ class BaseExtractor(ABC):
         self.futures = []
         
         folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
-        files = glob.glob(folder_input + '/*')
+        exts = tuple(f".{t.lower().lstrip('.')}" for t in self.files_types) if self.files_types else None
+
+        files = []
+        for root, _, filenames in os.walk(folder_input):
+            for filename in filenames:
+                file_path = os.path.join(root, filename)
+                if exts is None or filename.lower().endswith(exts):
+                    files.append(file_path)
+
+        files.sort()
         
         # Pré-popula o status para que a UI reconheça arquivos na fila
         for file in files:
-            self.add_threads_status({'file': file, 'status': 'waiting', 'msg': 'Na fila de processamento...'})
+            rel_path = os.path.relpath(file, folder_input)
+            self.add_threads_status({'file': rel_path, 'status': 'waiting', 'msg': 'Na fila de processamento...'})
             
         # Inicia a execução controlada
         for file in files:
@@ -355,19 +431,21 @@ class BaseExtractor(ABC):
         folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
         folder_output = getattr(self, 'folderOutput', self.__class__.folderOutput)
 
-        for file in glob.glob(folder_process + '/*'):
-            file_name = os.path.basename(file)
-            input_file = os.path.join(folder_input, file_name)
-            if os.path.exists(input_file):
-                process_data = self.extract_files(file)
+        for root, _, filenames in os.walk(folder_process):
+            for filename in filenames:
+                file = os.path.join(root, filename)
+                rel_path = os.path.relpath(file, folder_process)
+                input_file = os.path.join(folder_input, rel_path)
+                if os.path.exists(input_file):
+                    process_data = self.extract_files(file)
 
-                original_data = self.extract_files(input_file)
-                original_json = original_data[1] if original_data[1] else None
+                    original_data = self.extract_files(input_file)
+                    original_json = original_data[1] if original_data[1] else None
 
-                if original_json is None:
-                    logging.warning(f"⚠️ fix_text_translate called WITHOUT original JSON for {file_name}")
+                    if original_json is None:
+                        logging.warning(f"⚠️ fix_text_translate called WITHOUT original JSON for {rel_path}")
 
-                self.import_file(file_name, process_data[1], folder_output)
+                    self.import_file(rel_path, process_data[1], folder_output)
 
     def sanitize_output_files(self):
         """

@@ -19,7 +19,7 @@ from .WolfEventStrategy import (
     CommentStrategy,
     CommonEventParamStrategy
 )
-from .WolfBinaryAdapter import WolfBinaryAdapter
+from .WolfBinaryAdapter import WolfBinaryAdapter, WolfDatabase
 from .WolfArchive import WolfArchive
 
 
@@ -46,6 +46,7 @@ class WolfRPGExtractor(BaseExtractor):
     def get_interactive_questions(cls):
         return [
             {
+                "key": "target_font",
                 "id": "target_font",
                 "question": "Deseja substituir a fonte padrão no Game.dat para melhor exibição de caracteres ocidentais?",
                 "options": [
@@ -57,6 +58,7 @@ class WolfRPGExtractor(BaseExtractor):
                 "default": "(Recomendado) Manter padrão do jogo"
             },
             {
+                "key": "repack_mode",
                 "id": "repack_mode",
                 "question": "Como deseja gerar a saída final dos arquivos traduzidos?",
                 "options": [
@@ -128,17 +130,24 @@ class WolfRPGExtractor(BaseExtractor):
     @classmethod
     def import_file(cls, file_name, json_data, folder):
         dest_path = os.path.join(folder, file_name)
-        if file_name.endswith(('.mps', '.dat', '.project')):
+        if file_name.endswith(('.mps', '.dat')):
             try:
                 original_raw = getattr(json_data, '_raw_wolf', None)
-                if original_raw is None:
+                has_dummy_types = (
+                    isinstance(original_raw, WolfDatabase)
+                    and any(t.name.startswith("Type_") for t in original_raw.types)
+                )
+                if original_raw is None or has_dummy_types:
                     for candidate_folder in [cls.folderInput, cls.folderProcess]:
                         candidate = os.path.join(candidate_folder, file_name)
                         if os.path.exists(candidate):
                             loaded = WolfBinaryAdapter.load_file(candidate)
-                            original_raw = getattr(loaded, '_raw_wolf', None)
-                            break
+                            cand_raw = getattr(loaded, '_raw_wolf', None)
+                            if cand_raw is not None:
+                                original_raw = cand_raw
+                                break
 
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                 WolfBinaryAdapter.save_file(dest_path, json_data, original_raw=original_raw)
                 logging.info(f"✓ Validado e salvo binário WOLF RPG: {file_name}")
                 return
@@ -148,17 +157,26 @@ class WolfRPGExtractor(BaseExtractor):
 
         super().import_file(file_name, json_data, folder)
 
+    def is_translatable_file(self, file_name):
+        base_name = os.path.basename(file_name)
+        if base_name.endswith('.mps'):
+            return True
+        if base_name in ('Game.dat', 'CommonEvent.dat', 'DataBase.dat', 'CDataBase.dat', 'SysDatabase.dat'):
+            return True
+        return False
+
     def extract_text(self, file_name, data):
         if data is None:
             return None
 
-        if file_name.endswith('.mps'):
+        base_name = os.path.basename(file_name)
+        if base_name.endswith('.mps'):
             return self.extract_text_map(data)
-        elif file_name == 'CommonEvent.dat':
+        elif base_name == 'CommonEvent.dat':
             return self.extract_text_common_events(data)
-        elif file_name.endswith('.dat') and file_name != 'Game.dat':
+        elif base_name.endswith('.dat') and base_name != 'Game.dat':
             return self.extract_text_database(data)
-        elif file_name == 'Game.dat':
+        elif base_name == 'Game.dat':
             return self.extract_text_gamedat(data)
 
         return None
@@ -171,13 +189,14 @@ class WolfRPGExtractor(BaseExtractor):
         if hasattr(data, '_raw_wolf'):
             updated._raw_wolf = data._raw_wolf
 
-        if file_name.endswith('.mps'):
+        base_name = os.path.basename(file_name)
+        if base_name.endswith('.mps'):
             self.insert_text_map(updated, new_data)
-        elif file_name == 'CommonEvent.dat':
+        elif base_name == 'CommonEvent.dat':
             self.insert_text_common_events(updated, new_data)
-        elif file_name.endswith('.dat') and file_name != 'Game.dat':
+        elif base_name.endswith('.dat') and base_name != 'Game.dat':
             self.insert_text_database(updated, new_data)
-        elif file_name == 'Game.dat':
+        elif base_name == 'Game.dat':
             self.insert_text_gamedat(updated, new_data)
 
         return updated

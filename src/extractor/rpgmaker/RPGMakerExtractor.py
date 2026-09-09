@@ -240,7 +240,22 @@ class RPGMakerExtractor(BaseExtractor):
             {"file_patterns": [r'System'], "extractor": self.extract_text_System, "insert": self.insert_text_System}
         ]
 
+    NON_TRANSLATABLE_FILES = {
+        'Scripts.rvdata2', 'Animations.rvdata2', 'Tilesets.rvdata2',
+        'Scripts.rvdata', 'Animations.rvdata', 'Tilesets.rvdata',
+        'Scripts.rxdata', 'Animations.rxdata', 'Tilesets.rxdata',
+    }
+
+    def is_translatable_file(self, file_name):
+        import os
+        base_name = os.path.basename(file_name)
+        if base_name in self.NON_TRANSLATABLE_FILES:
+            return False
+        return any(re.search(p, base_name) for item in self.extract_map for p in item['file_patterns'])
+
     def extract_text(self, file_name, new_json):
+        if not self.is_translatable_file(file_name):
+            return None
         for item in self.extract_map:
             if any(re.search(p, file_name) for p in item['file_patterns']):
                 return item['extractor'](new_json)
@@ -258,8 +273,18 @@ class RPGMakerExtractor(BaseExtractor):
         texts_list = TextsUtils.dictToList(texts)
         original_list = TextsUtils.dictToList(original_texts) if original_texts else None
 
-        _format_codes_pattern = re.compile(r'\\([A-Za-z]{1,3})(?:\s*(\[[^\]]*\]))?', re.IGNORECASE)
+        _format_codes_pattern = re.compile(r'\\([A-Za-z]+)(?:\s*(\[[^\]]*\]))?', re.IGNORECASE)
         _format_upper = {'c', 'v', 'i', 'ce', 'm', 'n', 'p', 'g'}
+
+        def _fix_format_code(m):
+            code = m.group(1)
+            code_lower = code.lower()
+            arg = m.group(2) or ""
+            if code_lower in ("name", "nome"):
+                return f"\\NAME{arg}"
+            if code_lower in _format_upper:
+                return f"\\{code.upper()}{arg}"
+            return f"\\{code.lower()}{arg}"
 
         _compiled_patterns = [
             (re.compile(r'\\\s+'), r'\\'), (re.compile(r'(?i)\bif\s*\('), 'if('),
@@ -279,7 +304,7 @@ class RPGMakerExtractor(BaseExtractor):
             if not isinstance(text, str): continue
             original_text = original_list[i] if original_list and i < len(original_list) else None
 
-            text = _format_codes_pattern.sub(lambda m: f'\\{m.group(1).upper() if m.group(1).lower() in _format_upper else m.group(1).lower()}{m.group(2) or ""}', text)
+            text = _format_codes_pattern.sub(_fix_format_code, text)
             for pattern, repl in _compiled_patterns: text = pattern.sub(repl, text)
 
             boolean_corrections = {

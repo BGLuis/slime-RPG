@@ -1,8 +1,9 @@
 import os
 import re
+import src.utils.RubyMarshal as r_marshal
 import rubymarshal.reader as r_reader
 import rubymarshal.writer as r_writer
-from rubymarshal.classes import RubyObject, RubyString
+from src.utils.RubyMarshal import RubyObject, RubyString
 
 class RVDataList(list):
     """Subclasse de list para anexar os dados binários originais do Ruby"""
@@ -34,7 +35,7 @@ class RVDataAdapter:
     def load_file(file_path):
         """Lê um arquivo .rvdata2 e retorna a estrutura normalizada com _raw_rvdata anexado."""
         with open(file_path, 'rb') as f:
-            raw_data = r_reader.load(f)
+            raw_data = r_marshal.load(f)
 
         file_name = os.path.basename(file_path)
         normalized = RVDataAdapter.to_normalized(file_name, raw_data)
@@ -62,7 +63,7 @@ class RVDataAdapter:
             os.makedirs(dir_name, exist_ok=True)
 
         with open(file_path, 'wb') as f:
-            r_writer.write(f, raw_to_save)
+            r_marshal.write(f, raw_to_save)
 
     # =========================================================================
     # Conversão RVData2 -> Estrutura Normalizada (Compatível com MV/MZ)

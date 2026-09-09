@@ -241,3 +241,24 @@ def test_wolf_rpg_extractor_font_and_repack_config(tmp_path, monkeypatch):
     output_wolf = output_dir / "Data.wolf"
     assert output_wolf.exists()
     assert output_wolf.stat().st_size > 0
+
+
+def test_wolf_rpg_interactive_questions_schema():
+    questions = WolfRPGExtractor.get_interactive_questions()
+    assert isinstance(questions, list)
+    assert len(questions) == 2
+
+    keys = [q.get("key") for q in questions]
+    assert "target_font" in keys
+    assert "repack_mode" in keys
+
+    for q in questions:
+        assert "key" in q
+        assert "id" in q
+        assert q["key"] == q["id"]
+        assert "question" in q
+        assert isinstance(q.get("options"), list)
+        assert len(q["options"]) > 0
+        assert "default" in q
+        assert q["default"] in q["options"]
+

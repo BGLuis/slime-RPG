@@ -157,3 +157,75 @@ def unmask_tokens_in_structure(obj, mapping):
         raise ValueError("Desmascaramento incompleto: placeholder de texto sobrou no resultado final.")
 
     return restored
+
+
+import unicodedata
+
+
+# Mapeamento explícito de caracteres acentuados ocidentais e pontuações para ASCII simples
+# Garante que textos em japonês (incluindo katakana com dakuten e meio-largura) fiquem 100% preservados
+LATIN_ACCENT_MAP = {
+    ord("á"): "a", ord("à"): "a", ord("ã"): "a", ord("â"): "a", ord("ä"): "a",
+    ord("Á"): "A", ord("À"): "A", ord("Ã"): "A", ord("Â"): "A", ord("Ä"): "A",
+    ord("é"): "e", ord("è"): "e", ord("ê"): "e", ord("ë"): "e",
+    ord("É"): "E", ord("È"): "E", ord("Ê"): "E", ord("Ë"): "E",
+    ord("í"): "i", ord("ì"): "i", ord("î"): "i", ord("ï"): "i",
+    ord("Í"): "I", ord("Ì"): "I", ord("Î"): "I", ord("Ï"): "I",
+    ord("ó"): "o", ord("ò"): "o", ord("õ"): "o", ord("ô"): "o", ord("ö"): "o",
+    ord("Ó"): "O", ord("Ò"): "O", ord("Õ"): "O", ord("Ô"): "O", ord("Ö"): "O",
+    ord("ú"): "u", ord("ù"): "u", ord("û"): "u", ord("ü"): "u",
+    ord("Ú"): "U", ord("Ù"): "U", ord("Û"): "U", ord("Ü"): "U",
+    ord("ç"): "c", ord("Ç"): "C",
+    ord("ñ"): "n", ord("Ñ"): "N",
+    ord("…"): "...",
+    ord("–"): "-", ord("—"): "-",
+    ord("“"): '"', ord("”"): '"',
+    ord("‘"): "'", ord("’"): "'",
+    ord("«"): '"', ord("»"): '"',
+    ord("º"): "o", ord("ª"): "a",
+}
+
+
+def fix_mojibake(text: str) -> str:
+    """
+    Tenta recuperar textos em que bytes UTF-8 foram interpretados/decodificados como CP932 (Shift_JIS).
+    Exemplo: 'vocﾃｪ' -> 'você', 'informaﾃｧﾃ｣o' -> 'informação'.
+    Caso não seja mojibake, retorna o texto original inalterado.
+    """
+    if not text:
+        return text
+
+    # Verificação rápida: se não contiver caracteres típicos de mojibake CP932 (halfwidth katakana ﾃ, ｧ, etc.)
+    # ou se for puramente ASCII, retorna diretamente
+    if not any(c in text for c in ('ﾃ', '窶', '縲', 'ｱ', 'ｲ', 'ｳ', 'ｴ', 'ｵ', 'ｶ', 'ｷ', 'ｸ', 'ｹ', 'ｺ', 'ｻ', 'ｼ', 'ｽ', 'ｾ', 'ｿ')):
+        return text
+
+    try:
+        return text.encode('cp932').decode('utf-8')
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+
+    # Tratamento para mojibakes parciais ou que contêm caracteres da Área de Uso Privado (PUA)
+    try:
+        clean = "".join(c for c in text if ord(c) < 0xF000)
+        return clean.encode('cp932').decode('utf-8')
+    except Exception:
+        return text
+
+
+def normalize_western_chars(text: str) -> str:
+    """
+    Normaliza caracteres ocidentais com acentos ou diacríticos para seus equivalentes ASCII simples,
+    e pontuações especiais para caracteres padrão, prevenindo a exibição de ideogramas
+    japoneses (mojibake) em engines que utilizam fontes legadas sem suporte a acentuação (como Wolf RPG).
+    Preserva caracteres japoneses (Hiragana, Katakana e Kanji) sem alterações.
+    """
+    if not text:
+        return text
+
+    # 1. Recupera possível mojibake prévio
+    text = fix_mojibake(text)
+
+    # 2. Tradução direta de acentos ocidentais e pontuações para ASCII simples
+    return text.translate(LATIN_ACCENT_MAP)
+

@@ -413,7 +413,7 @@ class _StatusApp(_LanguagePaletteMixin, App):
 
         for status in sorted_status_list:
             s_code = status.get('status', '')
-            file_name = os.path.basename(status.get('file', ''))
+            file_name = status.get('file', '')
             msg = status.get('msg', '')
             progress = ''
             if 'current' in status and 'total' in status:

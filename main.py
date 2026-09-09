@@ -75,6 +75,84 @@ def copy_files_only(src, dst, clear_destination=True):
             shutil.copy2(s, d)
 
 
+def copy_matching_files(src, dst, extensions=None):
+    """Copia recursivamente arquivos de `src` para `dst` preservando a estrutura de subpastas.
+    
+    Se `extensions` for fornecido, filtra apenas os arquivos correspondentes.
+    """
+    if not os.path.exists(src):
+        return []
+
+    exts = tuple(f".{t.lower().lstrip('.')}" for t in extensions) if extensions else None
+    copied_files = []
+
+    for root, _, files in os.walk(src):
+        for f in files:
+            if exts is None or f.lower().endswith(exts):
+                src_path = os.path.join(root, f)
+                rel_path = os.path.relpath(src_path, src)
+                dst_path = os.path.join(dst, rel_path)
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                shutil.copy2(src_path, dst_path)
+                copied_files.append(rel_path)
+
+    return copied_files
+
+
+def sync_folder_tree(src, dst):
+    """Copia recursivamente todos os arquivos e subpastas de `src` para `dst`,
+    sobrescrevendo apenas os arquivos correspondentes e preservando os demais no destino.
+    """
+    if not os.path.exists(src):
+        return []
+
+    copied_files = []
+    for root, _, files in os.walk(src):
+        for f in files:
+            src_path = os.path.join(root, f)
+            rel_path = os.path.relpath(src_path, src)
+            dst_path = os.path.join(dst, rel_path)
+            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+            shutil.copy2(src_path, dst_path)
+            copied_files.append(rel_path)
+
+    return copied_files
+
+
+def ensure_backup(input_dir, backup_dir, extensions=None):
+    """Garante que todos os arquivos de `input_dir` existam em `backup_dir`.
+    
+    Para arquivos translatáveis (conforme `extensions`), realiza cópia independente (`shutil.copy2`).
+    Para arquivos de mídia/não-translatáveis, utiliza hardlink (`os.link`) com fallback para cópia,
+    garantindo um backup 100% funcional e autônomo sem consumir espaço extra em disco.
+    Arquivos que já existem no backup são estritamente preservados (não sobrescritos).
+    """
+    if not os.path.exists(backup_dir):
+        os.makedirs(backup_dir, exist_ok=True)
+
+    exts = tuple(f".{t.lower().lstrip('.')}" for t in extensions) if extensions else None
+    newly_backed_up = []
+
+    for root, _, files in os.walk(input_dir):
+        for f in files:
+            src_path = os.path.join(root, f)
+            rel_path = os.path.relpath(src_path, input_dir)
+            dst_path = os.path.join(backup_dir, rel_path)
+            if not os.path.exists(dst_path):
+                os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+                is_translatable = exts is None or f.lower().endswith(exts)
+                if is_translatable:
+                    shutil.copy2(src_path, dst_path)
+                else:
+                    try:
+                        os.link(src_path, dst_path)
+                    except Exception:
+                        shutil.copy2(src_path, dst_path)
+                newly_backed_up.append(rel_path)
+
+    return newly_backed_up
+
+
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
@@ -186,6 +264,57 @@ def validate_arguments(args):
     return errors
 
 
+def prompt_interactive_questions(questions):
+    """Executa perguntas interativas para configuração de tradutores ou extratores.
+
+    Retorna o dicionário de configurações preenchido, ou None se o usuário cancelou.
+    """
+    if not questions:
+        return {}
+
+    config = {}
+    for question in questions:
+        key = question.get('key') or question.get('id')
+        if not key:
+            continue
+
+        options = question.get('options')
+        if options:
+            default_val = question.get('default')
+            default_idx = 0
+            if default_val:
+                if isinstance(options, list) and default_val in options:
+                    default_idx = options.index(default_val)
+                elif isinstance(options, dict):
+                    if default_val in options.values():
+                        default_idx = list(options.values()).index(default_val)
+                    elif default_val in options.keys():
+                        default_idx = list(options.keys()).index(default_val)
+
+            answer = cli.select_option(question.get('question', ''), options, index=default_idx)
+            if answer == "Exit":
+                return None
+            config[key] = answer
+        else:
+            cli.clear_screen()
+            if 'title' in question:
+                cli.print_colored_line(question['title'], 'cyan')
+            if 'description' in question:
+                cli.print_colored_line(question['description'], question.get('color', 'yellow'))
+            cli.print_colored_line(question['question'], question.get('color', 'white'))
+            answer = input().strip()
+            if not answer and 'default' in question:
+                answer = question['default']
+
+            if answer or not question.get('required', False):
+                config[key] = answer
+            else:
+                cli.print_colored_line(_i18n.tr('error_field_required', field=key.capitalize()), 'red')
+                return None
+
+    return config
+
+
 def run_filename_translation_workflow(args, translators):
     """Fluxo de trabalho para tradução de nomes de arquivos"""
     # 1. Selecionar Tradutor
@@ -219,14 +348,9 @@ def run_filename_translation_workflow(args, translators):
     else:
         translator_questions = translator_class.get_interactive_questions()
         if translator_questions:
-            cli.clear_screen()
-            translator_config = {}
-            for question in translator_questions:
-                if 'title' in question: cli.print_colored_line(question['title'], 'cyan')
-                cli.print_colored_line(question['question'], question.get('color', 'white'))
-                answer = input().strip()
-                if answer or not question.get('required', False):
-                    translator_config[question['key']] = answer
+            translator_config = prompt_interactive_questions(translator_questions)
+            if translator_config is None:
+                return False
             translate.apply_configuration(translator_config)
 
     # 5. Opção de Salvar (Apenas tradução ou Ambos)
@@ -330,36 +454,18 @@ def run_workflow(args):
     else:
         translator_questions = translator_class.get_interactive_questions()
         if translator_questions:
-            cli.clear_screen()
-            translator_config = {}
-            for question in translator_questions:
-                if 'title' in question: cli.print_colored_line(question['title'], 'cyan')
-                if 'description' in question: cli.print_colored_line(question['description'], question.get('color', 'yellow'))
-                cli.print_colored_line(question['question'], question.get('color', 'white'))
-                answer = input().strip()
-                if answer or not question.get('required', False):
-                    translator_config[question['key']] = answer
-                else:
-                    cli.print_colored_line(_i18n.tr('error_field_required', field=question['key'].capitalize()), 'red')
-                    return False
+            translator_config = prompt_interactive_questions(translator_questions)
+            if translator_config is None:
+                return False
             translate.apply_configuration(translator_config)
 
     # 6. Configuração do Extrator
     extractor = ExtractorFactory.create(extractor_class.name, translate)
     extractor_questions = extractor.get_interactive_questions()
     if extractor_questions:
-        cli.clear_screen()
-        extractor_config = {}
-        for question in extractor_questions:
-            if 'title' in question: cli.print_colored_line(question['title'], 'cyan')
-            if 'description' in question: cli.print_colored_line(question['description'], question.get('color', 'yellow'))
-            cli.print_colored_line(question['question'], question.get('color', 'white'))
-            answer = input().strip()
-            if answer or not question.get('required', False):
-                extractor_config[question['key']] = answer
-            else:
-                cli.print_colored_line(_i18n.tr('error_field_required', field=question['key'].capitalize()), 'red')
-                return False
+        extractor_config = prompt_interactive_questions(extractor_questions)
+        if extractor_config is None:
+            return False
         extractor.apply_configuration(extractor_config)
 
     extractor.init_folder()
@@ -414,15 +520,18 @@ def run_extraction_process(extractor, translate, input_dir, lang_source, backup=
         return False
 
     try:
+        files_types = getattr(extractor, 'files_types', [])
         if backup:
             backup_dir = input_dir + "-" + lang_source
-            if os.path.exists(backup_dir) and os.listdir(backup_dir):
-                log(_i18n.tr('log_backup_exists', path=backup_dir), 'yellow')
-            else:
+            newly_backed_up = ensure_backup(input_dir, backup_dir, extensions=files_types)
+            if newly_backed_up:
                 log(_i18n.tr('log_creating_backup', path=backup_dir), 'yellow')
-                copy_files_only(input_dir, backup_dir)
+            else:
+                log(_i18n.tr('log_backup_exists', path=backup_dir), 'yellow')
 
-        copy_files_only(input_dir, extractor.folderInput)
+        extractor.clean_folder(extractor.folderInput)
+        copied_input = copy_matching_files(input_dir, extractor.folderInput, extensions=files_types)
+        logging.info(f"Arquivos copiados para entrada ({len(copied_input)})")
 
         log(_i18n.tr('log_processing_files'), 'green')
         extractor.process_files()
@@ -448,10 +557,7 @@ def run_extraction_process(extractor, translate, input_dir, lang_source, backup=
 
         log(_i18n.tr('log_exporting_files'), 'green')
         extractor.import_files()
-        # clear_destination=False: um arquivo que falhou o processamento não
-        # existe em folderOutput, e não pode ser apagado de input_dir sem
-        # substituto (perderia o original sem gerar tradução nenhuma).
-        copy_files_only(extractor.folderOutput, input_dir, clear_destination=False)
+        sync_folder_tree(extractor.folderOutput, input_dir)
 
         log(_i18n.tr('log_finished_success'), 'green')
 

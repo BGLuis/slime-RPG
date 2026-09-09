@@ -214,3 +214,97 @@ def test_wolf_gamedat_roundtrip(tmp_path):
     # Recarregar
     reloaded = WolfBinaryAdapter.load_file(str(gamedat_path))
     assert reloaded["title"] == "The Dark Castle"
+
+
+def test_wolf_database_never_modifies_project_on_save(tmp_path):
+    dat_path = tmp_path / "CDataBase.dat"
+    project_path = tmp_path / "CDataBase.project"
+
+    # 1. Cria DB sintético com tipo específico
+    db = WolfDatabase()
+    db.encoding_type = 85
+    db.is_utf8 = True
+    db.engine_version = 1
+
+    t = WolfDatabaseType("基本システム用変数")
+    t.description = "Variáveis do sistema básico"
+    fld = WolfDatabaseField("Var0")
+    fld.indexinfo = 0x07D0
+    t.fields = [fld]
+    datum = WolfDatabaseData("Data0")
+    datum.string_values = ["Original Value"]
+    datum.int_values = [0]
+    t.data = [datum]
+    db.types = [t]
+
+    db.save(str(dat_path), str(project_path))
+    orig_project_bytes = project_path.read_bytes()
+
+    # 2. Carrega via adapter
+    normalized = WolfBinaryAdapter.load_file(str(dat_path))
+    assert normalized["types"][0]["name"] == "基本システム用変数"
+
+    # 3. Altera dados e salva via adapter
+    normalized["types"][0]["data"][0]["string_values"] = ["Translated Value"]
+    WolfBinaryAdapter.save_file(str(dat_path), normalized)
+
+    # 4. Verifica que .project NUNCA foi modificado no save
+    assert project_path.read_bytes() == orig_project_bytes
+
+    # 5. Verifica que o .dat foi atualizado com sucesso
+    reloaded = WolfBinaryAdapter.load_file(str(dat_path))
+    assert reloaded["types"][0]["data"][0]["string_values"] == ["Translated Value"]
+
+
+def test_wolf_database_resolves_project_from_input_folder(tmp_path):
+    input_basic = tmp_path / "input" / "BasicData"
+    process_basic = tmp_path / "process" / "BasicData"
+    output_basic = tmp_path / "output" / "BasicData"
+    input_basic.mkdir(parents=True)
+    process_basic.mkdir(parents=True)
+    output_basic.mkdir(parents=True)
+
+    input_dat = input_basic / "CDataBase.dat"
+    input_project = input_basic / "CDataBase.project"
+
+    # 1. Cria DB sintético em input com tipo fundamental
+    db = WolfDatabase()
+    db.encoding_type = 85
+    db.is_utf8 = True
+    db.engine_version = 1
+
+    t = WolfDatabaseType("基本システム用変数")
+    t.description = "Variáveis do sistema básico"
+    fld = WolfDatabaseField("Var0")
+    fld.indexinfo = 0x07D0
+    t.fields = [fld]
+    datum = WolfDatabaseData("Data0")
+    datum.string_values = ["Val"]
+    datum.int_values = [0]
+    t.data = [datum]
+    db.types = [t]
+
+    db.save(str(input_dat), str(input_project))
+
+    # 2. Copia .dat para process/ (sem .project em process/)
+    process_dat = process_basic / "CDataBase.dat"
+    process_dat.write_bytes(input_dat.read_bytes())
+
+    # 3. Copia .project original para output/ (como _handle_no_text faz)
+    output_project = output_basic / "CDataBase.project"
+    output_project.write_bytes(input_project.read_bytes())
+    original_project_bytes = output_project.read_bytes()
+
+    # 4. Carrega a partir de process/ (onde não há .project adjacente)
+    # Deve localizar automaticamente o .project em input/
+    loaded_process = WolfBinaryAdapter.load_file(str(process_dat))
+    assert loaded_process["types"][0]["name"] == "基本システム用変数"
+    assert not loaded_process["types"][0]["name"].startswith("Type_")
+
+    # 5. Salva em output/
+    output_dat = output_basic / "CDataBase.dat"
+    WolfBinaryAdapter.save_file(str(output_dat), loaded_process)
+
+    # 6. Garante que output/BasicData/CDataBase.project permaneceu 100% idêntico ao original
+    assert output_project.read_bytes() == original_project_bytes
+

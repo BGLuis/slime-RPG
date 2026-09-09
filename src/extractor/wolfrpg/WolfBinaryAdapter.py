@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .WolfEventCodes import WolfEventCode
+from src.utils.TextsUtils import normalize_western_chars
 
 # MSVC LCG constants for WOLF RPG decryption (matches msvcrt.dll)
 RAND_MULTIPLIER = 0x343FD
@@ -200,10 +201,13 @@ class WolfFileCoder:
     def write_string(self, text: Optional[str]):
         if text is None:
             text = ""
-        encoding = 'utf-8' if self.is_utf8 else 'cp932'
-        try:
-            bstr = text.encode(encoding)
-        except UnicodeEncodeError:
+        if not self.is_utf8:
+            text = normalize_western_chars(text)
+            try:
+                bstr = text.encode('cp932')
+            except UnicodeEncodeError:
+                bstr = text.encode('cp932', errors='replace')
+        else:
             bstr = text.encode('utf-8', errors='replace')
 
         self.write_u4(len(bstr) + 1)
@@ -816,6 +820,7 @@ class WolfDatabase:
     DAT_SEED_INDICES = [0, 3, 9]
 
     def __init__(self):
+        self.has_leading_zero = False
         self.encoding_type = 0
         self.is_utf8 = False
         self.engine_version = 0
@@ -829,12 +834,17 @@ class WolfDatabase:
         with open(dat_path, 'rb') as f:
             dat_bytes = bytearray(f.read())
 
+        db.has_leading_zero = dat_bytes.startswith(b'\x00' + cls.DATABASE_MAGIC)
         # Verifica se o arquivo .dat é criptografado
-        if not dat_bytes.startswith(cls.DATABASE_MAGIC):
+        if not (dat_bytes.startswith(cls.DATABASE_MAGIC) or db.has_leading_zero):
             seeds = [dat_bytes[i] for i in cls.DAT_SEED_INDICES]
             dat_bytes = decrypt_dat_v1(dat_bytes, seeds, [1, 2, 5])
+            db.has_leading_zero = dat_bytes.startswith(b'\x00' + cls.DATABASE_MAGIC)
 
         coder = WolfFileCoder(io.BytesIO(dat_bytes))
+        if db.has_leading_zero:
+            coder.read_u1()
+
         coder.verify(cls.DATABASE_MAGIC)
         db.encoding_type = coder.read_u1()
         db.is_utf8 = (db.encoding_type == 85)
@@ -955,6 +965,8 @@ class WolfDatabase:
 
         # Salva .dat
         coder = WolfFileCoder.open_write(is_utf8=self.is_utf8)
+        if self.has_leading_zero:
+            coder.write_u1(0)
         coder.write(self.DATABASE_MAGIC)
         coder.write_u1(self.encoding_type)
         coder.write(self.DATABASE_MAGIC_NEXT)
@@ -985,6 +997,7 @@ class WolfGameDat:
 
     def __init__(self):
         self.raw_data = b""
+        self.has_leading_zero = False
         self.encoding_type = 0
         self.is_utf8 = False
         self.byte_settings = b""
@@ -1007,7 +1020,11 @@ class WolfGameDat:
         else:
             gd.raw_data = bytes(file_path_or_bytes)
 
+        gd.has_leading_zero = gd.raw_data.startswith(b'\x00' + cls.GAMEDAT_MAGIC)
         coder = WolfFileCoder.open_read(gd.raw_data)
+        if gd.has_leading_zero:
+            coder.read_u1()
+
         if coder.stream.read(len(cls.GAMEDAT_MAGIC)) != cls.GAMEDAT_MAGIC:
             return gd
 
@@ -1045,6 +1062,8 @@ class WolfGameDat:
 
     def save(self, file_path: str):
         coder = WolfFileCoder.open_write(is_utf8=self.is_utf8)
+        if self.has_leading_zero:
+            coder.write_u1(0)
         coder.write(self.GAMEDAT_MAGIC)
         coder.write_u1(self.encoding_type)
 
@@ -1087,7 +1106,7 @@ class WolfBinaryAdapter:
     """
 
     @staticmethod
-    def load_file(file_path: str) -> Union[WolfDataDict, WolfDataList]:
+    def load_file(file_path: str, project_path: Optional[str] = None) -> Union[WolfDataDict, WolfDataList]:
         file_name = os.path.basename(file_path)
 
         if file_name.endswith('.mps'):
@@ -1103,8 +1122,25 @@ class WolfBinaryAdapter:
             return normalized
 
         elif file_name.endswith('.dat') and file_name != 'Game.dat':
-            project_path = os.path.splitext(file_path)[0] + '.project'
-            db_obj = WolfDatabase.load(file_path, project_path if os.path.exists(project_path) else None)
+            if project_path is None or not os.path.exists(project_path):
+                candidate_project = os.path.splitext(file_path)[0] + '.project'
+                if os.path.exists(candidate_project):
+                    project_path = candidate_project
+                else:
+                    # Se o arquivo estiver em pasta process/output, procura o .project na pasta input original
+                    norm = os.path.normpath(file_path)
+                    parts = norm.split(os.sep)
+                    for staging in ('process', 'output'):
+                        if staging in parts:
+                            p_idx = parts.index(staging)
+                            parts_input = list(parts)
+                            parts_input[p_idx] = 'input'
+                            candidate_input = os.path.splitext(os.sep.join(parts_input))[0] + '.project'
+                            if os.path.exists(candidate_input):
+                                project_path = candidate_input
+                                break
+
+            db_obj = WolfDatabase.load(file_path, project_path if (project_path and os.path.exists(project_path)) else None)
             normalized = WolfBinaryAdapter._database_to_dict(db_obj)
             normalized._raw_wolf = db_obj
             return normalized
@@ -1144,8 +1180,9 @@ class WolfBinaryAdapter:
             if raw_to_save is None or not isinstance(raw_to_save, WolfDatabase):
                 raise ValueError(f"Objeto WolfDatabase original ausente para {file_name}")
             WolfBinaryAdapter._apply_database_dict(raw_to_save, data)
-            project_path = os.path.splitext(file_path)[0] + '.project'
-            raw_to_save.save(file_path, project_path if os.path.exists(project_path) else None)
+            # Salva apenas o binário .dat. O arquivo .project contém os esquemas do editor
+            # e tipos fundamentais (ex: 基本システム用変数) que não devem ser sobrescritos/regenerados.
+            raw_to_save.save(file_path, None)
 
         elif file_name == 'Game.dat':
             if raw_to_save is None or not isinstance(raw_to_save, WolfGameDat):
@@ -1209,7 +1246,10 @@ class WolfBinaryAdapter:
                     for idx, cmd_item in enumerate(cmd_items):
                         if idx < len(raw_page.commands):
                             raw_cmd = raw_page.commands[idx]
-                            raw_cmd.string_args = list(cmd_item.get('string_args', []))
+                            if 'parameters' in cmd_item and cmd_item['parameters'] is not None:
+                                raw_cmd.args = list(cmd_item['parameters'])
+                            if 'string_args' in cmd_item and cmd_item['string_args'] is not None:
+                                raw_cmd.string_args = list(cmd_item['string_args'])
 
     @staticmethod
     def _commonevents_to_list(ce_obj: WolfCommonEvents) -> WolfDataList:
@@ -1254,7 +1294,10 @@ class WolfBinaryAdapter:
             for idx, cmd_item in enumerate(cmd_items):
                 if idx < len(raw_ev.commands):
                     raw_cmd = raw_ev.commands[idx]
-                    raw_cmd.string_args = list(cmd_item.get('string_args', []))
+                    if 'parameters' in cmd_item and cmd_item['parameters'] is not None:
+                        raw_cmd.args = list(cmd_item['parameters'])
+                    if 'string_args' in cmd_item and cmd_item['string_args'] is not None:
+                        raw_cmd.string_args = list(cmd_item['string_args'])
 
     @staticmethod
     def _database_to_dict(db_obj: WolfDatabase) -> WolfDataDict:
