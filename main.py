@@ -542,7 +542,10 @@ def run_extraction_process(extractor, translate, input_dir, lang_source, backup=
             # No modo CLI o show_status já bloqueia até o pool terminar; na GUI
             # precisamos aguardar explicitamente antes de pedir a verificação manual.
             import concurrent.futures
-            concurrent.futures.wait(extractor.futures)
+            if hasattr(extractor, 'wait_for_dispatch'):
+                extractor.wait_for_dispatch()
+            pending = list(getattr(extractor, 'futures', [])) + list(getattr(extractor, 'fast_futures', []))
+            concurrent.futures.wait(pending)
 
         if verify:
             if gui_verify_callback:

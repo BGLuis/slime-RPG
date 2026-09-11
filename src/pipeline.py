@@ -54,13 +54,29 @@ class CacheLookupStep(PipelineStep):
         context.pending_indices = []
         context.pending_originals = []
 
-        with context.translate_instance.cache_lock:
+        cache = context.translate_instance.cache
+
+        # Um único lookup em lote (TranslationMemory.lookup_many) em vez de 2
+        # queries por string sob um lock global. Dublês de teste que usam um dict
+        # puro caem no fallback item-a-item.
+        if hasattr(cache, 'lookup_many'):
+            translatable = [s for s in all_strings if isinstance(s, str) and s.strip()]
+            hits = cache.lookup_many(translatable) if translatable else {}
+            for i, s in enumerate(all_strings):
+                if not isinstance(s, str) or not s.strip():
+                    context.cached_positions[i] = s
+                elif s in hits:
+                    context.cached_positions[i] = hits[s]
+                else:
+                    context.pending_indices.append(i)
+                    context.pending_originals.append(s)
+        else:
             for i, s in enumerate(all_strings):
                 if not isinstance(s, str) or not s.strip():
                     # Whitespace, vazio ou não-string não precisa de tradução
                     context.cached_positions[i] = s
-                elif s in context.translate_instance.cache:
-                    context.cached_positions[i] = context.translate_instance.cache[s]
+                elif s in cache:
+                    context.cached_positions[i] = cache[s]
                 else:
                     context.pending_indices.append(i)
                     context.pending_originals.append(s)
@@ -192,10 +208,17 @@ class CacheStoreStep(PipelineStep):
         if hasattr(context, 'fixed_pending') and context.fixed_pending:
             # 1. Salvar no cache apenas textos limpos e finalizados (texto original -> texto traduzido e corrigido)
             if context.translate_instance and hasattr(context.translate_instance, 'cache'):
-                with context.translate_instance.cache_lock:
-                    for orig, fixed in zip(context.pending_originals, context.fixed_pending):
-                        if isinstance(orig, str) and orig.strip() and fixed is not None:
-                            context.translate_instance.cache[orig] = fixed
+                cache = context.translate_instance.cache
+                pairs = [
+                    (orig, fixed)
+                    for orig, fixed in zip(context.pending_originals, context.fixed_pending)
+                    if isinstance(orig, str) and orig.strip() and fixed is not None
+                ]
+                if hasattr(cache, 'store_many'):
+                    cache.store_many(pairs)
+                else:
+                    for orig, fixed in pairs:
+                        cache[orig] = fixed
 
             # 2. Reconstruir a lista completa de strings mesclando cached_positions e fixed_pending
             all_strings = TextsUtils.dictToList(context.original_text)

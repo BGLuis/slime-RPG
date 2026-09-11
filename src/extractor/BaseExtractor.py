@@ -391,12 +391,76 @@ class BaseExtractor(ABC):
                     self.add_threads_status(
                         {'file': rel_path, 'status': 'erro', 'msg': f"Failed to process after {retries}"})
 
+    def _prescan_file(self, file, folder_input):
+        """Classifica um arquivo para o fast lane (100% no cache) ou fluxo normal.
+
+        Retorna `(lane, entry)` onde `lane` é `'cached'` ou `'pending'` e `entry`
+        é `(rel_path, data, raw_text, file_name)` quando `cached` (para o fast
+        lane não reextrair), senão `None`.
+        """
+        import src.utils.TextsUtils as TextsUtils
+
+        cache = getattr(self.translate, 'cache', None)
+        if cache is None or not hasattr(cache, 'lookup_many'):
+            return 'pending', None
+
+        file_path_str = str(file)
+        file_name = os.path.basename(file_path_str)
+        try:
+            if hasattr(self, 'is_translatable_file') and callable(getattr(self, 'is_translatable_file')):
+                if not self.is_translatable_file(file_name):
+                    return 'pending', None
+            _, data = self.extract_files(file_path_str)
+            if data is None:
+                return 'pending', None
+            raw_text = self.extract_text(file_name, data)
+            if not raw_text:
+                return 'pending', None
+            strings = [
+                s for s in TextsUtils.dictToList(raw_text)
+                if isinstance(s, str) and s.strip()
+            ]
+            if not strings:
+                return 'pending', None
+            hits = cache.lookup_many(strings)
+            if all(s in hits for s in strings):
+                try:
+                    rel_path = os.path.relpath(file_path_str, folder_input)
+                except Exception:
+                    rel_path = file_name
+                return 'cached', (rel_path, data, raw_text, file_name)
+            return 'pending', None
+        except Exception as e:
+            logging.debug(f"Prescan: {file} vai para o fluxo normal ({e})")
+            return 'pending', None
+
+    def _finalize_cached_file(self, file, entry):
+        """Fast lane: grava um arquivo 100% coberto pelo cache sem provedor.
+
+        Reusa `data`/`raw_text` já extraídos na pré-varredura. O
+        `_pipeline_translate` de um arquivo totalmente cacheado resolve tudo no
+        `CacheLookupStep` (um `lookup_many`) e curto-circuita os demais passos.
+        """
+        rel_path, data, raw_text, file_name = entry
+        try:
+            translated_text = self._pipeline_translate(file_name, data, raw_text, self.translate, rel_path)
+            merged_data = self.merge_dicts_texts(translated_text, raw_text)
+            updated_data = self.update_json(file_name, data, merged_data)
+            self.import_file(rel_path, updated_data, self.folderProcess)
+            self.add_threads_status({'file': rel_path, 'status': 'success', 'msg': "Processed successfully"})
+        except Exception as e:
+            logging.error(f"Fast-lane falhou para {file}, reprocessando pelo fluxo normal: {e}")
+            self.add_threads_status(
+                {'file': rel_path, 'status': 'danger', 'msg': f"Fast-lane falhou, reprocessando {file}"})
+            self.process_file(file)
+
     def process_files(self):
         import concurrent.futures
-        # Limitar a concorrência para evitar travamentos (ex: 5 a 10)
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
-        self.futures = []
-        
+
+        slow_workers = max(1, int(os.environ.get('EXTRACTOR_MAX_WORKERS', 8)))
+        fast_workers = max(1, int(os.environ.get('EXTRACTOR_FASTLANE_WORKERS', 16)))
+        scan_workers = max(1, int(os.environ.get('EXTRACTOR_PRESCAN_WORKERS', 8)))
+
         folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
         exts = tuple(f".{t.lower().lstrip('.')}" for t in self.files_types) if self.files_types else None
 
@@ -408,24 +472,84 @@ class BaseExtractor(ABC):
                     files.append(file_path)
 
         files.sort()
-        
+
         # Pré-popula o status para que a UI reconheça arquivos na fila
         for file in files:
             rel_path = os.path.relpath(file, folder_input)
             self.add_threads_status({'file': rel_path, 'status': 'waiting', 'msg': 'Na fila de processamento...'})
-            
-        # Inicia a execução controlada
-        for file in files:
-            future = self.executor.submit(self.process_file, file)
-            self.futures.append(future)
+
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=slow_workers)
+        self.fast_executor = concurrent.futures.ThreadPoolExecutor(max_workers=fast_workers)
+        self.futures = []
+        self.fast_futures = []
+
+        cache = getattr(self.translate, 'cache', None)
+        if cache is None or not hasattr(cache, 'lookup_many'):
+            for file in files:
+                self.futures.append(self.executor.submit(self.process_file, file))
+            return
+
+        # Pré-varredura em streaming, num thread próprio para não bloquear o
+        # retorno de process_files(): assim que um arquivo é classificado ele já é
+        # despachado para a fila certa — arquivos 100% no cache vão para o
+        # fast_executor e não ficam presos atrás dos que chamam o provedor no
+        # executor lento. `_dispatch_lock` protege `futures`/`fast_futures` contra
+        # a leitura concorrente feita por import_files().
+        self._dispatch_lock = threading.Lock()
+
+        def _dispatch():
+            prescan_ex = concurrent.futures.ThreadPoolExecutor(max_workers=scan_workers)
+            try:
+                scan_futures = {
+                    prescan_ex.submit(self._prescan_file, file, folder_input): file
+                    for file in files
+                }
+                for scan_future in concurrent.futures.as_completed(scan_futures):
+                    file = scan_futures[scan_future]
+                    try:
+                        lane, entry = scan_future.result()
+                    except Exception as e:
+                        logging.debug(f"Prescan falhou para {file}, fluxo normal ({e})")
+                        lane, entry = 'pending', None
+                    if lane == 'cached':
+                        fut = self.fast_executor.submit(self._finalize_cached_file, file, entry)
+                        with self._dispatch_lock:
+                            self.fast_futures.append(fut)
+                    else:
+                        fut = self.executor.submit(self.process_file, file)
+                        with self._dispatch_lock:
+                            self.futures.append(fut)
+            finally:
+                prescan_ex.shutdown(wait=True)
+
+        self._dispatch_thread = threading.Thread(target=_dispatch, name='prescan-dispatch', daemon=True)
+        self._dispatch_thread.start()
+
+    def wait_for_dispatch(self):
+        """Bloqueia até a pré-varredura ter despachado todos os arquivos."""
+        t = getattr(self, '_dispatch_thread', None)
+        if t is not None:
+            t.join()
 
     def import_files(self):
-        # Aguarda todas as tarefas do pool terminarem
-        if hasattr(self, 'executor') and self.executor:
-            import concurrent.futures
-            concurrent.futures.wait(self.futures)
-            self.executor.shutdown(wait=True)
-            self.futures = []
+        import concurrent.futures
+        # Garante que todos os arquivos já foram enfileirados antes de esperar
+        self.wait_for_dispatch()
+        # Aguarda as tarefas dos dois pools (fast lane + fluxo normal) terminarem
+        lock = getattr(self, '_dispatch_lock', None)
+        if lock:
+            with lock:
+                all_futures = list(getattr(self, 'futures', [])) + list(getattr(self, 'fast_futures', []))
+        else:
+            all_futures = list(getattr(self, 'futures', [])) + list(getattr(self, 'fast_futures', []))
+        if all_futures:
+            concurrent.futures.wait(all_futures)
+        for ex_attr in ('executor', 'fast_executor'):
+            ex = getattr(self, ex_attr, None)
+            if ex:
+                ex.shutdown(wait=True)
+        self.futures = []
+        self.fast_futures = []
 
         folder_process = getattr(self, 'folderProcess', self.__class__.folderProcess)
         folder_input = getattr(self, 'folderInput', self.__class__.folderInput)

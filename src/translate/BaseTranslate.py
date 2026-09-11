@@ -93,6 +93,10 @@ class BaseTranslate(ABC):
             self.cache_path, self.lang_source, self.lang_target,
             engine=self.__class__.agent, game=getattr(self, 'game_name', None),
         )
+        # `cache_lock` é mantido só por compatibilidade (e pelo teste que verifica
+        # que o deepcopy por-arquivo o compartilha por identidade). O
+        # TranslationMemory agora é dono de todo o seu locking: escritas serializam
+        # no seu `_lock` interno e leituras usam conexões thread-local sem lock.
         self.cache_lock = threading.Lock()
 
     def save_cache(self):
@@ -196,19 +200,29 @@ class BaseTranslate(ABC):
         non_cached_indices = []
         none_indices = [] # Indices where input text is None
 
-        with self.cache_lock:
-            for i, text in enumerate(texts):
-                if text is None:
-                    none_indices.append(i)
-                elif not isinstance(text, str):
-                    translated_texts[i] = text
-                elif not text.strip():
-                    translated_texts[i] = text
-                elif text in self.cache:
-                    translated_texts[i] = self.cache[text]
-                    cache_indices.append(i)
-                else:
-                    non_cached_indices.append(i)
+        # Um único lookup em lote em vez de 2 queries por texto sob lock global.
+        has_bulk = hasattr(self.cache, 'lookup_many')
+        cache_hits = {}
+        if has_bulk:
+            candidates = [t for t in texts if isinstance(t, str) and t.strip()]
+            if candidates:
+                cache_hits = self.cache.lookup_many(candidates)
+
+        for i, text in enumerate(texts):
+            if text is None:
+                none_indices.append(i)
+            elif not isinstance(text, str):
+                translated_texts[i] = text
+            elif not text.strip():
+                translated_texts[i] = text
+            elif text in cache_hits:
+                translated_texts[i] = cache_hits[text]
+                cache_indices.append(i)
+            elif not has_bulk and text in self.cache:
+                translated_texts[i] = self.cache[text]
+                cache_indices.append(i)
+            else:
+                non_cached_indices.append(i)
 
         # Se todos os textos já estavam no cache ou são vazios/None, encerra sem processar lotes
         if not non_cached_indices:
@@ -259,15 +273,22 @@ class BaseTranslate(ABC):
 
         # 4. Mapear resultados únicos e salvar no cache
         unique_to_translated = {}
-        with self.cache_lock:
-            for idx, orig_text in enumerate(unique_non_cached):
-                if idx < len(translated_results) and translated_results[idx] is not None:
-                    trans_text = translated_results[idx]
-                else:
-                    trans_text = orig_text
-                unique_to_translated[orig_text] = trans_text
-                if isinstance(orig_text, str) and orig_text.strip():
-                    self.cache[orig_text] = trans_text
+        for idx, orig_text in enumerate(unique_non_cached):
+            if idx < len(translated_results) and translated_results[idx] is not None:
+                trans_text = translated_results[idx]
+            else:
+                trans_text = orig_text
+            unique_to_translated[orig_text] = trans_text
+
+        storable = [
+            (k, v) for k, v in unique_to_translated.items()
+            if isinstance(k, str) and k.strip()
+        ]
+        if hasattr(self.cache, 'store_many'):
+            self.cache.store_many(storable)
+        else:
+            for k, v in storable:
+                self.cache[k] = v
 
         # 5. Preencher translated_texts para todas as posições originais
         for idx in non_cached_indices:

@@ -167,6 +167,59 @@ def test_pipeline_clean_cache_storage_and_subsequent_hit(isolated_cache_dir, mon
     assert call_count == 1
 
 
+def test_translate_batch_precheck_uses_bulk_lookup(isolated_cache_dir, monkeypatch):
+    """O pré-check de cache do translate_batch deve usar lookup_many (1 query em
+    lote), não lookup item-a-item."""
+    translator = GoogleTranslate(lang_source='en', lang_target='pt')
+    translator.cache['Attack'] = 'Ataque'
+    translator.cache['Defend'] = 'Defender'
+
+    def boom(*_a, **_k):
+        raise AssertionError("lookup() item-a-item não deveria ser chamado")
+
+    monkeypatch.setattr(translator.cache, 'lookup', boom)
+
+    called = []
+    monkeypatch.setattr(translator, '_translate_single_batch',
+                        lambda texts: called.append(list(texts)) or list(texts))
+
+    results = translator.translate_batch(['Attack', 'Defend'])
+    assert results == ['Ataque', 'Defender']
+    assert called == []  # tudo veio do cache, nenhum lote enviado
+
+
+def test_cache_writes_are_batched_not_per_row(isolated_cache_dir, monkeypatch):
+    """As gravações de cache no pipeline usam store_many (lote), nunca store()
+    linha a linha."""
+    from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
+
+    translator = GoogleTranslate(lang_source='en', lang_target='pt')
+
+    batched_calls = []
+    real_store_many = translator.cache.store_many
+    monkeypatch.setattr(
+        translator.cache, 'store_many',
+        lambda pairs, **kw: (lambda p: (batched_calls.append(p), real_store_many(p, **kw))[1])(list(pairs)),
+    )
+
+    def no_per_row(*_a, **_k):
+        raise AssertionError("store()/__setitem__ linha a linha não deveria ser usado")
+
+    monkeypatch.setattr(translator.cache, 'store', no_per_row)
+
+    monkeypatch.setattr(translator, '_translate_single_batch',
+                        lambda texts: [t.upper() for t in texts])
+
+    extractor = RPGMakerExtractor(translator)
+    raw_text = [{"id": 0, "text": ["one", "two", "three"]}]
+    result = extractor._pipeline_translate("Map001.json", {}, raw_text, translator, "Map001.json")
+
+    assert result == [{"id": 0, "text": ["ONE", "TWO", "THREE"]}]
+    assert batched_calls  # ao menos uma gravação em lote aconteceu
+    stored = {k: v for call in batched_calls for k, v in call}
+    assert stored == {"one": "ONE", "two": "TWO", "three": "THREE"}
+
+
 def test_clean_corrupted_cache_script(tmp_path):
     """Testa a limpeza de registros corrompidos com __XTOK_."""
     from scripts.clean_corrupted_cache import clean_corrupted_cache
