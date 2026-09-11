@@ -1,5 +1,5 @@
 # ==============================================================================
-# Makefile para Extractor & Translation
+# Makefile para Slime (Extractor & Translation)
 # ==============================================================================
 
 SHELL := /bin/bash
@@ -7,9 +7,10 @@ PROJECT_DIR := $(shell pwd)
 VENV_DIR := $(PROJECT_DIR)/.venv
 PYTHON := $(VENV_DIR)/bin/python
 PIP := $(VENV_DIR)/bin/pip
-CLI_WRAPPER := $(PROJECT_DIR)/scripts/extractor-translation
+CLI_WRAPPER := $(PROJECT_DIR)/scripts/slime
 LOCAL_BIN := $(HOME)/.local/bin
-BINARY_NAME := extractor-translation
+BINARY_NAME := slime
+ALIASES ?= slm sl extractor-translation
 
 # Fallback se a .venv não existir
 ifeq ($(wildcard $(PYTHON)),)
@@ -17,14 +18,14 @@ ifeq ($(wildcard $(PYTHON)),)
     PIP := pip3
 endif
 
-.PHONY: all help run cli gui install install-cli uninstall-cli install-desktop uninstall-desktop uninstall venv test clean
+.PHONY: all help run cli gui install install-cli uninstall-cli install-desktop uninstall-desktop uninstall venv test clean add-alias remove-alias list-aliases
 
 all: help
 
 help:
 	@echo ""
 	@echo "=================================================================="
-	@echo "  🎮 Extractor & Translation - Comandos Disponíveis"
+	@echo "  🎮 Slime (Extractor & Translation) - Comandos Disponíveis"
 	@echo "=================================================================="
 	@echo ""
 	@echo "  Execução Rápida:"
@@ -32,8 +33,12 @@ help:
 	@echo "    make gui             - Inicia na interface gráfica (PyQt5)"
 	@echo ""
 	@echo "  Instalação Global no Sistema (Usuário):"
-	@echo "    make install         - Instala comando no terminal + menu do sistema"
-	@echo "    make install-cli     - Instala apenas o comando 'extractor-translation' em ~/.local/bin"
+	@echo "    make install         - Instala comando no terminal + atalhos + menu do sistema"
+	@echo "    make install-cli     - Instala o comando '$(BINARY_NAME)' e atalhos ($(ALIASES)) em ~/.local/bin"
+	@echo "    make uninstall-cli   - Remove o comando '$(BINARY_NAME)' e seus atalhos de ~/.local/bin"
+	@echo "    make add-alias       - Adiciona um novo atalho no terminal (ex: make add-alias ALIAS=slx)"
+	@echo "    make remove-alias    - Remove um atalho do terminal (ex: make remove-alias ALIAS=slx)"
+	@echo "    make list-aliases    - Lista os atalhos atualmente instalados"
 	@echo "    make install-desktop - Instala atalhos no gerenciador de arquivos (Nemo, Nautilus, Dolphin)"
 	@echo "    make uninstall       - Remove o comando do terminal e os menus de contexto"
 	@echo ""
@@ -66,30 +71,62 @@ install-cli:
 	@chmod +x $(CLI_WRAPPER)
 	@mkdir -p $(LOCAL_BIN)
 	@ln -sf $(CLI_WRAPPER) $(LOCAL_BIN)/$(BINARY_NAME)
-	@echo "✓ Comando '$(BINARY_NAME)' instalado com sucesso em $(LOCAL_BIN)/$(BINARY_NAME)"
+	@echo "✓ Comando principal '$(BINARY_NAME)' instalado em $(LOCAL_BIN)/$(BINARY_NAME)"
+	@for alias in $(ALIASES); do \
+		ln -sf $(CLI_WRAPPER) $(LOCAL_BIN)/$$alias; \
+		echo "✓ Atalho '$$alias' instalado em $(LOCAL_BIN)/$$alias -> $(BINARY_NAME)"; \
+	done
 	@if [[ ":$$PATH:" != *":$(LOCAL_BIN):"* ]]; then \
 		echo "⚠️  AVISO: '$(LOCAL_BIN)' pode não estar no seu PATH. Adicione-o ao seu ~/.bashrc ou ~/.zshrc se necessário."; \
 	fi
 	@echo ""
 	@echo "Exemplo de uso em qualquer pasta (inclusive dentro da pasta do jogo):"
 	@echo "  $(BINARY_NAME) --interactive"
-	@echo "  $(BINARY_NAME) -i . -e RPGMaker -t Google -s ja -d pt"
+	@echo "  slm --interactive"
+	@echo "  sl -i . -e RPGMaker -t Google -s ja -d pt"
 	@echo "  $(BINARY_NAME) --gui"
 
 uninstall-cli:
 	@echo "Removendo $(LOCAL_BIN)/$(BINARY_NAME)..."
 	@rm -f $(LOCAL_BIN)/$(BINARY_NAME)
-	@echo "✓ Comando '$(BINARY_NAME)' desinstalado do terminal."
+	@for alias in $(ALIASES); do \
+		rm -f $(LOCAL_BIN)/$$alias; \
+		echo "✓ Atalho '$$alias' removido."; \
+	done
+	@echo "✓ Comandos desinstalados do terminal."
+
+add-alias:
+	@if [ -z "$(ALIAS)" ]; then \
+		echo "Erro: Especifique o atalho com ALIAS=<nome>. Exemplo: make add-alias ALIAS=slx"; \
+		exit 1; \
+	fi
+	@mkdir -p $(LOCAL_BIN)
+	@ln -sf $(CLI_WRAPPER) $(LOCAL_BIN)/$(ALIAS)
+	@echo "✓ Atalho '$(ALIAS)' instalado com sucesso em $(LOCAL_BIN)/$(ALIAS) -> $(CLI_WRAPPER)"
+
+remove-alias:
+	@if [ -z "$(ALIAS)" ]; then \
+		echo "Erro: Especifique o atalho com ALIAS=<nome>. Exemplo: make remove-alias ALIAS=slx"; \
+		exit 1; \
+	fi
+	@rm -f $(LOCAL_BIN)/$(ALIAS)
+	@echo "✓ Atalho '$(ALIAS)' removido de $(LOCAL_BIN)."
+
+list-aliases:
+	@chmod +x $(CLI_WRAPPER)
+	@$(CLI_WRAPPER) --list-aliases
 
 install-desktop:
 	@chmod +x scripts/install_linux_integration.sh
 	@bash scripts/install_linux_integration.sh
 
 uninstall-desktop:
+	@rm -f $(HOME)/.local/share/applications/slime.desktop
 	@rm -f $(HOME)/.local/share/applications/extractor-translation.desktop
 	@rm -f $(HOME)/.local/share/nemo/actions/translate-game.nemo_action
 	@rm -f $(HOME)/.local/share/file-manager/actions/translate-game.nemo_action
 	@rm -f "$(HOME)/.local/share/nautilus/scripts/Translate Folder"
+	@rm -f $(HOME)/.local/share/kservices5/ServiceMenus/slime.desktop
 	@rm -f $(HOME)/.local/share/kservices5/ServiceMenus/extractor-translation.desktop
 	@echo "✓ Integrações de desktop e menu de contexto removidas."
 

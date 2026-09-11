@@ -63,7 +63,35 @@ Criei esse repositório inicialmente para poder traduzir jogos de RPG Maker e po
   python main.py
   ```
 
-#### Método 2: Execução via Docker
+#### Método 2: Instalação Global na CLI com Atalhos (Slime)
+
+Você pode instalar o executável globalmente para o usuário com atalhos/abreviações prontas (`slime`, `slm`, `sl`):
+
+```sh
+# Instala o comando slime e os atalhos (slm, sl, extractor-translation) em ~/.local/bin
+make install-cli
+```
+
+Após isso, você pode rodar a ferramenta em qualquer terminal (inclusive de dentro da pasta de um jogo):
+
+```sh
+# Iniciar modo interativo:
+slime
+# ou usando atalhos:
+slm
+sl --interactive
+
+# Executar tradução direta via argumentos:
+slm -i /caminho/do/jogo -e RPGMaker -t Google -s ja -d pt
+
+# Iniciar interface gráfica:
+slime --gui
+
+# Adicionar novos atalhos personalizados:
+make add-alias ALIAS=slx
+# ou diretamente:
+slime --add-alias slx
+```
 
 3. Faça o build e inicie o container usando o Docker Compose:
   ```sh

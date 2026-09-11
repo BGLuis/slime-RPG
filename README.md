@@ -63,7 +63,35 @@ The project was initially created to translate RPG Maker games, and later the co
   python main.py
   ```
 
-#### Method 2: Docker Execution
+#### Method 2: Global CLI Installation with Shortcuts (Slime)
+
+You can install the executable globally with pre-configured terminal shortcuts/abbreviations (`slime`, `slm`, `sl`):
+
+```sh
+# Installs 'slime' and shortcuts (slm, sl, extractor-translation) into ~/.local/bin
+make install-cli
+```
+
+After installation, you can run the tool from any folder:
+
+```sh
+# Start interactive mode:
+slime
+# or with shortcuts:
+slm
+sl --interactive
+
+# Direct translation:
+slm -i /path/to/game -e RPGMaker -t Google -s ja -d pt
+
+# Launch GUI:
+slime --gui
+
+# Add custom aliases/abbreviations:
+make add-alias ALIAS=slx
+# or directly:
+slime --add-alias slx
+```
 
 3. Build and start the container using Docker Compose:
   ```sh

@@ -155,17 +155,25 @@ def ensure_backup(input_dir, backup_dir, extensions=None):
 
 def parse_arguments():
     """Parse command line arguments"""
+    invoked_cmd = os.environ.get('SLIME_INVOKED_AS') or (
+        'slime' if os.path.basename(sys.argv[0]) in ('main.py', '') else os.path.basename(sys.argv[0])
+    )
+
     parser = argparse.ArgumentParser(
-        description='Sistema de extração e tradução de textos',
+        prog=invoked_cmd,
+        description='Slime - Sistema de extração e tradução de textos para jogos',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Exemplos de uso:
-  python main.py --gui
-  python main.py --interactive
-  python main.py -e RPGMaker -t Google -s pt -d en -i /path/to/input
-  python main.py --extractor JsonExtractor --translator Ollama --source ja --target pt --input ./data --no-backup
-  python main.py --list-extractors
-  python main.py --list-translators
+  {invoked_cmd} --gui
+  {invoked_cmd} --interactive
+  {invoked_cmd} -e RPGMaker -t Google -s pt -d en -i /caminho/do/jogo
+  {invoked_cmd} --extractor JsonExtractor --translator Ollama --source ja --target pt --input ./data --no-backup
+  {invoked_cmd} --list-extractors
+  {invoked_cmd} --list-translators
+
+Atalhos/abreviações de terminal disponíveis:
+  slime (principal), slm (abreviação), sl (curto)
         """
     )
 

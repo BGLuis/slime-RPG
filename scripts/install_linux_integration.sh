@@ -20,13 +20,14 @@ echo "Project Root: $PROJECT_ROOT"
 # 1. Create standard .desktop application entry
 APP_DIR="$HOME/.local/share/applications"
 mkdir -p "$APP_DIR"
+rm -f "$APP_DIR/extractor-translation.desktop"
 
-cat > "$APP_DIR/extractor-translation.desktop" <<EOF
+cat > "$APP_DIR/slime.desktop" <<EOF
 [Desktop Entry]
 Version=1.0
-Name=Extractor & Translation
-Comment=Game Translation Tool (RPG Maker, JSON, CSV)
-Exec=$PYTHON_BIN $MAIN_PY --gui --input %f
+Name=Slime (Extractor & Translation)
+Comment=Game Translation Tool (RPG Maker, WOLF RPG, JSON, CSV)
+Exec=$PROJECT_ROOT/scripts/slime --gui --input %f
 Icon=text-x-generic
 Terminal=false
 Type=Application
@@ -66,8 +67,9 @@ echo "✓ Created file manager actions for Nautilus/Nemo"
 # 3. Create Dolphin Service Menu (KDE)
 DOLPHIN_DIR="$HOME/.local/share/kservices5/ServiceMenus"
 mkdir -p "$DOLPHIN_DIR"
+rm -f "$DOLPHIN_DIR/extractor-translation.desktop"
 
-cat > "$DOLPHIN_DIR/extractor-translation.desktop" <<EOF
+cat > "$DOLPHIN_DIR/slime.desktop" <<EOF
 [Desktop Entry]
 Type=Service
 ServiceTypes=KonqPopupMenu/Plugin
@@ -76,9 +78,9 @@ Actions=translateGame;
 X-KDE-Priority=TopLevel
 
 [Desktop Action translateGame]
-Name=Translate Game Folder (Extractor)
+Name=Translate Game Folder (Slime)
 Icon=text-x-generic
-Exec=$PYTHON_BIN $MAIN_PY --gui --input %f
+Exec=$PROJECT_ROOT/scripts/slime --gui --input %f
 EOF
 
 echo "✓ Created service menu for Dolphin (KDE)"
