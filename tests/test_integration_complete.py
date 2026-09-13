@@ -60,14 +60,13 @@ def test_mask_unmask_round_trip_is_lossless():
 
 def test_unmask_raises_instead_of_leaking_an_unresolved_placeholder():
     """
-    re.sub faz uma única passada e não rescaneia o texto que ele mesmo insere: se o
-    conteúdo original capturado por um placeholder contém, por acaso, o texto literal
-    de OUTRO placeholder, essa segunda ocorrência sobra sem resolver. Deixar isso
-    silencioso grava "__XTOK_xxxxxxxx__" visível no arquivo final do jogo.
+    Se restar qualquer placeholder sem resolução (por exemplo, token corrompido ou
+    inexistente no mapping), a função deve levantar ValueError para impedir que
+    placeholders vazem para os arquivos finais do jogo.
     """
     mask_map = {
         "__XTOK_aaaaaaaa__": "leftover __XTOK_bbbbbbbb__ text",
-        "__XTOK_bbbbbbbb__": "real content",
+        # __XTOK_bbbbbbbb__ não existe no mask_map e não pode ser resolvido
     }
 
     with pytest.raises(ValueError):
@@ -83,8 +82,19 @@ def test_unmasking_step_propagates_failure_instead_of_swallowing_it():
     )
     context.mask_map = {
         "__XTOK_aaaaaaaa__": "leftover __XTOK_bbbbbbbb__ text",
-        "__XTOK_bbbbbbbb__": "real content",
+        # __XTOK_bbbbbbbb__ não existe no mask_map e não pode ser resolvido
     }
 
     with pytest.raises(ValueError):
         UnmaskingStep().process(context)
+
+
+def test_unmask_resolves_transitive_placeholders():
+    """Placeholders aninhados/transitivos no mapping são resolvidos com sucesso."""
+    mask_map = {
+        "__XTOK_aaaaaaaa__": "leftover __XTOK_bbbbbbbb__ text",
+        "__XTOK_bbbbbbbb__": "real content",
+    }
+    res = TextsUtils.unmask_tokens_in_structure("start __XTOK_aaaaaaaa__ end", mask_map)
+    assert res == "start leftover real content text end"
+

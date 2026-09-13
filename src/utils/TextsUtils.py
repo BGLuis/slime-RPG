@@ -50,13 +50,14 @@ def decode_unicode_escape(text):
         raise ValueError(f"Erro ao decodificar unicode escape: {e}")
 
 
+import random
 import uuid
 import re
 
 
 def _generate_placeholder(prefix="__XTOK_"):
-    """Gera um placeholder curto e (praticamente) único."""
-    return f"{prefix}{uuid.uuid4().hex[:8]}__"
+    """Gera um placeholder numérico curto e único para evitar traduções indevidas de palavras/abreviações."""
+    return f"{prefix}{random.randint(10000000, 99999999)}__"
 
 
 def mask_tokens_in_structure(obj, patterns, prefix="__XTOK_"):
@@ -78,11 +79,17 @@ def mask_tokens_in_structure(obj, patterns, prefix="__XTOK_"):
             # Substituição via função para guardar o original
             def _repl(m):
                 orig = m.group(0)
-                # não mascarar algo que já pareça um placeholder
-                if isinstance(orig, str) and orig.startswith(prefix):
+                # Não mascarar algo que já seja exatamente um único placeholder
+                if isinstance(orig, str) and orig.startswith(prefix) and orig.endswith("__") and orig in mapping:
                     return orig
+                # Se orig engoliu placeholders previamente criados, desenrolar (unroll) usando mapping
+                if isinstance(orig, str) and prefix in orig:
+                    for ph in list(mapping.keys()):
+                        if ph in orig:
+                            orig = orig.replace(ph, mapping[ph])
+                            del mapping[ph]
                 ph = _generate_placeholder(prefix)
-                # garantir unicidade
+                # Garantir unicidade
                 while ph in mapping or ph in s:
                     ph = _generate_placeholder(prefix)
                 mapping[ph] = orig
@@ -110,13 +117,15 @@ def mask_tokens_in_structure(obj, patterns, prefix="__XTOK_"):
     return walk(obj), mapping
 
 
-def _contains_any(obj, needles):
+def _contains_any_placeholder(obj):
+    """Verifica se sobrou qualquer formato de placeholder __XTOK...__ no objeto."""
+    tok_pattern = re.compile(r'__\s*XTOK[_\s]+[a-zA-Z0-9]+\s*__', re.IGNORECASE)
     if isinstance(obj, str):
-        return any(needle in obj for needle in needles)
+        return bool(tok_pattern.search(obj))
     elif isinstance(obj, dict):
-        return any(_contains_any(v, needles) for v in obj.values())
+        return any(_contains_any_placeholder(v) for v in obj.values())
     elif isinstance(obj, (list, tuple)):
-        return any(_contains_any(v, needles) for v in obj)
+        return any(_contains_any_placeholder(v) for v in obj)
     return False
 
 
@@ -124,20 +133,52 @@ def unmask_tokens_in_structure(obj, mapping):
     """
     Restaura placeholders em `obj` usando o dicionário `mapping` (placeholder -> original).
     Funciona recursivamente sobre dict/list/tuple/str.
-
-    Levanta exceção se algum placeholder não puder ser restaurado: deixar um
-    "__XTOK_xxxxxxxx__" vazar para o arquivo final do jogo é pior do que falhar o
-    processamento desse arquivo e deixar o retry de process_file tentar de novo.
+    Tolerante a alterações de caixa, espaços, mutações de caracteres e tokens aninhados.
     """
     if not mapping:
         return obj
 
-    # Ordenar por comprimento decrescente evita substituições parciais
-    placeholders = sorted(mapping.keys(), key=len, reverse=True)
-    pattern = re.compile("|".join(re.escape(p) for p in placeholders))
+    # 1. Resolver quaisquer dependências transitivas no próprio mapping
+    resolved_map = dict(mapping)
+    for _ in range(5):
+        changed = False
+        for k, v in list(resolved_map.items()):
+            if isinstance(v, str) and "__XTOK_" in v.upper():
+                for sub_k, sub_v in resolved_map.items():
+                    if sub_k != k and sub_k in v:
+                        v = v.replace(sub_k, sub_v)
+                        resolved_map[k] = v
+                        changed = True
+        if not changed:
+            break
+
+    # Mapeamento case-insensitive para maior resiliência
+    ci_map = {k.upper(): v for k, v in resolved_map.items()}
+    ci_keys = sorted(ci_map.keys(), key=len, reverse=True)
+    exact_pattern = re.compile("|".join(re.escape(k) for k in ci_keys), re.IGNORECASE)
+
+    def _fuzzy_match(token_str):
+        upper = token_str.upper()
+        for k in ci_keys:
+            if len(k) == len(upper):
+                diffs = sum(1 for a, b in zip(k, upper) if a != b)
+                if diffs == 1:
+                    return ci_map[k]
+        return token_str
 
     def unmask_string(s):
-        return pattern.sub(lambda m: mapping[m.group(0)], s)
+        # Repetir desmascaramento até não sobrar nenhum placeholder (máximo 5 passadas)
+        for _ in range(5):
+            # 1. Normalizar espaços internos que tradutores costumam inserir
+            s = re.sub(r'__\s*XTOK[_\s]+([a-zA-Z0-9]+)\s*__', lambda m: f'__XTOK_{m.group(1)}__', s, flags=re.IGNORECASE)
+            # 2. Substituir matches exatos ou case-insensitive
+            s = exact_pattern.sub(lambda m: ci_map[m.group(0).upper()], s)
+            # 3. Se ainda houver qualquer __XTOK_ remanescente, tentar fuzzy match (ex: feb -> fev)
+            if '__XTOK_' in s.upper():
+                s = re.sub(r'__XTOK_[a-zA-Z0-9]+__', lambda m: _fuzzy_match(m.group(0)), s, flags=re.IGNORECASE)
+            if not _contains_any_placeholder(s):
+                break
+        return s
 
     def walk(o):
         if isinstance(o, str):
@@ -153,7 +194,7 @@ def unmask_tokens_in_structure(obj, mapping):
 
     restored = walk(obj)
 
-    if _contains_any(restored, placeholders):
+    if _contains_any_placeholder(restored):
         raise ValueError("Desmascaramento incompleto: placeholder de texto sobrou no resultado final.")
 
     return restored

@@ -325,5 +325,175 @@ class TestRPGMakerExtractorRefactor(unittest.TestCase):
         self.assertIn("<Desc: Uma espada rara>", data[1]['note'])
         self.assertIn("<InfoRarity: Lendário>", data[1]['note'])
 
+    def test_extract_map_with_boolean_events_false(self):
+        # Mapas vazios do RPG Maker podem ter "events": false
+        data = {
+            "displayName": "",
+            "events": False,
+            "height": 13,
+            "width": 17,
+        }
+        result = self.extractor.extract_text("Map040.json", data)
+        self.assertEqual(result, [])
+
+    def test_extract_map_with_none_events(self):
+        # Mapas com "events": None (null em JSON)
+        data = {
+            "displayName": "",
+            "events": None,
+        }
+        result = self.extractor.extract_text("Map041.json", data)
+        self.assertEqual(result, [])
+
+    def test_extract_map_with_dict_events(self):
+        # Mapas com events formatado como dict
+        data = {
+            "events": {
+                "1": {
+                    "id": 1,
+                    "pages": [
+                        {
+                            "id": 0,
+                            "list": [
+                                {"code": 401, "parameters": ["Texto em dict"], "indent": 0},
+                                {"code": 0, "parameters": [], "indent": 0}
+                            ]
+                        }
+                    ]
+                }
+            }
+        }
+        result = self.extractor.extract_text("Map042.json", data)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['pages'][0]['list'][0]['text'], "Texto em dict")
+
+    def test_extract_map_with_malformed_pages_or_list(self):
+        # Eventos com pages que não são listas ou listas que não são listas
+        data = {
+            "events": [
+                None,
+                {"id": 1, "pages": False},
+                {"id": 2, "pages": [{"id": 0, "list": None}]},
+                {"id": 3, "pages": [{"id": 0, "list": [False, {"code": 401, "parameters": ["Ok"], "indent": 0}]}]}
+            ]
+        }
+    def test_comments_are_not_extracted(self):
+        # Códigos 108 (Comment) e 408 (Comment continuation) são anotações internas
+        # e metadados de plugins (ex: MOG Chrono Engine). Devem ser ignorados.
+        data = {
+            "events": [
+                None,
+                {
+                    "id": 1,
+                    "pages": [
+                        {
+                            "id": 0,
+                            "list": [
+                                {"code": 108, "parameters": ["tool_duration : 15"], "indent": 0},
+                                {"code": 408, "parameters": ["tool_position : user"], "indent": 0},
+                                {"code": 108, "parameters": ["enemy_id : 73"], "indent": 0},
+                                {"code": 401, "parameters": ["Texto de diálogo real"], "indent": 0},
+                                {"code": 0, "parameters": [], "indent": 0}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        result = self.extractor.extract_text("Map001.json", data)
+        self.assertEqual(len(result), 1)
+        # Apenas o código 401 deve ser extraído, ignorando 108 e 408
+        self.assertEqual(len(result[0]['pages'][0]['list']), 1)
+        self.assertEqual(result[0]['pages'][0]['list'][0]['text'], "Texto de diálogo real")
+
+    def test_system_json_does_not_extract_switches(self):
+        system_data = {
+            "gameTitle": "Meu Jogo",
+            "currencyUnit": "G",
+            "switches": ["", "Debug Switch", "Intro Completed", "Boss Defeated"],
+            "armorTypes": ["", "Escudo", "Capacete"],
+            "elements": ["", "Fogo", "Gelo"]
+        }
+        extracted = self.extractor.extract_text_System(system_data)
+        self.assertNotIn("switches", extracted)
+        self.assertIn("gameTitle", extracted)
+        self.assertIn("currencyUnit", extracted)
+        self.assertIn("armorTypes", extracted)
+        self.assertIn("elements", extracted)
+
+    def test_picture_tag_is_masked(self):
+        patterns = self.extractor.get_mask_patterns()
+        format_code_pattern = patterns[0]
+        self.assertTrue(bool(format_code_pattern.search(r"\picture[yes]")))
+        self.assertTrue(bool(format_code_pattern.search(r"\picture[no]")))
+        self.assertTrue(bool(format_code_pattern.search(r"\C[1]")))
+        self.assertTrue(bool(format_code_pattern.search(r"\V[100]")))
+
+    def test_pure_picture_choices_are_not_extracted(self):
+        data = {
+            "events": [
+                None,
+                {
+                    "id": 1,
+                    "pages": [
+                        {
+                            "id": 0,
+                            "list": [
+                                {"code": 102, "parameters": [[r"\picture[yes]", r"\picture[no]"], -1, 0, 2, 0], "indent": 0},
+                                {"code": 402, "parameters": [0, r"\picture[yes]"], "indent": 0},
+                                {"code": 402, "parameters": [1, r"\picture[no]"], "indent": 0},
+                                {"code": 0, "parameters": [], "indent": 0}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        result = self.extractor.extract_text("Map001.json", data)
+        # Nenhuma escolha pura de imagem deve ser extraída para tradução
+        self.assertEqual(len(result), 0)
+
+    def test_mixed_choices_preserve_picture_tags_on_insert(self):
+        data = {
+            "events": [
+                None,
+                {
+                    "id": 1,
+                    "pages": [
+                        {
+                            "id": 0,
+                            "list": [
+                                {"code": 102, "parameters": [[r"\picture[yes]", "Option Two"], -1, 0, 2, 0], "indent": 0},
+                                {"code": 0, "parameters": [], "indent": 0}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        result = self.extractor.extract_text("Map001.json", data)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['pages'][0]['list'][0]['text'], [r"\picture[yes]", "Option Two"])
+
+        translated_data = [
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "id": 0,
+                        "list": [
+                            {"id": 0, "text": [r"\picture[yes]", "Opção Dois"]}
+                        ]
+                    }
+                ]
+            }
+        ]
+        updated = self.extractor.update_json("Map001.json", data, translated_data)
+        updated_choices = updated['events'][1]['pages'][0]['list'][0]['parameters'][0]
+        self.assertEqual(updated_choices[0], r"\picture[yes]")
+        self.assertEqual(updated_choices[1], "Opção Dois")
+
 if __name__ == '__main__':
     unittest.main()
+
+

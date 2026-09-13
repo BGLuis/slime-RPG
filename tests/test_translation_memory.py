@@ -125,3 +125,26 @@ def test_reads_see_committed_writes_from_another_thread(tm):
 
     assert seen['lookup'] == 'v'
     assert seen['bulk'] == {'K': 'v'}
+
+
+def test_store_rejects_identical_machine_translation_when_languages_differ(tm):
+    # 'en' != 'pt', status='machine' -> não deve salvar
+    tm.store('Apple', 'Apple', status='machine')
+    assert tm.lookup('Apple') is None
+
+    # status='reviewed' -> deve permitir salvar
+    tm.store('Apple', 'Apple', status='reviewed')
+    assert tm.lookup('Apple') == 'Apple'
+
+
+def test_store_many_rejects_identical_machine_translation_when_languages_differ(tm):
+    tm.store_many([
+        ('Apple', 'Apple'),
+        ('Banana', 'Banana'),
+        ('Orange', 'Laranja')
+    ], status='machine')
+
+    assert tm.lookup('Apple') is None
+    assert tm.lookup('Banana') is None
+    assert tm.lookup('Orange') == 'Laranja'
+

@@ -81,15 +81,17 @@ class ChoiceStrategy(EventStrategy):
         choices = item['parameters'][0]
         if not choices: return None
         
+        has_translatable = False
         extracted = []
         for choice in choices:
             choice = choice.strip()
             match = self._choice_condition_pattern.match(choice)
             choice_text = choice[match.end():] if match else choice
+            extracted.append(choice_text)
             if not RPGTextFilters.is_technical_or_code(choice_text):
-                extracted.append(choice_text)
+                has_translatable = True
         
-        return extracted if extracted else None
+        return extracted if has_translatable else None
 
     def insert(self, item, text, context=None):
         if not text or not isinstance(text, list): return
@@ -100,7 +102,10 @@ class ChoiceStrategy(EventStrategy):
         for orig, trans in zip(original_list, text):
             orig_clean = orig.strip()
             match = self._choice_condition_pattern.match(orig_clean)
-            if match:
+            choice_text = orig_clean[match.end():] if match else orig_clean
+            if RPGTextFilters.is_technical_or_code(choice_text):
+                final_list.append(orig)
+            elif match:
                 prefix = match.group(0).rstrip()
                 final_list.append(prefix + str(trans).strip())
             else:
@@ -120,66 +125,211 @@ class ChoiceBranchStrategy(EventStrategy):
         if not text: return
         params = item.get('parameters', [])
         if len(params) > 1:
-            item['parameters'][1] = str(text)
+            if not RPGTextFilters.is_technical_or_code(params[1]):
+                item['parameters'][1] = str(text)
 
 class ScriptStrategy(EventStrategy):
     _quote_pattern = re.compile(r"'.*?'|\".*?\"")
     _subject_pattern = re.compile(r'\d_t=\d{2,}_subject=')
-    
+    _om_pattern = re.compile(
+        r"\$gameScreen\.OriginalMessage\s*\(\s*(['\"])((?:\\.|(?!\1).)*)\1\s*,\s*(['\"])((?:\\.|(?!\3).)*)\3",
+        re.IGNORECASE
+    )
+
     # SAFELIST: Só extrair de funções conhecidas
     SAFE_FUNCTIONS = [
-        re.compile(r"(?:\$gameMessage\.add|BattleManager\._logWindow\.push\('addText',|this\.addCommand|this\.setHelpWindowText)\s*\(\s*(['\"])(.*?)\1", re.IGNORECASE),
-        re.compile(r"(?:mes|text)\s*=\s*(['\"])(.*?)\1", re.IGNORECASE)
+        re.compile(r"(?:\$gameMessage\.add|BattleManager\._logWindow\.push\('addText',|this\.addCommand|this\.setHelpWindowText|TickerManager\.show)\s*\(\s*(['\"])((?:\\.|(?!\1).)*)\1", re.IGNORECASE),
+        re.compile(r"(?:mes|text)\s*=\s*(['\"])((?:\\.|(?!\1).)*)\1", re.IGNORECASE)
     ]
 
-    def extract(self, item, context=None):
-        script_content = item['parameters'][0]
-        if not isinstance(script_content, str): return None
-        
+    @classmethod
+    def extract_script_string(cls, script_content):
+        if not isinstance(script_content, str):
+            return []
+
         extracted = []
-        for pattern in self.SAFE_FUNCTIONS:
+        # 1. $gameScreen.OriginalMessage("nome", "mensagem", tipo, pos)
+        for match in cls._om_pattern.finditer(script_content):
+            name = match.group(2)
+            msg = match.group(4)
+            if not RPGTextFilters.is_technical_or_code(name):
+                extracted.append(name)
+            if not RPGTextFilters.is_technical_or_code(msg):
+                extracted.append(msg)
+
+        # 2. Funções seguras de parâmetro único
+        for pattern in cls.SAFE_FUNCTIONS:
             for match in pattern.finditer(script_content):
                 text = match.group(2)
                 if not RPGTextFilters.is_technical_or_code(text):
                     extracted.append(text)
-        
-        if not extracted and self._subject_pattern.search(script_content):
+
+        # 3. Padrão de subject
+        if not extracted and cls._subject_pattern.search(script_content):
             extract_text = script_content.split('_subject=')[1].strip('"')
             if not RPGTextFilters.is_technical_or_code(extract_text):
                 extracted.append(extract_text)
 
-        if not extracted: return None
-        return extracted[0] if len(extracted) == 1 else extracted
+        return extracted
 
-    def insert(self, item, text, context=None):
-        if not text: return
-        script_content = item['parameters'][0]
-        
-        if isinstance(text, list):
-            text_iter = iter(text)
-        else:
-            text_iter = iter([str(text)] * 100) # Infinite-like fallback
+    @classmethod
+    def _sanitize_script_param(cls, text, quote_char):
+        if not isinstance(text, str):
+            return text
+        s = text.strip()
+        # Normalizar aspas tipográficas curvas
+        s = s.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+        # Remover aspas externas redundantes inseridas pelo tradutor
+        while len(s) >= 2 and ((s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")):
+            s = s[1:-1].strip()
+        # Escapar aspas internas para não quebrar a sintaxe do JavaScript
+        if quote_char == '"':
+            s = re.sub(r'(?<!\\)"', r'\"', s)
+        elif quote_char == "'":
+            s = re.sub(r"(?<!\\)'", r"\'", s)
+        return s
 
-        found = False
-        for pattern in self.SAFE_FUNCTIONS:
+    @classmethod
+    def insert_script_string(cls, script_content, text_iter):
+        if not isinstance(script_content, str):
+            return script_content
+
+        # 1. $gameScreen.OriginalMessage
+        if cls._om_pattern.search(script_content):
+            def replacer_om(m):
+                q1, name = m.group(1), m.group(2)
+                q2, msg = m.group(3), m.group(4)
+                new_name = name
+                new_msg = msg
+                if not RPGTextFilters.is_technical_or_code(name):
+                    try:
+                        new_name = str(next(text_iter))
+                    except StopIteration:
+                        new_name = name
+                if not RPGTextFilters.is_technical_or_code(msg):
+                    try:
+                        new_msg = str(next(text_iter))
+                    except StopIteration:
+                        new_msg = msg
+                new_name = cls._sanitize_script_param(new_name, q1)
+                new_msg = cls._sanitize_script_param(new_msg, q2)
+                prefix_call = m.group(0)[:m.start(1) - m.start(0)]
+                return f"{prefix_call}{q1}{new_name}{q1}, {q2}{new_msg}{q2}"
+
+            script_content = cls._om_pattern.sub(replacer_om, script_content)
+
+        # 2. Funções seguras de parâmetro único
+        for pattern in cls.SAFE_FUNCTIONS:
             if pattern.search(script_content):
                 def replacer(m):
+                    target_text = m.group(2)
+                    quote_char = m.group(1)
+                    if RPGTextFilters.is_technical_or_code(target_text):
+                        return m.group(0)
                     try:
                         next_text = str(next(text_iter))
                     except StopIteration:
-                        next_text = m.group(2) # Fallback to original if ran out
-                    return m.group(0).replace(m.group(2), next_text)
-                
-                item['parameters'][0] = pattern.sub(replacer, script_content)
-                found = True
-                break
-        
-        if not found and self._subject_pattern.search(script_content):
+                        next_text = target_text
+                    next_text = cls._sanitize_script_param(next_text, quote_char)
+                    return m.group(0)[:m.start(2) - m.start(0)] + next_text + m.group(0)[m.end(2) - m.start(0):]
+
+                script_content = pattern.sub(replacer, script_content)
+
+        # 3. Padrão de subject
+        if cls._subject_pattern.search(script_content):
             parts = script_content.split('_subject=')
             if len(parts) > 1:
-                next_text = str(next(text_iter)) if isinstance(text, list) else str(text)
+                try:
+                    next_text = str(next(text_iter))
+                except StopIteration:
+                    next_text = parts[1].strip('"')
                 parts[1] = f'{next_text}"'
-                item['parameters'][0] = '_subject='.join(parts)
+                script_content = '_subject='.join(parts)
+
+        return script_content
+
+    def extract(self, item, context=None):
+        params = item.get('parameters', [])
+        script_content = params[0] if params else None
+        extracted = self.extract_script_string(script_content)
+        if not extracted:
+            return None
+        return extracted[0] if len(extracted) == 1 else extracted
+
+    def insert(self, item, text, context=None):
+        if not text:
+            return
+        params = item.get('parameters', [])
+        if not params:
+            return
+        text_iter = iter(text) if isinstance(text, list) else iter([str(text)])
+        item['parameters'][0] = self.insert_script_string(params[0], text_iter)
+
+
+class MovementRouteStrategy(EventStrategy):
+    """Estratégia para comando 205 (SET_MOVEMENT_ROUTE).
+    parameters = [targetId, routeObject] onde routeObject['list'] contém passos de rota.
+    Passo com código 45 é script (ex: TickerManager.show).
+    """
+    def extract(self, item, context=None):
+        params = item.get('parameters', [])
+        if len(params) < 2 or not isinstance(params[1], dict):
+            return None
+        route_list = params[1].get('list', [])
+        extracted = []
+        for step in route_list:
+            if isinstance(step, dict) and step.get('code') == 45:
+                step_params = step.get('parameters', [])
+                if step_params and isinstance(step_params[0], str):
+                    extracted.extend(ScriptStrategy.extract_script_string(step_params[0]))
+        if not extracted:
+            return None
+        return extracted[0] if len(extracted) == 1 else extracted
+
+    def insert(self, item, text, context=None):
+        if not text:
+            return
+        params = item.get('parameters', [])
+        if len(params) < 2 or not isinstance(params[1], dict):
+            return
+        route_list = params[1].get('list', [])
+        text_iter = iter(text) if isinstance(text, list) else iter([str(text)])
+        for step in route_list:
+            if isinstance(step, dict) and step.get('code') == 45:
+                step_params = step.get('parameters', [])
+                if step_params and isinstance(step_params[0], str):
+                    step['parameters'][0] = ScriptStrategy.insert_script_string(step_params[0], text_iter)
+
+
+class RouteStepStrategy(EventStrategy):
+    """Estratégia para comando 505 (ROUTE_STEP).
+    parameters = [stepObject] onde stepObject['code'] == 45 é script.
+    """
+    def extract(self, item, context=None):
+        params = item.get('parameters', [])
+        if not params or not isinstance(params[0], dict):
+            return None
+        step = params[0]
+        if step.get('code') == 45:
+            step_params = step.get('parameters', [])
+            if step_params and isinstance(step_params[0], str):
+                extracted = ScriptStrategy.extract_script_string(step_params[0])
+                if extracted:
+                    return extracted[0] if len(extracted) == 1 else extracted
+        return None
+
+    def insert(self, item, text, context=None):
+        if not text:
+            return
+        params = item.get('parameters', [])
+        if not params or not isinstance(params[0], dict):
+            return
+        step = params[0]
+        if step.get('code') == 45:
+            step_params = step.get('parameters', [])
+            if step_params and isinstance(step_params[0], str):
+                text_iter = iter(text) if isinstance(text, list) else iter([str(text)])
+                step['parameters'][0] = ScriptStrategy.insert_script_string(step_params[0], text_iter)
 
 class PluginStrategyMZ(EventStrategy):
     TECHNICAL_KEYS = {
@@ -253,3 +403,83 @@ class PluginStrategyMV(EventStrategy):
                 prefix = match.group(0)
                 item['parameters'][0] = f'{prefix} {text}'
                 break
+
+
+class ControlVariablesStrategy(EventStrategy):
+    """
+    Estratégia para o código 122 (Control Variables).
+    No RPG Maker, o comando 122 opera variáveis. Quando params[3] == 4, o valor (params[4])
+    é uma expressão JavaScript avaliada com eval().
+
+    Regras de Segurança:
+    1. Expressões técnicas, enums de dificuldade ("Easy", "Normal", "Hard") ou código puro não são extraídos.
+    2. Literais de texto (entre aspas simples, duplas ou backticks) têm apenas o conteúdo interno extraído.
+    3. Na inserção, aspas tipográficas (smart quotes “ ” ‘ ’) são estritamente convertidas para aspas ASCII
+       para nunca quebrar o eval() do JavaScript com 'SyntaxError: Invalid or unexpected token'.
+    """
+    _DIFFICULTY_ENUM_PATTERN = re.compile(
+        r'^[\'"]?\s*(?:easy|normal|hard|very\s*hard|expert|nightmare|hell|beginner|insane|lunatic)\s*[\'"]?;?$',
+        re.IGNORECASE
+    )
+
+    def extract(self, item, context=None):
+        params = item.get('parameters', [])
+        if len(params) < 5 or params[3] != 4:
+            return None
+        val = params[4]
+        if not isinstance(val, str) or not val.strip():
+            return None
+
+        # Não extrair se for enum de dificuldade ou código técnico
+        if self._DIFFICULTY_ENUM_PATTERN.match(val.strip()):
+            return None
+        if RPGTextFilters.is_technical_or_code(val) or RPGTextFilters.is_numeric(val) or RPGTextFilters.is_boolean(val):
+            return None
+
+        # Se for string entre aspas: '"texto"' ou "'texto'" ou '`texto`'
+        trimmed = val.strip().rstrip(';')
+        if (trimmed.startswith('"') and trimmed.endswith('"') and len(trimmed) >= 2) or \
+           (trimmed.startswith("'") and trimmed.endswith("'") and len(trimmed) >= 2) or \
+           (trimmed.startswith('`') and trimmed.endswith('`') and len(trimmed) >= 2):
+            inner = trimmed[1:-1]
+            if not RPGTextFilters.is_technical_or_code(inner):
+                return inner
+            return None
+
+        return val
+
+    def insert(self, item, text, context=None):
+        if text is None:
+            return
+        params = item.get('parameters', [])
+        if len(params) < 5 or params[3] != 4:
+            return
+
+        orig_val = params[4] if isinstance(params[4], str) else ""
+        text_str = str(text)
+        # Sanitizar aspas tipográficas (smart quotes) imediatamente
+        text_str = text_str.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+
+        trimmed = orig_val.strip().rstrip(';')
+        has_semicolon = orig_val.strip().endswith(';')
+
+        if trimmed.startswith('"') and trimmed.endswith('"') and len(trimmed) >= 2:
+            quote = '"'
+            inner = text_str.strip()
+            if inner.startswith(quote) and inner.endswith(quote) and len(inner) >= 2:
+                inner = inner[1:-1]
+            params[4] = f'{quote}{inner}{quote}' + (';' if has_semicolon else '')
+        elif trimmed.startswith("'") and trimmed.endswith("'") and len(trimmed) >= 2:
+            quote = "'"
+            inner = text_str.strip()
+            if inner.startswith(quote) and inner.endswith(quote) and len(inner) >= 2:
+                inner = inner[1:-1]
+            params[4] = f'{quote}{inner}{quote}' + (';' if has_semicolon else '')
+        elif trimmed.startswith('`') and trimmed.endswith('`') and len(trimmed) >= 2:
+            quote = '`'
+            inner = text_str.strip()
+            if inner.startswith(quote) and inner.endswith(quote) and len(inner) >= 2:
+                inner = inner[1:-1]
+            params[4] = f'{quote}{inner}{quote}' + (';' if has_semicolon else '')
+        else:
+            params[4] = text_str

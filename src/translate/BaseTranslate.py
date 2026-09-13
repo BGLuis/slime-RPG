@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 import copy
 import os
+import logging
 import threading
+import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.translate.TranslationMemory import TranslationMemory
@@ -29,7 +31,20 @@ class BaseTranslate(ABC):
         with BaseTranslate._request_semaphore_lock:
             sem = BaseTranslate._request_semaphores.get(cls.__name__)
             if sem is None:
-                limit = int(os.environ.get('TRANSLATE_MAX_CONCURRENT_REQUESTS', cls.MAX_REQUESTS_SIMULTANEOUSLY))
+                base_limit = cls.MAX_REQUESTS_SIMULTANEOUSLY
+                if cls.__name__ == 'GoogleTranslate':
+                    try:
+                        from src.services.ProxyManager import ProxyManager
+                        pm = ProxyManager.get_instance()
+                        if pm.enabled and pm.direct_blocked:
+                            pool_size = pm.get_pool_size()
+                            if pool_size > 0:
+                                req_per_proxy = int(os.environ.get('REQUESTS_PER_PROXY', '1'))
+                                base_limit = max(cls.MAX_REQUESTS_SIMULTANEOUSLY, min(16, pool_size * req_per_proxy))
+                    except Exception:
+                        pass
+
+                limit = int(os.environ.get('TRANSLATE_MAX_CONCURRENT_REQUESTS', base_limit))
                 sem = threading.Semaphore(max(1, limit))
                 BaseTranslate._request_semaphores[cls.__name__] = sem
             return sem
@@ -126,28 +141,47 @@ class BaseTranslate(ABC):
         Default implementation: chunks texts based on char_limit.
         Can be overridden by subclasses if different batching logic is needed.
         """
-        import src.utils.TextsUtils as TextsUtils
         batches = []
         current_batch = []
         current_length = 0
 
         for text in texts:
-            text_unicode = TextsUtils.convert_special_chars_to_unicode(text)
-            text_limiter = text_unicode + self.delimiter
+            text_len = len(text) + len(self.delimiter)
             
             # If adding this text exceeds the limit and we have a non-empty batch, start a new one
-            if current_length + len(text_limiter) >= self.char_limit and current_batch:
+            if current_length + text_len >= self.char_limit and current_batch:
                 batches.append(current_batch)
                 current_batch = []
                 current_length = 0
             
             current_batch.append(text)
-            current_length += len(text_limiter)
+            current_length += text_len
 
         if current_batch:
             batches.append(current_batch)
             
         return batches
+
+    @staticmethod
+    def _report_progress(progress_callback, current, total, eta_seconds=None, msg=None):
+        if not progress_callback:
+            return
+        import inspect
+        try:
+            sig = inspect.signature(progress_callback)
+            params = sig.parameters
+            has_msg = 'msg' in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+            if has_msg and msg is not None:
+                progress_callback(current, total, eta_seconds, msg=msg)
+            elif len(params) >= 3 or any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params.values()):
+                progress_callback(current, total, eta_seconds)
+            else:
+                progress_callback(current, total)
+        except Exception:
+            try:
+                progress_callback(current, total, eta_seconds)
+            except Exception:
+                pass
 
     def translate_batch_parallel(self, batches, progress_callback=None):
         import time
@@ -172,21 +206,37 @@ class BaseTranslate(ABC):
             }
 
             completed = 0
+            fatal_error = None
             for future in as_completed(future_to_index):
                 batch_idx = future_to_index[future]
                 try:
                     translated_batches[batch_idx] = future.result()
                 except Exception as e:
                     translated_batches[batch_idx] = None
-                    print(f"Error translating batch {batch_idx}: {e}")
-                
+                    err_name = type(e).__name__.lower()
+                    err_str = str(e).lower()
+                    is_fatal = (
+                        isinstance(e, RecursionError)
+                        or "recursion" in err_name
+                        or "429" in err_str
+                        or "toomanyrequests" in err_name
+                        or "bloqueado pelo google" in err_str
+                    )
+                    if is_fatal and fatal_error is None:
+                        fatal_error = e
+                    logging.warning(f"Erro ao traduzir lote {batch_idx + 1}/{len(batches)}: {e}")
+
                 completed += 1
                 if progress_callback:
                     elapsed = time.time() - start_time
-                    avg_time = elapsed / completed
+                    avg_time = elapsed / completed if completed > 0 else 0
                     remaining = len(batches) - completed
                     eta = avg_time * remaining
-                    progress_callback(completed, len(batches), eta)
+                    self._report_progress(progress_callback, completed, len(batches), eta)
+
+        # Se todos os lotes falharam e tivemos erro fatal de conexão/rate-limit/recursão, propaga diretamente
+        if fatal_error is not None and all(b is None for b in translated_batches):
+            raise fatal_error
 
         return translated_batches
 
@@ -227,7 +277,7 @@ class BaseTranslate(ABC):
         # Se todos os textos já estavam no cache ou são vazios/None, encerra sem processar lotes
         if not non_cached_indices:
             if progress_callback:
-                progress_callback(1, 1, 0)
+                self._report_progress(progress_callback, 1, 1, 0)
             for index in none_indices:
                 translated_texts[index] = None
             return translated_texts
@@ -247,7 +297,12 @@ class BaseTranslate(ABC):
             original_batch = batches[batch_idx]
             if batch_result is None or len(batch_result) != len(original_batch):
                 safe_results = []
-                for text in original_batch:
+                total_items = len(original_batch)
+                for item_idx, text in enumerate(original_batch):
+                    if progress_callback:
+                        fallback_msg = f"Recuperando lote {batch_idx + 1}/{len(batches)} (item {item_idx + 1}/{total_items})"
+                        self._report_progress(progress_callback, batch_idx + 1, len(batches), None, msg=fallback_msg)
+
                     if len(text) > self.char_limit:
                         # Chunk oversized strings to avoid persistent >5000 character errors
                         pieces = [text[j:j+self.char_limit] for j in range(0, len(text), self.char_limit)]
@@ -257,7 +312,13 @@ class BaseTranslate(ABC):
                                 with semaphore:
                                     t = self._translate_single_batch([p])
                                 translated_pieces.append(t[0] if t else p)
-                            except Exception:
+                            except Exception as e:
+                                err_name = type(e).__name__.lower()
+                                err_str = str(e).lower()
+                                if (isinstance(e, (requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError, RecursionError))
+                                        or "429" in err_str or "toomanyrequests" in err_name or "request" in err_name or "recursion" in err_name
+                                        or "bloqueado pelo google" in err_str):
+                                    raise
                                 translated_pieces.append(p)
                         safe_results.append("".join(translated_pieces))
                     else:
@@ -265,11 +326,20 @@ class BaseTranslate(ABC):
                             with semaphore:
                                 single = self._translate_single_batch([text])
                             safe_results.append(single[0] if single else text)
-                        except Exception:
+                        except Exception as e:
+                            err_name = type(e).__name__.lower()
+                            err_str = str(e).lower()
+                            if (isinstance(e, (requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError, RecursionError))
+                                    or "429" in err_str or "toomanyrequests" in err_name or "request" in err_name or "recursion" in err_name
+                                    or "bloqueado pelo google" in err_str):
+                                raise
                             safe_results.append(text)
                 translated_results.extend(safe_results)
             else:
                 translated_results.extend(batch_result)
+
+        if progress_callback:
+            self._report_progress(progress_callback, len(batches), len(batches), 0, msg="Gravando cache e finalizando...")
 
         # 4. Mapear resultados únicos e salvar no cache
         unique_to_translated = {}
@@ -283,6 +353,8 @@ class BaseTranslate(ABC):
         storable = [
             (k, v) for k, v in unique_to_translated.items()
             if isinstance(k, str) and k.strip()
+            and "__xtok_" not in k.lower() and "__xtok_" not in str(v).lower()
+            and not (self.lang_source != self.lang_target and k.strip() == v.strip())
         ]
         if hasattr(self.cache, 'store_many'):
             self.cache.store_many(storable)

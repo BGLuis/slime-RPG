@@ -47,7 +47,7 @@ def migrate():
             if target is None:
                 skipped_null += 1
                 continue
-            tm.store(source, target, status='machine')
+            tm.store(source, target, status='machine', allow_identity=True)
             imported += 1
             file_imported += 1
             if source == target:

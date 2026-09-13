@@ -124,11 +124,12 @@ class TranslationStep(PipelineStep):
         if getattr(context, 'all_cached', False):
             return context
 
-        def progress_callback(current, total, eta_seconds=None):
-            msg = f"Translating batch {current}/{total}"
-            if eta_seconds is not None:
-                mins, secs = divmod(int(eta_seconds), 60)
-                msg += f" - ETA: {mins}m {secs}s"
+        def progress_callback(current, total, eta_seconds=None, msg=None):
+            if msg is None:
+                msg = f"Translating batch {current}/{total}"
+                if eta_seconds is not None:
+                    mins, secs = divmod(int(eta_seconds), 60)
+                    msg += f" - ETA: {mins}m {secs}s"
             
             if context.extractor:
                 context.extractor.add_threads_status({
@@ -209,10 +210,14 @@ class CacheStoreStep(PipelineStep):
             # 1. Salvar no cache apenas textos limpos e finalizados (texto original -> texto traduzido e corrigido)
             if context.translate_instance and hasattr(context.translate_instance, 'cache'):
                 cache = context.translate_instance.cache
+                lang_src = getattr(context.translate_instance, 'lang_source', None)
+                lang_tgt = getattr(context.translate_instance, 'lang_target', None)
                 pairs = [
                     (orig, fixed)
                     for orig, fixed in zip(context.pending_originals, context.fixed_pending)
                     if isinstance(orig, str) and orig.strip() and fixed is not None
+                    and "__xtok_" not in orig.lower() and "__xtok_" not in str(fixed).lower()
+                    and not (lang_src and lang_tgt and lang_src != lang_tgt and orig.strip() == fixed.strip())
                 ]
                 if hasattr(cache, 'store_many'):
                     cache.store_many(pairs)

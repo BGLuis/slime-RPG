@@ -6,7 +6,8 @@ from .RPGEventCodes import RPGEventCode
 from .RPGTextFilters import RPGTextFilters
 from .RPGEventStrategy import (
     ShowTextStrategy, ChoiceStrategy, ChoiceBranchStrategy, ScriptStrategy,
-    PluginStrategyMZ, PluginStrategyMV
+    PluginStrategyMZ, PluginStrategyMV, ControlVariablesStrategy,
+    MovementRouteStrategy, RouteStepStrategy
 )
 from src.factory import register_extractor
 
@@ -19,8 +20,6 @@ class RPGMakerExtractor(BaseExtractor):
         self._strategies = {
             RPGEventCode.SHOW_TEXT: ShowTextStrategy(),
             RPGEventCode.SHOW_TEXT_MORE: ShowTextStrategy(),
-            RPGEventCode.SCROLL_TEXT: ShowTextStrategy(),
-            RPGEventCode.COMMENT: ShowTextStrategy(),
             RPGEventCode.SHOW_CHOICES: ChoiceStrategy(),
             RPGEventCode.SCRIPT: ScriptStrategy(),
             RPGEventCode.SCRIPT_MORE: ScriptStrategy(),
@@ -30,31 +29,34 @@ class RPGMakerExtractor(BaseExtractor):
             # do ator são texto visível ao jogador, não dado interno.
             RPGEventCode.CHANGE_NICKNAME: ShowTextStrategy(),
             RPGEventCode.CHANGE_PROFILE: ShowTextStrategy(),
-            RPGEventCode.CONTROL_VARIABLES: ShowTextStrategy(),
+            RPGEventCode.CONTROL_VARIABLES: ControlVariablesStrategy(),
             RPGEventCode.PLUGIN_COMMAND_MV: PluginStrategyMV(),
             RPGEventCode.PLUGIN_COMMAND_MZ: PluginStrategyMZ(),
             RPGEventCode.CHOICE_BRANCH: ChoiceBranchStrategy(),
-            # LABEL (118) fica de propósito sem strategy: é um identificador interno de
-            # salto (ex: "loop_start", "end", "nochannel"), não texto de jogador.
+            RPGEventCode.SET_MOVEMENT_ROUTE: MovementRouteStrategy(),
+            RPGEventCode.ROUTE_STEP: RouteStepStrategy(),
+            # LABEL (118), COMMENT (108) e COMMENT_MORE (408) ficam de propósito sem strategy:
+            # são identificadores internos de salto, anotações de dev e diretivas de plugins
+            # (ex: MOG Chrono Engine, Yanfly, tags de colisão, IDs de ferramentas/ações),
+            # nunca texto visível ao jogador. Traduzi-los corrompe mecânicas e sistemas de batalha.
         }
 
     def apply_configuration(self, config):
         pass
 
     def get_mask_patterns(self, file_name=None, data=None):
-        p_format_codes = re.compile(r'\\[A-Za-z]{1,3}\s*\[[^\]]*\]', re.IGNORECASE)
+        p_format_codes = re.compile(r'\\[A-Za-z]+\s*\[[^\]]*\]', re.IGNORECASE)
         game_keys = ['variables', 'switches', 'party', 'actors', 'player', 'map', 'system', 'screen', 'timer', 'message', 'temp', 'troop', 'interpreter']
-        p_game = re.compile(r'\$game(' + '|'.join(game_keys) + r')\b', re.IGNORECASE)
-        p_bracket_vars = re.compile(r'!?(?<!\\)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\]', re.IGNORECASE)
-        p_if_condition = re.compile(r'if\s*\(\s*!?\s*[A-Za-z]{1,2}\s*\[\s*\d+\s*\]\s*\)', re.IGNORECASE)
-        p_lang_wrapper = re.compile(r'\b(?:en|pt|ja|es|fr)\s*\([^)]+\)', re.IGNORECASE)
+        p_game = re.compile(r'\$game(?:' + '|'.join(game_keys) + r')\b', re.IGNORECASE)
+        p_condition = re.compile(r'(?<![a-zA-Z0-9_])(?:if|en|pt|ja|es|fr|show_if|hide_if)\s*\([^)]+\)', re.IGNORECASE)
+        p_bracket_vars = re.compile(r'!?(?<!\\)(?<![a-zA-Z0-9_])[A-Za-z]{1,2}\s*\[\s*\d+\s*\]', re.IGNORECASE)
         p_boolean_literals = re.compile(r'\b(?:true|false|null|undefined|NaN)\b', re.IGNORECASE)
         p_operators = re.compile(r'(?:&&|\|\||>=|<=|!==|===|!=|==)')
         p_dollar_camel = re.compile(r'\$\s*[a-z]+[A-Z][a-zA-Z]*')
         p_html_tags = re.compile(r'</?[a-zA-Z][a-zA-Z0-9]*(?:\s+[^>]*)?/?>', re.IGNORECASE)
         p_technical_values = re.compile(r'^(?:Yes|No|OK|Cancel|end|start|stop|play|pause|nochannel|channel)$', re.IGNORECASE)
 
-        return [p_format_codes, p_game, p_bracket_vars, p_if_condition, p_lang_wrapper, p_boolean_literals, p_operators, p_dollar_camel, p_html_tags, p_technical_values]
+        return [p_format_codes, p_game, p_condition, p_bracket_vars, p_boolean_literals, p_operators, p_dollar_camel, p_html_tags, p_technical_values]
 
     @staticmethod
     def ignore_text(text):
@@ -76,23 +78,61 @@ class RPGMakerExtractor(BaseExtractor):
             strategy.insert(item, list_item['text'])
 
     def _yield_commands(self, data, file_type):
+        if not isinstance(data, (dict, list)):
+            return
+
         if file_type == 'Map':
-            for event in data.get('events', []):
-                if not event: continue
-                for page_idx, page in enumerate(event.get('pages', [])):
-                    for cmd_idx, cmd in enumerate(page.get('list', [])):
-                        yield (event['id'], page_idx, cmd_idx, cmd)
+            if not isinstance(data, dict):
+                return
+            events = data.get('events')
+            if isinstance(events, list):
+                for event in events:
+                    if not event or not isinstance(event, dict): continue
+                    pages = event.get('pages')
+                    if not isinstance(pages, list): continue
+                    for page_idx, page in enumerate(pages):
+                        if not isinstance(page, dict): continue
+                        cmd_list = page.get('list')
+                        if not isinstance(cmd_list, list): continue
+                        for cmd_idx, cmd in enumerate(cmd_list):
+                            if isinstance(cmd, dict):
+                                yield (event.get('id'), page_idx, cmd_idx, cmd)
+            elif isinstance(events, dict):
+                for event_id, event in events.items():
+                    if not event or not isinstance(event, dict): continue
+                    pages = event.get('pages')
+                    if not isinstance(pages, list): continue
+                    for page_idx, page in enumerate(pages):
+                        if not isinstance(page, dict): continue
+                        cmd_list = page.get('list')
+                        if not isinstance(cmd_list, list): continue
+                        for cmd_idx, cmd in enumerate(cmd_list):
+                            if isinstance(cmd, dict):
+                                yield (event.get('id', event_id), page_idx, cmd_idx, cmd)
         elif file_type == 'CommonEvents':
+            if not isinstance(data, list):
+                return
             for event in data:
-                if not event: continue
-                for cmd_idx, cmd in enumerate(event.get('list', [])):
-                    yield (event['id'], None, cmd_idx, cmd)
+                if not event or not isinstance(event, dict): continue
+                cmd_list = event.get('list')
+                if not isinstance(cmd_list, list): continue
+                for cmd_idx, cmd in enumerate(cmd_list):
+                    if isinstance(cmd, dict):
+                        yield (event.get('id'), None, cmd_idx, cmd)
         elif file_type == 'Troops':
+            if not isinstance(data, list):
+                return
             for troop in data:
-                if not troop: continue
-                for page_idx, page in enumerate(troop.get('pages', [])):
-                    for cmd_idx, cmd in enumerate(page.get('list', [])):
-                        yield (troop['id'], page_idx, cmd_idx, cmd)
+                if not troop or not isinstance(troop, dict): continue
+                pages = troop.get('pages')
+                if not isinstance(pages, list): continue
+                for page_idx, page in enumerate(pages):
+                    if not isinstance(page, dict): continue
+                    cmd_list = page.get('list')
+                    if not isinstance(cmd_list, list): continue
+                    for cmd_idx, cmd in enumerate(cmd_list):
+                        if isinstance(cmd, dict):
+                            yield (troop.get('id'), page_idx, cmd_idx, cmd)
 
     def extract_text_map(self, data):
         results = []
@@ -114,14 +154,22 @@ class RPGMakerExtractor(BaseExtractor):
         return results
 
     def insert_text_map(self, data, translated_data):
+        if not isinstance(data, dict):
+            return
+        events = data.get('events')
+        if not isinstance(events, (list, dict)):
+            return
         for event_data in translated_data:
             event_id = event_data['id']
             for page_data in event_data['pages']:
                 page_id = page_data['id']
                 for list_item in page_data['list']:
                     cmd_id = list_item['id']
-                    cmd = data['events'][event_id]['pages'][page_id]['list'][cmd_id]
-                    self.insert_text_map_item(cmd, list_item)
+                    try:
+                        cmd = events[event_id]['pages'][page_id]['list'][cmd_id]
+                        self.insert_text_map_item(cmd, list_item)
+                    except (IndexError, KeyError, TypeError):
+                        continue
 
     def extract_text_common_events(self, data):
         results = []
@@ -136,12 +184,17 @@ class RPGMakerExtractor(BaseExtractor):
         return results
 
     def insert_text_common_events(self, data, translated_data):
+        if not isinstance(data, (list, dict)):
+            return
         for event_data in translated_data:
             event_id = event_data['id']
             for list_item in event_data['list']:
                 cmd_id = list_item['id']
-                cmd = data[event_id]['list'][cmd_id]
-                self.insert_text_map_item(cmd, list_item)
+                try:
+                    cmd = data[event_id]['list'][cmd_id]
+                    self.insert_text_map_item(cmd, list_item)
+                except (IndexError, KeyError, TypeError):
+                    continue
 
     def extract_text_troops(self, data):
         results = []
@@ -162,17 +215,22 @@ class RPGMakerExtractor(BaseExtractor):
         return results
 
     def insert_text_troops(self, data, translated_data):
+        if not isinstance(data, (list, dict)):
+            return
         for troop_data in translated_data:
             troop_id = troop_data['id']
             for page_data in troop_data['pages']:
                 page_id = page_data['id']
                 for list_item in page_data['list']:
                     cmd_id = list_item['id']
-                    cmd = data[troop_id]['pages'][page_id]['list'][cmd_id]
-                    self.insert_text_map_item(cmd, list_item)
+                    try:
+                        cmd = data[troop_id]['pages'][page_id]['list'][cmd_id]
+                        self.insert_text_map_item(cmd, list_item)
+                    except (IndexError, KeyError, TypeError):
+                        continue
 
     _attributes_find = [r'name', r'note', r'profile', r'description', r'nickname', r'message\d{1}']
-    _attributes_system_find = ['armorTypes', 'equipTypes', 'gameTitle', 'currencyUnit', 'skillTypes', 'terms', 'switches', 'elements', 'weaponTypes']
+    _attributes_system_find = ['armorTypes', 'equipTypes', 'gameTitle', 'currencyUnit', 'skillTypes', 'terms', 'elements', 'weaponTypes']
     # Tags de nota do tipo <Desc: ...>, <Help: ...>, <InfoAlgumaCoisa: ...>. O grupo 1
     # precisa capturar só o nome da tag (sem o "<"), pois insert_text_object o reusa
     # para reconstruir a tag original.
@@ -180,42 +238,56 @@ class RPGMakerExtractor(BaseExtractor):
 
     def extract_text_object(self, data):
         text = []
+        if not isinstance(data, list):
+            return text
         for item in data:
-            if item and item.get('name', '') != '':
-                obj = {'id': item['id']}
+            if item and isinstance(item, dict) and item.get('name', '') != '':
+                obj = {'id': item.get('id')}
                 for key, val in item.items():
                     if any(re.match(pattern, key) for pattern in self._attributes_find):
-                        if key == 'note' and val:
+                        if key == 'note' and val and isinstance(val, str):
                             matches = self._note_tag_pattern.findall(val)
                             if matches:
                                 note_data = {tag: content for tag, content in matches}
                                 if note_data: obj[key] = note_data
-                        elif not RPGTextFilters.is_technical_or_code(val):
+                        elif isinstance(val, str) and not RPGTextFilters.is_technical_or_code(val):
                             obj[key] = val
                 if len(obj) > 1:
                     text.append(obj)
         return text
 
     def insert_text_object(self, data, translated_data):
+        if not isinstance(data, (list, dict)):
+            return
         for texts in translated_data:
             item_id = texts['id']
+            try:
+                target_item = data[item_id]
+            except (IndexError, KeyError, TypeError):
+                continue
+            if not isinstance(target_item, dict):
+                continue
             if 'note' in texts and isinstance(texts['note'], dict):
-                original_note = data[item_id].get('note', '')
+                original_note = target_item.get('note', '')
                 for tag, new_content in texts['note'].items():
                     pattern = re.compile(fr'(<{re.escape(tag)}\s*:\s*)([^>]+)(>)', re.IGNORECASE)
                     original_note = pattern.sub(lambda m: f"{m.group(1)}{new_content}{m.group(3)}", original_note)
-                data[item_id]['note'] = original_note
+                target_item['note'] = original_note
                 texts['note'] = original_note
-            data[item_id].update(texts)
+            target_item.update(texts)
 
     def extract_text_System(self, data):
         text = {}
+        if not isinstance(data, dict):
+            return text
         for key, value in data.items():
             if key in self._attributes_system_find:
                 text[key] = value
         return text
 
     def insert_text_System(self, data, translated_data):
+        if not isinstance(data, dict) or not isinstance(translated_data, dict):
+            return
         for key, value in translated_data.items():
             if key in self._attributes_system_find:
                 if isinstance(value, list) and key in data and isinstance(data[key], list):
@@ -302,6 +374,8 @@ class RPGMakerExtractor(BaseExtractor):
 
         for i, text in enumerate(texts_list):
             if not isinstance(text, str): continue
+            # Sanitizar aspas tipográficas (smart quotes) para aspas ASCII padrão
+            text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
             original_text = original_list[i] if original_list and i < len(original_list) else None
 
             text = _format_codes_pattern.sub(_fix_format_code, text)

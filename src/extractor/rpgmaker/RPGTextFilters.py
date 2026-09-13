@@ -17,6 +17,7 @@ class RPGTextFilters:
     # código quando têm a forma de código: seguidas de "(" ou "{".
     _CONTROL_KEYWORD_PATTERN = re.compile(r'^(?:if|else\s*if|else|while|for|try|catch|finally|switch)\s*[\(\{]', re.IGNORECASE)
     _VAR_DECLARATION_PATTERN = re.compile(r'^var\s+[A-Za-z_$][\w$]*\s*=', re.IGNORECASE)
+    _PURE_ESCAPE_OR_TAG_PATTERN = re.compile(r'^\s*(?:\\[A-Za-z]+(?:\s*\[[^\]]*\])?\s*)+$')
 
     # Literais de código inequívocos (JS/engine): nunca são texto de jogador, em nenhum idioma.
     TECHNICAL_LITERALS = {'TRUE', 'FALSE', 'NULL', 'UNDEFINED', 'NAN'}
@@ -81,6 +82,9 @@ class RPGTextFilters:
             return True
 
         if any(param in text for param in RPGTextFilters.IGNORE_PARAMS):
+            return True
+
+        if RPGTextFilters._PURE_ESCAPE_OR_TAG_PATTERN.match(text):
             return True
 
         return False

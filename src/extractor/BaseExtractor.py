@@ -323,7 +323,41 @@ class BaseExtractor(ABC):
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
             shutil.copy2(file_path_str, dest_path)
 
-    def process_file(self, file, retries=6, delay=20, max_delay=300):
+    @staticmethod
+    def _is_retriable_error(exc):
+        """Determina se uma exceção ocorrida durante a tradução é transitória e elegível para retry.
+
+        Erros determinísticos (como erros de sintaxe, tipos, chaves ou problemas de I/O de arquivo)
+        NÃO devem ser retentados pois nunca terão sucesso.
+        """
+        import json
+        NON_RETRIABLE_EXCEPTIONS = (
+            TypeError,
+            KeyError,
+            IndexError,
+            AttributeError,
+            SyntaxError,
+            NameError,
+            ImportError,
+            NotImplementedError,
+            json.JSONDecodeError,
+            FileNotFoundError,
+            PermissionError,
+            IsADirectoryError,
+            RecursionError,
+        )
+        if isinstance(exc, NON_RETRIABLE_EXCEPTIONS):
+            return False
+
+        if isinstance(exc, ValueError):
+            msg = str(exc).lower()
+            if "desmascaramento incompleto" in msg or "placeholder" in msg or "empty translation" in msg:
+                return True
+            return False
+
+        return True
+
+    def process_file(self, file, retries=5, delay=5, max_delay=60):
         translate = copy.deepcopy(self.translate)
         file_path_str = str(file)
         folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
@@ -354,30 +388,38 @@ class BaseExtractor(ABC):
                 self._handle_no_text(file_path_str, rel_path, None)
                 return
 
-        for attempt in range(retries):
-            try:
-                extracted_name, data = self.extract_files(file_path_str)
-                if data is None:
-                    self.add_threads_status({'file': rel_path, 'status': 'erro', 'msg': "Formato não suportado ou arquivo vazio"})
-                    return
-                
-                raw_text = self.extract_text(file_name, data)
-
-                if not raw_text:
-                    self._handle_no_text(file_path_str, rel_path, data)
-                    return
-
-                translated_text = self._pipeline_translate(file_name, data, raw_text, translate, rel_path)
-
-                merged_data = self.merge_dicts_texts(translated_text, raw_text)
-
-                updated_data = self.update_json(file_name, data, merged_data)
-                self.import_file(rel_path, updated_data, self.folderProcess)
-                self.add_threads_status({'file': rel_path, 'status': 'success', 'msg': "Processed successfully"})
+        # 1. Fase de Extração (determinística, local - sem retry)
+        try:
+            extracted_name, data = self.extract_files(file_path_str)
+            if data is None:
+                self.add_threads_status({'file': rel_path, 'status': 'erro', 'msg': "Formato não suportado ou arquivo vazio"})
                 return
 
+            raw_text = self.extract_text(file_name, data)
+
+            if not raw_text:
+                self._handle_no_text(file_path_str, rel_path, data)
+                return
+        except Exception as e:
+            logging.error(f"Erro na extração do arquivo {file}: {e}")
+            self.add_threads_status(
+                {'file': rel_path, 'status': 'erro', 'msg': f"Erro na extração: {e}"})
+            return
+
+        # 2. Fase de Tradução (rede/API - retry apenas para falhas transitórias)
+        translated_text = None
+        for attempt in range(retries):
+            try:
+                translated_text = self._pipeline_translate(file_name, data, raw_text, translate, rel_path)
+                break
             except Exception as e:
-                logging.error(f"Error processing file {file}: {e}")
+                logging.error(f"Erro ao traduzir {file} (tentativa {attempt + 1}/{retries}): {e}")
+
+                if not self._is_retriable_error(e):
+                    self.add_threads_status(
+                        {'file': rel_path, 'status': 'erro', 'msg': f"Erro não recuperável: {e}"})
+                    return
+
                 self.add_threads_status(
                     {'file': rel_path, 'status': 'danger', 'msg': f"Error processing file {file}"})
 
@@ -390,13 +432,24 @@ class BaseExtractor(ABC):
                 else:
                     self.add_threads_status(
                         {'file': rel_path, 'status': 'erro', 'msg': f"Failed to process after {retries}"})
+                    return
+
+        # 3. Fase de Reconstrução e Gravação (local - sem retry de tradução)
+        try:
+            merged_data = self.merge_dicts_texts(translated_text, raw_text)
+            updated_data = self.update_json(file_name, data, merged_data)
+            self.import_file(rel_path, updated_data, self.folderProcess)
+            self.add_threads_status({'file': rel_path, 'status': 'success', 'msg': "Processed successfully"})
+        except Exception as e:
+            logging.error(f"Erro ao salvar arquivo traduzido {file}: {e}")
+            self.add_threads_status(
+                {'file': rel_path, 'status': 'erro', 'msg': f"Erro ao salvar arquivo: {e}"})
+            return
 
     def _prescan_file(self, file, folder_input):
-        """Classifica um arquivo para o fast lane (100% no cache) ou fluxo normal.
+        """Classifica um arquivo para o fast lane (100% no cache ou sem texto) ou fluxo normal.
 
-        Retorna `(lane, entry)` onde `lane` é `'cached'` ou `'pending'` e `entry`
-        é `(rel_path, data, raw_text, file_name)` quando `cached` (para o fast
-        lane não reextrair), senão `None`.
+        Retorna `(lane, entry)` onde `lane` é `'cached'`, `'empty'` ou `'pending'`.
         """
         import src.utils.TextsUtils as TextsUtils
 
@@ -407,28 +460,34 @@ class BaseExtractor(ABC):
         file_path_str = str(file)
         file_name = os.path.basename(file_path_str)
         try:
+            try:
+                rel_path = os.path.relpath(file_path_str, folder_input)
+            except Exception:
+                rel_path = file_name
+
             if hasattr(self, 'is_translatable_file') and callable(getattr(self, 'is_translatable_file')):
                 if not self.is_translatable_file(file_name):
-                    return 'pending', None
+                    return 'empty', (rel_path, file_path_str, file_name, None)
+
             _, data = self.extract_files(file_path_str)
             if data is None:
                 return 'pending', None
+
             raw_text = self.extract_text(file_name, data)
             if not raw_text:
-                return 'pending', None
+                return 'empty', (rel_path, file_path_str, file_name, data)
+
             strings = [
                 s for s in TextsUtils.dictToList(raw_text)
                 if isinstance(s, str) and s.strip()
             ]
             if not strings:
-                return 'pending', None
+                return 'empty', (rel_path, file_path_str, file_name, data)
+
             hits = cache.lookup_many(strings)
             if all(s in hits for s in strings):
-                try:
-                    rel_path = os.path.relpath(file_path_str, folder_input)
-                except Exception:
-                    rel_path = file_name
                 return 'cached', (rel_path, data, raw_text, file_name)
+
             return 'pending', None
         except Exception as e:
             logging.debug(f"Prescan: {file} vai para o fluxo normal ({e})")
@@ -453,6 +512,11 @@ class BaseExtractor(ABC):
             self.add_threads_status(
                 {'file': rel_path, 'status': 'danger', 'msg': f"Fast-lane falhou, reprocessando {file}"})
             self.process_file(file)
+
+    def _finalize_empty_file(self, file, entry):
+        """Fast lane: copia instantaneamente arquivos que não possuem textos a traduzir."""
+        rel_path, file_path_str, file_name, data = entry
+        self._handle_no_text(file_path_str, rel_path, data)
 
     def process_files(self):
         import concurrent.futures
@@ -513,6 +577,10 @@ class BaseExtractor(ABC):
                         lane, entry = 'pending', None
                     if lane == 'cached':
                         fut = self.fast_executor.submit(self._finalize_cached_file, file, entry)
+                        with self._dispatch_lock:
+                            self.fast_futures.append(fut)
+                    elif lane == 'empty':
+                        fut = self.fast_executor.submit(self._finalize_empty_file, file, entry)
                         with self._dispatch_lock:
                             self.fast_futures.append(fut)
                     else:

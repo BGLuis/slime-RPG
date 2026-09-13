@@ -252,3 +252,33 @@ def test_clean_corrupted_cache_script(tmp_path):
     assert len(rows) == 1
     assert rows[0][0] == "Valid Text"
 
+
+def test_pipeline_does_not_cache_identical_source_target_fallback(isolated_cache_dir, monkeypatch):
+    """Garante que se a tradução for idêntica ao original (como em fallbacks), o cache não é envenenado."""
+    translator = GoogleTranslate(lang_source='en', lang_target='pt')
+
+    # Simula um tradutor que falha e devolve o texto original
+    monkeypatch.setattr(translator, '_translate_single_batch', lambda texts: list(texts))
+
+    from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
+    extractor = RPGMakerExtractor(translator)
+    raw_text = [{"id": 0, "text": ["Is this ... a wooden sword?"]}]
+    result = extractor._pipeline_translate("Map001.json", {}, raw_text, translator, "Map001.json")
+
+    # O texto do pipeline é o texto recebido (fallback para não quebrar a execução)
+    assert result == [{"id": 0, "text": ["Is this ... a wooden sword?"]}]
+
+    # MAS o cache NÃO deve conter o registro
+    assert translator.cache.lookup("Is this ... a wooden sword?") is None
+
+
+def test_google_translate_gtx_translation():
+    translator = GoogleTranslate(lang_source='en', lang_target='pt')
+    try:
+        res = translator._translate_gtx("Is this ... a wooden sword?")
+    except Exception as e:
+        pytest.skip(f"Google Translate endpoint indisponível ou com rate limit: {e}")
+    assert res is not None
+    assert "espada de madeira" in res.lower()
+
+

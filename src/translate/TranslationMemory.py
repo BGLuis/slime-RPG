@@ -215,7 +215,10 @@ class TranslationMemory:
             self.engine, self.game, context, status, now, now,
         )
 
-    def store(self, text, translated, status='machine', context=None):
+    def store(self, text, translated, status='machine', context=None, allow_identity=False):
+        if not allow_identity and status == 'machine' and self.src_lang != self.tgt_lang:
+            if isinstance(text, str) and isinstance(translated, str) and text.strip() == translated.strip():
+                return
         now = time.strftime('%Y-%m-%dT%H:%M:%S')
         with self._lock:
             self._conn.execute(
@@ -224,18 +227,21 @@ class TranslationMemory:
             )
             self._conn.commit()
 
-    def store_many(self, pairs, status='machine', context=None):
+    def store_many(self, pairs, status='machine', context=None, allow_identity=False):
         """Grava vários (source, translated) numa única transação / um commit.
 
         Mesma semântica de upsert do `store()` (não rebaixa uma tradução de status
         superior). Pula entradas cujo source não é string não-vazia ou cujo
         translated é None.
+        Descarta traduções de máquina que sejam idênticas ao original quando os
+        idiomas de origem e destino forem distintos (evita envenenar o cache com fallbacks).
         """
         now = time.strftime('%Y-%m-%dT%H:%M:%S')
         rows = [
             self._segment_row(s, t, status, context, now)
             for s, t in pairs
             if isinstance(s, str) and s.strip() and t is not None
+            and (allow_identity or not (status == 'machine' and self.src_lang != self.tgt_lang and s.strip() == t.strip()))
         ]
         if not rows:
             return
