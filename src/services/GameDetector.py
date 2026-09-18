@@ -1,6 +1,11 @@
 import os
 import glob
 from typing import Optional, Dict, Any
+from src.utils.LanguageCodes import (
+    identify_language_from_filename,
+    normalize_language_code,
+    is_language_column
+)
 
 def is_trash_path(path: str) -> bool:
     """Verifica se um caminho pertence a uma lixeira do sistema operacional."""
@@ -34,6 +39,41 @@ def detect_game_environment(candidate_path: Optional[str] = None) -> Optional[Di
     # Não sugerir se for lixeira ou a própria raiz do código-fonte
     if is_trash_path(target) or is_project_repo_root(target):
         return None
+
+    # 0. Checagem de pastas dedicadas de localização/idiomas (ex: languages, language, lang, localization, locales)
+    # PRIORITÁRIO: Jogos com sistema de localização dedicado não devem ter seus dados brutos de motor (ex: data/ ou www/data/) alterados diretamente.
+    loc_folder_names = ['languages', 'language', 'lang', 'locales', 'localization', 'translations', 'i18n']
+    for loc_name in loc_folder_names:
+        loc_candidate = os.path.join(target, loc_name)
+        if os.path.isdir(loc_candidate):
+            try:
+                loc_entries = os.listdir(loc_candidate)
+            except Exception:
+                loc_entries = []
+
+            # A. Verifica se possui arquivos CSV de idioma (ex: en.csv, pt.csv, English.csv) ou tabelas multilíngues
+            csv_files = [f for f in loc_entries if f.lower().endswith('.csv')]
+            lang_csv_files = [f for f in csv_files if identify_language_from_filename(f) is not None]
+            if len(lang_csv_files) > 0 or len(csv_files) > 0:
+                return {
+                    'detected_path': loc_candidate,
+                    'extractor': 'CSV',
+                    'description': f'Sistema de Localização por CSV (subpasta {loc_name})',
+                    'file_count': len(csv_files)
+                }
+
+            # B. Verifica se possui subpastas de idioma com JSONs (ex: languages/EN/, languages/ES/) ou Languages.json (CustomTranslationEngine)
+            subdirs = [d for d in loc_entries if os.path.isdir(os.path.join(loc_candidate, d))]
+            lang_subdirs = [d for d in subdirs if normalize_language_code(d) is not None]
+            has_lang_json = 'Languages.json' in loc_entries or 'languages.json' in loc_entries
+            if len(lang_subdirs) > 0 or has_lang_json:
+                total_json_files = glob.glob(os.path.join(loc_candidate, '**', '*.json'), recursive=True)
+                return {
+                    'detected_path': loc_candidate,
+                    'extractor': 'Json',
+                    'description': f'Sistema de Localização Modular / CTE (subpasta {loc_name})',
+                    'file_count': len(total_json_files)
+                }
 
     # 1. Checagem de subpastas comuns de RPG Maker (ex: www/data ou data)
     www_data = os.path.join(target, 'www', 'data')
@@ -111,6 +151,29 @@ def detect_game_environment(candidate_path: Optional[str] = None) -> Optional[Di
             'file_count': len(json_files)
         }
 
+    # CSV de idioma na pasta atual
+    lang_csv_files = [f for f in csv_files if identify_language_from_filename(f) is not None]
+    if len(lang_csv_files) > 0:
+        return {
+            'detected_path': target,
+            'extractor': 'CSV',
+            'description': 'Arquivos CSV de Idioma (pasta atual)',
+            'file_count': len(csv_files)
+        }
+
+    # CTE / Subpastas de idioma na pasta atual
+    subdirs = [d for d in entries if os.path.isdir(os.path.join(target, d))]
+    lang_subdirs = [d for d in subdirs if normalize_language_code(d) is not None]
+    has_lang_json = 'Languages.json' in entries or 'languages.json' in entries
+    if len(lang_subdirs) > 0 or has_lang_json:
+        total_json_files = glob.glob(os.path.join(target, '**', '*.json'), recursive=True)
+        return {
+            'detected_path': target,
+            'extractor': 'Json',
+            'description': 'Sistema de Localização Modular / CTE (pasta atual)',
+            'file_count': len(total_json_files)
+        }
+
     # JSON genérico
     if len(json_files) > 0:
         return {
@@ -130,3 +193,4 @@ def detect_game_environment(candidate_path: Optional[str] = None) -> Optional[Di
         }
 
     return None
+

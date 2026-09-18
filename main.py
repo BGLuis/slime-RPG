@@ -189,6 +189,8 @@ Atalhos/abreviações de terminal disponíveis:
                        help='Idioma de destino (pt, en, es, fr, it, ja)')
     parser.add_argument('-i', '--input',
                        help='Pasta de entrada dos arquivos')
+    parser.add_argument('-o', '--output',
+                       help='Pasta de destino dos arquivos traduzidos (opcional, padrão: mesma pasta de entrada)')
     parser.add_argument('--synopsis', '--sinopse',
                        help='Sinopse do jogo para melhorar contexto da tradução')
 
@@ -272,7 +274,7 @@ def validate_arguments(args):
     return errors
 
 
-def prompt_interactive_questions(questions):
+def prompt_interactive_questions(questions, interactive=True):
     """Executa perguntas interativas para configuração de tradutores ou extratores.
 
     Retorna o dicionário de configurações preenchido, ou None se o usuário cancelou.
@@ -287,6 +289,26 @@ def prompt_interactive_questions(questions):
             continue
 
         options = question.get('options')
+
+        # Se não for modo interativo, usa o valor default
+        if not interactive:
+            default_val = question.get('default')
+            if options:
+                if isinstance(options, dict):
+                    if default_val in options:
+                        config[key] = options[default_val]
+                    elif default_val in options.values():
+                        config[key] = default_val
+                    else:
+                        config[key] = list(options.values())[0]
+                elif isinstance(options, list):
+                    config[key] = default_val if default_val in options else options[0]
+                else:
+                    config[key] = default_val
+            else:
+                config[key] = default_val or ''
+            continue
+
         if options:
             default_val = question.get('default')
             default_idx = 0
@@ -455,6 +477,8 @@ def run_workflow(args):
 
     translate.change_language(lang_source, lang_target)
 
+    is_interactive = args.interactive or not all([args.extractor, args.translator, args.source, args.target, args.input])
+
     # 5. Configuração do Tradutor
     if args.synopsis:
         translate.apply_configuration({'synopsis': args.synopsis})
@@ -462,7 +486,7 @@ def run_workflow(args):
     else:
         translator_questions = translator_class.get_interactive_questions()
         if translator_questions:
-            translator_config = prompt_interactive_questions(translator_questions)
+            translator_config = prompt_interactive_questions(translator_questions, interactive=is_interactive)
             if translator_config is None:
                 return False
             translate.apply_configuration(translator_config)
@@ -471,7 +495,7 @@ def run_workflow(args):
     extractor = ExtractorFactory.create(extractor_class.name, translate)
     extractor_questions = extractor.get_interactive_questions()
     if extractor_questions:
-        extractor_config = prompt_interactive_questions(extractor_questions)
+        extractor_config = prompt_interactive_questions(extractor_questions, interactive=is_interactive)
         if extractor_config is None:
             return False
         extractor.apply_configuration(extractor_config)
@@ -495,7 +519,8 @@ def run_workflow(args):
         cli.print_colored_line(_i18n.tr('log_folder_adjusted', name=os.path.basename(input_dir)), 'green')
 
     # 8. Executar Processo
-    cli.clear_screen()
+    if is_interactive:
+        cli.clear_screen()
     cli.print_colored_line(_i18n.tr('log_using_extractor', name=extractor_class.name), 'cyan')
     cli.print_colored_line(_i18n.tr('log_using_translator', name=translator_class.agent), 'cyan')
     cli.print_colored_line(_i18n.tr('log_translating_from_to', source=lang_source, target=lang_target), 'cyan')
@@ -503,12 +528,14 @@ def run_workflow(args):
 
     return run_extraction_process(
         extractor, translate, input_dir, lang_source, 
+        output_dir=args.output,
         backup=not args.no_backup, 
-        verify=not args.no_verify
+        verify=not args.no_verify,
+        is_interactive=is_interactive
     )
 
 
-def run_extraction_process(extractor, translate, input_dir, lang_source, backup=True, verify=True, gui_signals=None, gui_verify_callback=None):
+def run_extraction_process(extractor, translate, input_dir, lang_source, output_dir=None, backup=True, verify=True, is_interactive=True, gui_signals=None, gui_verify_callback=None):
     """Run the main extraction and translation process"""
     def log(msg, color='white'):
         logging.info(msg)
@@ -538,14 +565,38 @@ def run_extraction_process(extractor, translate, input_dir, lang_source, backup=
                 log(_i18n.tr('log_backup_exists', path=backup_dir), 'yellow')
 
         extractor.clean_folder(extractor.folderInput)
+        extractor.init_folder()
         copied_input = copy_matching_files(input_dir, extractor.folderInput, extensions=files_types)
         logging.info(f"Arquivos copiados para entrada ({len(copied_input)})")
 
         log(_i18n.tr('log_processing_files'), 'green')
-        extractor.process_files()
 
         if not gui_signals:
-            cli.show_status(extractor)
+            if is_interactive and sys.stdin.isatty():
+                extractor.process_files()
+                cli.show_status(extractor)
+            else:
+                import concurrent.futures
+                logged_done = set()
+
+                def _on_progress(event_name, data):
+                    if event_name == 'status_update' and isinstance(data, list):
+                        for item in data:
+                            f = item.get('file')
+                            st = item.get('status')
+                            if st in ('success', 'erro', 'ignore') and f not in logged_done:
+                                logged_done.add(f)
+                                msg = item.get('msg', '')
+                                color = 'green' if st == 'success' else ('yellow' if st == 'ignore' else 'red')
+                                cli.print_colored_line(f"[{st.upper()}] {f} - {msg}", color)
+
+                extractor.add_observer(_on_progress)
+                extractor.process_files()
+                if hasattr(extractor, 'wait_for_dispatch'):
+                    extractor.wait_for_dispatch()
+                pending = list(getattr(extractor, 'futures', [])) + list(getattr(extractor, 'fast_futures', []))
+                if pending:
+                    concurrent.futures.wait(pending)
         else:
             # No modo CLI o show_status já bloqueia até o pool terminar; na GUI
             # precisamos aguardar explicitamente antes de pedir a verificação manual.
@@ -568,7 +619,8 @@ def run_extraction_process(extractor, translate, input_dir, lang_source, backup=
 
         log(_i18n.tr('log_exporting_files'), 'green')
         extractor.import_files()
-        sync_folder_tree(extractor.folderOutput, input_dir)
+        target_dest = output_dir or input_dir
+        sync_folder_tree(extractor.folderOutput, target_dest)
 
         log(_i18n.tr('log_finished_success'), 'green')
 
