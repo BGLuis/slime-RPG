@@ -18,7 +18,7 @@ ifeq ($(wildcard $(PYTHON)),)
     PIP := pip3
 endif
 
-.PHONY: all help run cli gui install install-cli uninstall-cli install-desktop uninstall-desktop uninstall venv test clean add-alias remove-alias list-aliases
+.PHONY: all help run cli gui install install-cli uninstall-cli install-desktop uninstall-desktop uninstall venv test clean add-alias remove-alias list-aliases lint lint-full install-hooks
 
 all: help
 
@@ -45,6 +45,9 @@ help:
 	@echo "  Desenvolvimento & Ambiente:"
 	@echo "    make venv            - Cria/atualiza o ambiente virtual (.venv) e dependências"
 	@echo "    make test            - Executa os testes automatizados com pytest"
+	@echo "    make lint            - Análise estática (erros reais: NameError, SyntaxError etc.)"
+	@echo "    make lint-full       - Análise estática completa (inclui imports/variáveis não usadas)"
+	@echo "    make install-hooks   - Instala o git hook de pre-commit que roda 'make lint'"
 	@echo "    make clean           - Limpa diretórios temporários e caches (__pycache__)"
 	@echo ""
 	@echo "=================================================================="
@@ -142,6 +145,27 @@ test:
 	else \
 		pytest; \
 	fi
+
+# Lint "critico": só falha para bugs de fato (nome indefinido, erro de sintaxe,
+# etc. - a mesma classe do bug do 'sys' não importado). Roda em segundos e é
+# seguro deixar bloqueante (pre-commit/CI).
+LINT_TARGETS := src main.py
+FLAKE8 := $(shell [ -f "$(VENV_DIR)/bin/flake8" ] && echo "$(VENV_DIR)/bin/flake8" || echo "flake8")
+
+lint:
+	@$(FLAKE8) --select=E9,F63,F7,F82 $(LINT_TARGETS)
+
+lint-full:
+	@$(FLAKE8) $(LINT_TARGETS)
+
+install-hooks:
+	@mkdir -p .git/hooks
+	@printf '%s\n' \
+		'#!/bin/sh' \
+		'make lint' \
+		> .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "✓ Hook de pre-commit instalado (roda 'make lint' antes de cada commit)."
 
 clean:
 	@echo "Limpando arquivos temporários e caches..."

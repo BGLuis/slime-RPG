@@ -1,0 +1,7 @@
+[flake8]
+# Config base para o lint completo (make lint-full). Estilo (E/W) fica de
+# fora por padrão porque o projeto não segue PEP8 à risca; o que importa é
+# pegar bugs reais (NameError, SyntaxError, imports/variáveis mortas).
+max-line-length = 200
+exclude = .venv,__pycache__,cache,output,process,input
+ignore = E501,W503

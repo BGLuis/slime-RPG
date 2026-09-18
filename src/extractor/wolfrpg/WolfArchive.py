@@ -1,3 +1,4 @@
+import os
 from io import SEEK_END, SEEK_SET, TextIOWrapper
 from pathlib import Path
 from stat import FILE_ATTRIBUTE_DIRECTORY

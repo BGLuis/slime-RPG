@@ -1,4 +1,6 @@
 import os
+import sys
+from typing import Optional
 
 from rich.console import Console
 from rich.text import Text
@@ -434,4 +436,13 @@ class _StatusApp(_LanguagePaletteMixin, App):
 
 
 def show_status(extractor):
+    if not sys.stdin.isatty():
+        import concurrent.futures
+        if hasattr(extractor, 'wait_for_dispatch'):
+            extractor.wait_for_dispatch()
+        pending = list(getattr(extractor, 'futures', [])) + list(getattr(extractor, 'fast_futures', []))
+        if pending:
+            concurrent.futures.wait(pending)
+        return
     _StatusApp(extractor).run()
+
