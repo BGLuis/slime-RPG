@@ -102,10 +102,10 @@ class GoogleTranslate(BaseTranslate):
 
         try:
             if proxy_dict:
-                r = requests.post(url, data=data, headers=headers, proxies=proxy_dict, timeout=10)
+                r = requests.post(url, data=data, headers=headers, proxies=proxy_dict, timeout=(3.0, 5.0))
             else:
                 session = self._get_session()
-                r = session.post(url, data=data, headers=headers, timeout=15)
+                r = session.post(url, data=data, headers=headers, timeout=(4.0, 8.0))
 
             if r.status_code == 429:
                 if not proxy_dict:
@@ -138,8 +138,13 @@ class GoogleTranslate(BaseTranslate):
         if not proxy_dict:
             self._rate_limit()
 
-        client = GoogleTranslator(source=self.lang_source, target=self.lang_target, proxies=proxy_dict)
-        return client.translate(text)
+        try:
+            client = GoogleTranslator(source=self.lang_source, target=self.lang_target, proxies=proxy_dict)
+            return client.translate(text)
+        except Exception:
+            if proxy_dict:
+                proxy_mgr.report_proxy_failure(proxy_dict)
+            raise
 
     def _translate_with_mymemory(self, text):
         from deep_translator import MyMemoryTranslator
@@ -163,16 +168,21 @@ class GoogleTranslate(BaseTranslate):
         }
         src = lang_map.get(self.lang_source.lower(), self.lang_source)
         tgt = lang_map.get(self.lang_target.lower(), self.lang_target)
-        client = MyMemoryTranslator(source=src, target=tgt, proxies=proxy_dict)
+        try:
+            client = MyMemoryTranslator(source=src, target=tgt, proxies=proxy_dict)
+        except Exception:
+            return text
 
         def _translate_chunk(chunk):
             if not chunk or not chunk.strip():
                 return chunk
             if len(chunk) <= 450:
                 self._rate_limit()
-                return client.translate(chunk) or chunk
+                try:
+                    return client.translate(chunk) or chunk
+                except Exception:
+                    return chunk
 
-            # Slicing puramente iterativo para evitar qualquer risco de RecursionError
             sub_chunks = []
             rem = chunk
             while rem:
@@ -193,7 +203,10 @@ class GoogleTranslate(BaseTranslate):
                     res_parts.append(sp)
                 else:
                     self._rate_limit()
-                    res_parts.append(client.translate(sp) or sp)
+                    try:
+                        res_parts.append(client.translate(sp) or sp)
+                    except Exception:
+                        res_parts.append(sp)
             return "\n".join(res_parts)
 
         if self.delimiter in text:
@@ -204,25 +217,26 @@ class GoogleTranslate(BaseTranslate):
     def _translate_raw(self, text):
         if not text or not text.strip():
             return text
-        try:
-            res = self._translate_gtx(text)
-            if res:
-                return res
-        except Exception as e:
-            logging.debug(f"GTX falhou para '{text[:30]}...', tentando deep_translator: {e}")
+        for attempt in range(5):
+            try:
+                res = self._translate_gtx(text)
+                if res:
+                    return res
+            except Exception as e:
+                logging.debug(f"GTX falhou tentativa {attempt+1}/5 para '{text[:30]}...': {e}")
 
         try:
             res = self._translate_with_deep_translator(text)
             if res:
                 return res
         except Exception as e:
-            logging.debug(f"deep_translator falhou para '{text[:30]}...', tentando MyMemory: {e}")
+            logging.debug(f"deep_translator falhou para '{text[:30]}...': {e}")
 
         try:
             return self._translate_with_mymemory(text)
         except Exception as e:
-            logging.error(f"Todos os provedores de tradução falharam para '{text[:30]}...': {e}")
-            raise
+            logging.warning(f"Fallback para texto original: {e}")
+            return text
 
     def _translate_single_batch(self, texts):
         if not texts:
@@ -249,12 +263,9 @@ class GoogleTranslate(BaseTranslate):
                 # Se o delimitador for alterado pelo provedor, o batch pode ficar desalinhado.
                 # Nessa situação, traduzimos item a item para manter mapeamento correto.
                 if len(translate_list) != len(texts):
-                    safe_results = []
-                    for text in texts:
-                        res = self._translate_raw(text)
-                        if res is None:
-                            raise ValueError(f"Falha ao traduzir item avulso: {text[:30]}")
-                        safe_results.append(res)
+                    from concurrent.futures import ThreadPoolExecutor
+                    with ThreadPoolExecutor(max_workers=5) as executor:
+                        safe_results = list(executor.map(self._translate_raw, texts))
                     return safe_results
 
                 return translate_list

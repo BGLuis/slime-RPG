@@ -34,6 +34,17 @@ class ProxyManager:
         disable_env = os.getenv("DISABLE_PROXY_POOL", "false").lower() in ("true", "1", "yes")
         use_env = os.getenv("USE_PROXY_POOL", "true").lower() in ("true", "1", "yes")
         self._enabled = use_env and not disable_env
+        if self._enabled and os.path.exists("proxies.txt"):
+            try:
+                with open("proxies.txt", "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            self._working_proxies.append(line)
+                    if self._working_proxies:
+                        self._direct_blocked = True
+            except Exception:
+                pass
 
     @classmethod
     def get_instance(cls):
@@ -73,6 +84,19 @@ class ProxyManager:
             logging.warning("⚠️ IP direto bloqueado pela Google (429). Ativando rotação automática de proxies...")
             self.ensure_proxies(min_count=5)
 
+    def _load_local_proxies(self):
+        proxies = []
+        if os.path.exists("proxies.txt"):
+            try:
+                with open("proxies.txt", "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            proxies.append(line)
+            except Exception:
+                pass
+        return proxies
+
     def _validate_proxy(self, proxy_str):
         p_dict = {"http": f"http://{proxy_str}", "https": f"http://{proxy_str}"}
         try:
@@ -81,7 +105,7 @@ class ProxyManager:
                 params=self.TEST_PARAMS,
                 proxies=p_dict,
                 headers={"User-Agent": "Mozilla/5.0"},
-                timeout=4
+                timeout=(2.0, 3.0)
             )
             if r.status_code == 200 and r.text.startswith("["):
                 return proxy_str
@@ -90,40 +114,34 @@ class ProxyManager:
         return None
 
     def _fetch_from_sources(self):
-        candidates = set()
+        candidates = []
         
-        # 1. Carregar de arquivo local proxies.txt se existir
-        if os.path.exists("proxies.txt"):
-            try:
-                with open("proxies.txt", "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            candidates.add(line)
-            except Exception as e:
-                logging.debug(f"Erro ao ler proxies.txt: {e}")
+        # 1. Priorizar os proxies locais validados de proxies.txt
+        local_proxies = self._load_local_proxies()
+        candidates.extend(local_proxies)
 
-        # 2. Buscar das fontes públicas
-        for src in self.SOURCES:
-            try:
-                r = requests.get(src, timeout=6)
-                if r.status_code == 200:
-                    for line in r.text.splitlines():
-                        line = line.strip()
-                        if ":" in line and not line.startswith("<"):
-                            candidates.add(line)
-                    if len(candidates) >= 60:
-                        break
-            except Exception:
-                continue
+        # 2. Buscar das fontes públicas se necessário
+        if len(candidates) < 30:
+            for src in self.SOURCES:
+                try:
+                    r = requests.get(src, timeout=4)
+                    if r.status_code == 200:
+                        for line in r.text.splitlines():
+                            line = line.strip()
+                            if ":" in line and not line.startswith("<") and line not in candidates:
+                                candidates.append(line)
+                        if len(candidates) >= 60:
+                            break
+                except Exception:
+                    continue
 
         if not candidates:
             return []
 
-        # Validar em paralelo os primeiros candidatos
-        candidate_list = list(candidates)[:50]
+        # Validar em paralelo
+        candidate_list = candidates[:50]
         working = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
             results = executor.map(self._validate_proxy, candidate_list)
             for res in results:
                 if res:
@@ -134,20 +152,26 @@ class ProxyManager:
         if not self._enabled:
             return
         with self._pool_lock:
+            if len(self._working_proxies) >= min_count:
+                return
+            # Recarrega imediatamente do proxies.txt sem precisar de thread
+            local = self._load_local_proxies()
+            for p in local:
+                if p not in self._working_proxies:
+                    self._working_proxies.append(p)
             if len(self._working_proxies) >= min_count or self._is_fetching:
                 return
             self._is_fetching = True
 
         def _worker():
             try:
-                logging.info("Buscando e validando novos proxies para o Google Translate...")
                 new_proxies = self._fetch_from_sources()
                 with self._pool_lock:
                     for p in new_proxies:
                         if p not in self._working_proxies:
                             self._working_proxies.append(p)
                     self._last_fetch_time = time.time()
-                logging.info(f"✓ Pool de proxies atualizado com sucesso ({len(self._working_proxies)} disponíveis)")
+                logging.info(f"✓ Pool de proxies atualizado ({len(self._working_proxies)} disponíveis)")
             except Exception as e:
                 logging.error(f"Falha ao buscar proxies: {e}")
             finally:
@@ -163,12 +187,24 @@ class ProxyManager:
         if not self._enabled or not self._direct_blocked:
             return None
 
+        # ensure_proxies() adquire _pool_lock, que não é reentrante: chamar fora do lock.
+        if self.get_pool_size() < 3:
+            self.ensure_proxies(min_count=5)
+
+        if not self._working_proxies:
+            for _ in range(15):
+                time.sleep(0.1)
+                with self._pool_lock:
+                    if self._working_proxies:
+                        break
+
         with self._pool_lock:
             if not self._working_proxies:
-                self.ensure_proxies(min_count=3)
+                for p in self._load_local_proxies():
+                    self._working_proxies.append(p)
+            if not self._working_proxies:
                 return None
             proxy_str = self._working_proxies[0]
-            # Rotaciona para o final da fila para balancear entre os proxies
             self._working_proxies.rotate(-1)
             return {"http": f"http://{proxy_str}", "https": f"http://{proxy_str}"}
 
