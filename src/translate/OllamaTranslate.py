@@ -10,8 +10,8 @@ load_dotenv()
 class OllamaTranslate(BaseTranslate):
     MAX_REQUESTS_SIMULTANEOUSLY = 10
     char_limit = 10000
-    context_function = 'Translate the following text. Provide only the translated text, without any additional comments, explanations, or notes.'
-    context_additional = "Act as an expert game localizer. Your mission is to translate text for a video game, ensuring the translation is engaging and immersive for the player. The text below could be character dialogue, an item description, a quest objective, or a UI menu element. Adapt the translation to fit the gaming context, using appropriate and common gaming jargon. Maintain the original tone, whether it's serious, humorous, or epic. Provide only the direct translation. Do not provide a literal, word-for-word translation if a more natural, context-aware alternative exists."
+    context_function = "Reply with only the translated text, without any additional comments, explanations, or notes."
+    context_additional = "Act as an expert game localizer. Your mission is to translate text for a video game, ensuring the translation is engaging and immersive for the player. The text could be character dialogue, an item description, a quest objective, or a UI menu element. Adapt the translation to fit the gaming context, using appropriate and common gaming jargon. Maintain the original tone, whether it's serious, humorous, or epic. Do not provide a literal, word-for-word translation if a more natural, context-aware alternative exists."
 
     @classmethod
     def requires_synopsis(cls):
@@ -36,17 +36,19 @@ class OllamaTranslate(BaseTranslate):
 
     def __init__(self, delimiter=None, char_limit=None, lang_source=None, lang_target=None):
         super().__init__(delimiter, char_limit, lang_source, lang_target)
+        self.context_function = os.getenv('OLLAMA_CONTEXT_FUNCTION') or self.context_function
+        self.context_additional = os.getenv('OLLAMA_CONTEXT_ADDITIONAL') or self.context_additional
         self.model = os.getenv('OLLAMA_MODEL')
         self.max_requests = os.getenv('OLLAMA_MAX_REQUESTS')
         if not self.model or not self.max_requests:
             raise ValueError("Environment variables OLLAMA_MODEL and OLLAMA_MAX_REQUESTS must be defined.")
-        self.context_language = f"Translate the text below from {self.lang_source} to {self.lang_target}:"
+        self.context_language = f"Translate the user's message from {self.lang_source} to {self.lang_target}."
 
     def change_language(self, lang_source, lang_target):
         self.lang_source = lang_source
         self.lang_target = lang_target
         self._load_cache_for_current_languages()
-        self.context_language = f"Translate the text below from {self.lang_source} to {self.lang_target}:"
+        self.context_language = f"Translate the user's message from {self.lang_source} to {self.lang_target}."
 
     @staticmethod
     def preprocess_text(texts):
@@ -72,6 +74,7 @@ class OllamaTranslate(BaseTranslate):
         messages = [
             {"role": "system", "content": self.context_function},
             {"role": "system", "content": self.context_additional},
+            {"role": "system", "content": "Tokens like __XTOK_12345678__ are placeholders for game control codes: copy each one into the translation exactly as written, without translating, reformatting, or removing it."},
         ]
 
         if self.game_synopsis:
