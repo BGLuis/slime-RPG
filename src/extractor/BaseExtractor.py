@@ -9,23 +9,86 @@ import time
 import logging
 from abc import ABC, abstractmethod
 
+
+class FolderProperty(property):
+    """
+    Descritor compatível com property para folderInput, folderProcess, folderOutput.
+    Suporta resolução dinâmica a partir do Workspace (se configurado), além de acesso
+    estático na classe e compatibilidade com monkeypatch e atribuição em testes legados.
+    """
+    def __init__(self, name, ws_attr, default_val):
+        self.name = name
+        self.ws_attr = ws_attr
+        self.default_val = default_val
+        super().__init__(self._fget, self._fset)
+
+    def _fget(self, instance):
+        if instance is None:
+            return self.default_val
+        if hasattr(instance, f"_{self.name}"):
+            val = getattr(instance, f"_{self.name}")
+            if val is not None:
+                return val
+        ws = getattr(instance, '_workspace', None)
+        if ws is not None:
+            return getattr(ws, self.ws_attr)
+        return getattr(instance.__class__, f"_{self.name}_cls_val", self.default_val)
+
+    def _fset(self, instance, value):
+        if instance is None:
+            return
+        setattr(instance, f"_{self.name}", value)
+        ws = getattr(instance, '_workspace', None)
+        if ws is not None:
+            setattr(ws, self.ws_attr, value)
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return getattr(owner, f"_{self.name}_cls_val", self.default_val)
+        return self._fget(instance)
+
+    def __set__(self, instance, value):
+        self._fset(instance, value)
+
+
 class BaseExtractor(ABC):
     name = 'BaseExtractor'
-    folderProcess = 'process'
-    folderInput = 'input'
-    folderOutput = 'output'
+    folderProcess = FolderProperty('folderProcess', 'process_dir', 'process')
+    folderInput = FolderProperty('folderInput', 'input_dir', 'input')
+    folderOutput = FolderProperty('folderOutput', 'output_dir', 'output')
     files_types = []
 
-    def __init__(self, translate):
-        self.create_directory_if_not_exists(self.__class__.folderProcess)
-        self.create_directory_if_not_exists(self.__class__.folderInput)
-        self.create_directory_if_not_exists(self.__class__.folderOutput)
+    def __init__(self, translate, workspace=None):
+        self._workspace = workspace
+        self._folderInput = None
+        self._folderProcess = None
+        self._folderOutput = None
+
+        if workspace is None:
+            self.create_directory_if_not_exists(self.folderProcess)
+            self.create_directory_if_not_exists(self.folderInput)
+            self.create_directory_if_not_exists(self.folderOutput)
+        else:
+            self.create_directory_if_not_exists(self.folderProcess)
+
         self.translate = translate
-        self.threads_status = []
+        self._threads_status_map = {}
         self.threads_status_lock = threading.Lock()
         self.futures = []
         self.executor = None
         self.observers = []
+
+    @property
+    def workspace(self):
+        return self._workspace
+
+    @workspace.setter
+    def workspace(self, ws):
+        self._workspace = ws
+        if ws is not None:
+            self._folderInput = ws.input_dir
+            self._folderProcess = ws.process_dir
+            self._folderOutput = ws.output_dir
 
     def add_observer(self, callback):
         """Padrão Observer: Adiciona um ouvinte para receber eventos do Extrator"""
@@ -68,10 +131,14 @@ class BaseExtractor(ABC):
             data = json.load(f)
             return [os.path.basename(file_path), data]
 
-    @staticmethod
-    def init_folder():
-        BaseExtractor.clean_folder(BaseExtractor.folderProcess)
-        BaseExtractor.clean_folder(BaseExtractor.folderOutput)
+    def init_folder(self=None):
+        if self is not None and not isinstance(self, type):
+            self.clean_folder(self.folderProcess)
+            if getattr(self, '_workspace', None) is None:
+                self.clean_folder(self.folderOutput)
+        else:
+            BaseExtractor.clean_folder(BaseExtractor.folderProcess)
+            BaseExtractor.clean_folder(BaseExtractor.folderOutput)
 
     @classmethod
     def get_interactive_questions(cls):
@@ -89,6 +156,40 @@ class BaseExtractor(ABC):
     @abstractmethod
     def update_json(file_name, data, new_data):
         pass
+
+    @classmethod
+    def sanitize_octal_data(cls, data):
+        """Sanitiza números com zeros à esquerda em trechos de código em estruturas de dados na memória."""
+        code_triggers = ['if(', 'var ', 'return', '=>', 'function', 'mes =', 'text =']
+        num_leading_zero = re.compile(r"\b0+([0-9]+)\b")
+
+        def walk(obj):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    obj[k] = walk(v)
+                return obj
+            elif isinstance(obj, list):
+                for i, v in enumerate(obj):
+                    obj[i] = walk(v)
+                return obj
+            elif isinstance(obj, str):
+                s = obj
+                if any(t in s for t in code_triggers) and num_leading_zero.search(s):
+                    def repl(m):
+                        start, end = m.start(), m.end()
+                        before = s[:start]
+                        after = s[end:]
+                        in_double = before.count('"') % 2 == 1 and after.count('"') % 2 == 1
+                        in_single = before.count("'") % 2 == 1 and after.count("'") % 2 == 1
+                        if in_double or in_single:
+                            return m.group(0)
+                        return m.group(1)
+
+                    return num_leading_zero.sub(repl, s)
+                return s
+            return obj
+
+        return walk(data)
 
     @classmethod
     def import_file(cls, file_name, json_data, folder):
@@ -132,13 +233,13 @@ class BaseExtractor(ABC):
                 raise
 
         try:
+            if isinstance(json_data, (dict, list)):
+                json_data = cls.sanitize_octal_data(json_data)
+
             # Validar se json_data é serializável antes de escrever
             json_string = json.dumps(json_data, ensure_ascii=False, separators=(',', ':'))
 
-            # Validar se o JSON gerado pode ser recarregado (teste de integridade)
-            json.loads(json_string)
-
-            # Se validação passou, escrever arquivo
+            # Se validação passou, escrever arquivo diretamente sem releitura
             with open(dest_path, 'w', encoding='utf-8') as f:
                 f.write(json_string)
 
@@ -196,7 +297,7 @@ class BaseExtractor(ABC):
                 if key not in merged_dict:
                     merged_dict[key] = value
                     continue
-                
+
                 for i, item in enumerate(value):
                     if i >= len(merged_dict[key]):
                         merged_dict[key].append(item)
@@ -237,26 +338,38 @@ class BaseExtractor(ABC):
                 continue
         return norm
 
+    @property
+    def threads_status(self):
+        with self.threads_status_lock:
+            return list(self._threads_status_map.values())
+
+    @threads_status.setter
+    def threads_status(self, val):
+        with self.threads_status_lock:
+            if isinstance(val, dict):
+                self._threads_status_map = val.copy()
+            elif isinstance(val, list):
+                self._threads_status_map = {
+                    self.normalize_status_file(s.get('file', '')): s for s in val
+                }
+            else:
+                self._threads_status_map = {}
+
     def add_threads_status(self, status):
         status_state = status.get('status', 'info')
         raw_file = status.get('file', 'Unknown File')
         norm_file = self.normalize_status_file(raw_file)
         status['file'] = norm_file
         msg = status.get('msg', '')
-        
+
         # Loga no arquivo de forma amigável
-        if status_state != 'process': # Ignora logs de "process" repetitivos para não poluir o arquivo
+        if status_state != 'process':  # Ignora logs de "process" repetitivos para não poluir o arquivo
             logging.info(f"[{status_state.upper()}] {norm_file} - {msg}")
 
         with self.threads_status_lock:
-            self.threads_status = [
-                s for s in self.threads_status 
-                if self.normalize_status_file(s.get('file', '')) != norm_file
-            ]
-            self.threads_status.append(status)
-            snapshot = list(self.threads_status)
+            self._threads_status_map[norm_file] = status
 
-        self.notify_observers('status_update', snapshot)
+        self.notify_observers('status_update', status)
 
     def _get_patterns(self, file_name, data):
         if hasattr(self, 'get_mask_patterns') and callable(getattr(self, 'get_mask_patterns')):
@@ -289,7 +402,7 @@ class BaseExtractor(ABC):
             GetPatternsStep, CacheLookupStep, MaskingStep, TranslationStep,
             UnmaskingStep, FixingStep, CacheStoreStep
         )
-        
+
         context = TranslationContext(
             file_name=file_name,
             data=data,
@@ -298,7 +411,7 @@ class BaseExtractor(ABC):
             file_path_str=file_path_str,
             extractor=self
         )
-        
+
         pipeline = TranslationPipeline()
         pipeline.add_step(CacheLookupStep()) \
                 .add_step(GetPatternsStep()) \
@@ -307,7 +420,7 @@ class BaseExtractor(ABC):
                 .add_step(UnmaskingStep()) \
                 .add_step(FixingStep()) \
                 .add_step(CacheStoreStep())
-                
+
         return pipeline.execute(context)
 
     def _handle_no_text(self, file_path_str, file_name, data=None):
@@ -357,7 +470,7 @@ class BaseExtractor(ABC):
 
         return True
 
-    def process_file(self, file, retries=5, delay=5, max_delay=60):
+    def process_file(self, file, retries=5, delay=5, max_delay=60, data=None, raw_text=None):
         translate = copy.deepcopy(self.translate)
         file_path_str = str(file)
         folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
@@ -389,21 +502,22 @@ class BaseExtractor(ABC):
                 return
 
         # 1. Fase de Extração (determinística, local - sem retry)
-        try:
-            extracted_name, data = self.extract_files(file_path_str)
-            if data is None:
-                self.add_threads_status({'file': rel_path, 'status': 'erro', 'msg': "Formato não suportado ou arquivo vazio"})
+        if data is None or raw_text is None:
+            try:
+                extracted_name, data = self.extract_files(file_path_str)
+                if data is None:
+                    self.add_threads_status({'file': rel_path, 'status': 'erro', 'msg': "Formato não suportado ou arquivo vazio"})
+                    return
+
+                raw_text = self.extract_text(file_name, data)
+            except Exception as e:
+                logging.error(f"Erro na extração do arquivo {file}: {e}")
+                self.add_threads_status(
+                    {'file': rel_path, 'status': 'erro', 'msg': f"Erro na extração: {e}"})
                 return
 
-            raw_text = self.extract_text(file_name, data)
-
-            if not raw_text:
-                self._handle_no_text(file_path_str, rel_path, data)
-                return
-        except Exception as e:
-            logging.error(f"Erro na extração do arquivo {file}: {e}")
-            self.add_threads_status(
-                {'file': rel_path, 'status': 'erro', 'msg': f"Erro na extração: {e}"})
+        if not raw_text:
+            self._handle_no_text(file_path_str, rel_path, data)
             return
 
         # 2. Fase de Tradução (rede/API - retry apenas para falhas transitórias)
@@ -453,10 +567,6 @@ class BaseExtractor(ABC):
         """
         import src.utils.TextsUtils as TextsUtils
 
-        cache = getattr(self.translate, 'cache', None)
-        if cache is None or not hasattr(cache, 'lookup_many'):
-            return 'pending', None
-
         file_path_str = str(file)
         file_name = os.path.basename(file_path_str)
         try:
@@ -484,11 +594,13 @@ class BaseExtractor(ABC):
             if not strings:
                 return 'empty', (rel_path, file_path_str, file_name, data)
 
-            hits = cache.lookup_many(strings)
-            if all(s in hits for s in strings):
-                return 'cached', (rel_path, data, raw_text, file_name)
+            cache = getattr(self.translate, 'cache', None)
+            if cache is not None and hasattr(cache, 'lookup_many'):
+                hits = cache.lookup_many(strings)
+                if all(s in hits for s in strings):
+                    return 'cached', (rel_path, data, raw_text, file_name)
 
-            return 'pending', None
+            return 'pending', (rel_path, data, raw_text, file_name)
         except Exception as e:
             logging.debug(f"Prescan: {file} vai para o fluxo normal ({e})")
             return 'pending', None
@@ -584,7 +696,11 @@ class BaseExtractor(ABC):
                         with self._dispatch_lock:
                             self.fast_futures.append(fut)
                     else:
-                        fut = self.executor.submit(self.process_file, file)
+                        if entry:
+                            _rel, data, raw_text, _fname = entry
+                            fut = self.executor.submit(self.process_file, file, data=data, raw_text=raw_text)
+                        else:
+                            fut = self.executor.submit(self.process_file, file)
                         with self._dispatch_lock:
                             self.futures.append(fut)
             finally:
@@ -620,90 +736,34 @@ class BaseExtractor(ABC):
         self.fast_futures = []
 
         folder_process = getattr(self, 'folderProcess', self.__class__.folderProcess)
-        folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
         folder_output = getattr(self, 'folderOutput', self.__class__.folderOutput)
 
         for root, _, filenames in os.walk(folder_process):
             for filename in filenames:
                 file = os.path.join(root, filename)
                 rel_path = os.path.relpath(file, folder_process)
-                input_file = os.path.join(folder_input, rel_path)
-                if os.path.exists(input_file):
-                    process_data = self.extract_files(file)
-
-                    original_data = self.extract_files(input_file)
-                    original_json = original_data[1] if original_data[1] else None
-
-                    if original_json is None:
-                        logging.warning(f"⚠️ fix_text_translate called WITHOUT original JSON for {rel_path}")
-
-                    self.import_file(rel_path, process_data[1], folder_output)
+                dest_path = os.path.join(folder_output, rel_path)
+                if os.path.abspath(file) != os.path.abspath(dest_path):
+                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                    ws = getattr(self, '_workspace', None)
+                    if ws is not None:
+                        ws.atomic_replace(file, dest_path)
+                    else:
+                        tmp_dest = f"{dest_path}.tmp_{os.getpid()}_{threading.get_ident()}"
+                        shutil.copy2(file, tmp_dest)
+                        try:
+                            os.replace(tmp_dest, dest_path)
+                        except Exception:
+                            if os.path.exists(tmp_dest):
+                                try:
+                                    os.remove(tmp_dest)
+                                except Exception:
+                                    pass
+                            shutil.copy2(file, dest_path)
 
     def sanitize_output_files(self):
         """
-        Varre os arquivos JSON em `folderOutput` e remove números com zeros à esquerda
-        que aparecem em trechos de código (podem se tornar literais octais em JS strict).
-
-        Heurística:
-        - Percorre todos os valores string dentro do JSON.
-        - Para cada string que contém padrões parecidos com código (if(, var , function, =>, mes =, text =)
-          substitui tokens numéricos com zeros à esquerda por sua forma sem zeros.
-        - Não altera números que estão dentro de literais de string (detectado por contagem de aspas simples/duplas).
+        Mantido para compatibilidade retroativa. A sanitização de literais octais
+        agora é executada em memória antes da serialização, eliminando re-leituras em disco.
         """
-        import json
-        import re
-        from pathlib import Path
-
-        code_triggers = ['if(', 'var ', 'return', '=>', 'function', 'mes =', 'text =']
-        num_leading_zero = re.compile(r"\b0+([0-9]+)\b")
-
-        for p in Path(self.folderOutput).glob('*.json'):
-            try:
-                data = json.load(p.open('r', encoding='utf-8'))
-            except Exception:
-                continue
-
-            changed = False
-
-            def walk(obj):
-                nonlocal changed
-                if isinstance(obj, dict):
-                    for k, v in obj.items():
-                        obj[k] = walk(v)
-                    return obj
-                elif isinstance(obj, list):
-                    for i, v in enumerate(obj):
-                        obj[i] = walk(v)
-                    return obj
-                elif isinstance(obj, str):
-                    s = obj
-                    if any(t in s for t in code_triggers) and num_leading_zero.search(s):
-                        # substituir apenas ocorrências que não estejam dentro de aspas
-                        def repl(m):
-                            start, end = m.start(), m.end()
-                            # heurística: se número estiver dentro de aspas na string, não substituir
-                            before = s[:start]
-                            after = s[end:]
-                            in_double = before.count('"') % 2 == 1 and after.count('"') % 2 == 1
-                            in_single = before.count("'") % 2 == 1 and after.count("'") % 2 == 1
-                            if in_double or in_single:
-                                return m.group(0)
-                            else:
-                                changed_local = True
-                                return m.group(1)
-
-                        new_s = num_leading_zero.sub(repl, s)
-                        if new_s != s:
-                            changed = True
-                            return new_s
-                    return s
-                else:
-                    return obj
-
-            new_data = walk(data)
-            if changed:
-                try:
-                    with p.open('w', encoding='utf-8') as fh:
-                        json.dump(new_data, fh, ensure_ascii=False, separators=(',', ':'))
-                except Exception as e:
-                    logging.error(f"Failed to write sanitized file {p}: {e}")
+        pass

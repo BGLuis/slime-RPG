@@ -2,7 +2,9 @@ import os
 import sqlite3
 import threading
 
-DB_PATH = os.path.join('cache', 'settings.db')
+from src.utils.paths import get_settings_db_path
+
+DB_PATH = get_settings_db_path()
 
 
 class SettingsStore:
@@ -10,7 +12,9 @@ class SettingsStore:
 
     _lock = threading.Lock()
 
-    def __init__(self, db_path=DB_PATH):
+    def __init__(self, db_path=None):
+        if db_path is None:
+            db_path = get_settings_db_path()
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path) or '.', exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)

@@ -7,6 +7,7 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.translate.TranslationMemory import TranslationMemory
+from src.utils.paths import get_app_dir, get_memory_db_path
 
 
 class BaseTranslate(ABC):
@@ -17,7 +18,7 @@ class BaseTranslate(ABC):
     CHAR_LIMIT_DECREMENT = 1000
     lang_source = 'en'
     lang_target = 'pt'
-    cache_path_base = 'cache'
+    cache_path_base = get_app_dir("data")
     MAX_REQUESTS_SIMULTANEOUSLY = 99
 
     # Teto de requisições simultâneas por classe de tradutor, compartilhado entre
@@ -103,7 +104,16 @@ class BaseTranslate(ABC):
         self._load_cache_for_current_languages()
 
     def _load_cache_for_current_languages(self):
-        self.cache_path = f'{self.__class__.cache_path_base}/memory.db'
+        env_mem = os.environ.get("SLIME_MEMORY_DB")
+        if env_mem:
+            self.cache_path = get_memory_db_path()
+        else:
+            base = getattr(self, 'cache_path_base', getattr(self.__class__, 'cache_path_base', None))
+            default_data_dir = get_app_dir("data")
+            if base and os.path.abspath(base) != os.path.abspath(default_data_dir):
+                self.cache_path = os.path.join(base, 'memory.db')
+            else:
+                self.cache_path = get_memory_db_path()
         self.cache = TranslationMemory(
             self.cache_path, self.lang_source, self.lang_target,
             engine=self.__class__.agent, game=getattr(self, 'game_name', None),
@@ -119,7 +129,6 @@ class BaseTranslate(ABC):
         # quem chama translate.save_cache() esperando um flush explícito no final.
         with self.cache._lock:
             self.cache._conn.commit()
-
 
     @classmethod
     def requires_synopsis(cls):
@@ -147,19 +156,19 @@ class BaseTranslate(ABC):
 
         for text in texts:
             text_len = len(text) + len(self.delimiter)
-            
+
             # If adding this text exceeds the limit and we have a non-empty batch, start a new one
             if current_length + text_len >= self.char_limit and current_batch:
                 batches.append(current_batch)
                 current_batch = []
                 current_length = 0
-            
+
             current_batch.append(text)
             current_length += text_len
 
         if current_batch:
             batches.append(current_batch)
-            
+
         return batches
 
     @staticmethod
@@ -248,7 +257,7 @@ class BaseTranslate(ABC):
         translated_texts = [None] * len(texts)
         cache_indices = []
         non_cached_indices = []
-        none_indices = [] # Indices where input text is None
+        none_indices = []  # Indices where input text is None
 
         # Um único lookup em lote em vez de 2 queries por texto sob lock global.
         has_bulk = hasattr(self.cache, 'lookup_many')
@@ -305,7 +314,7 @@ class BaseTranslate(ABC):
 
                     if len(text) > self.char_limit:
                         # Chunk oversized strings to avoid persistent >5000 character errors
-                        pieces = [text[j:j+self.char_limit] for j in range(0, len(text), self.char_limit)]
+                        pieces = [text[j:j + self.char_limit] for j in range(0, len(text), self.char_limit)]
                         translated_pieces = []
                         for p in pieces:
                             try:
@@ -372,7 +381,6 @@ class BaseTranslate(ABC):
             translated_texts[index] = None
 
         return translated_texts
-
 
     @abstractmethod
     def translator(self, texts, progress_callback=None):
