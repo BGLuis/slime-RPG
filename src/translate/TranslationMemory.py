@@ -37,6 +37,7 @@ CREATE TRIGGER IF NOT EXISTS segment_ad AFTER DELETE ON segment BEGIN
 END;
 """
 
+
 def _status_rank_expr(column_ref):
     return f"CASE {column_ref} WHEN 'locked' THEN 0 WHEN 'reviewed' THEN 1 ELSE 2 END"
 
@@ -76,6 +77,19 @@ class TranslationMemory:
       lock), cada `SELECT` autocommit enxerga o último estado commitado.
     """
 
+    ENGINE_MIGRATION_MAP = {
+        'googletraslator': 'google',
+        'googletranslator': 'google',
+        'googletranslate': 'google',
+        'google': 'google',
+        'deepltranslator': 'deepl',
+        'deepltranslate': 'deepl',
+        'deepl': 'deepl',
+        'ollamatranslator': 'ollama',
+        'ollamatranslate': 'ollama',
+        'ollama': 'ollama',
+    }
+
     _connections = {}
     _connections_lock = threading.Lock()
 
@@ -86,9 +100,65 @@ class TranslationMemory:
         self.db_path = db_path
         self.src_lang = src_lang
         self.tgt_lang = tgt_lang
-        self.engine = engine
+        self.engine = self.ENGINE_MIGRATION_MAP.get(engine.lower(), engine.lower() if engine else engine) if engine else engine
         self.game = game
         self._conn, self._lock = self._get_shared_connection(db_path)
+
+    @classmethod
+    def migrate_engine_names(cls, conn):
+        """
+        Migra nomes legados de provedores (ex: googleTraslator -> google),
+        resolvendo conflitos antes de atualizar para evitar violação da constraint UNIQUE.
+        Se já existir uma entrada com o novo nome de engine para o mesmo (src_lang, tgt_lang, source_hash),
+        a entrada com status superior (locked > reviewed > machine) é preservada, e a duplicata é excluída
+        antes do UPDATE final.
+        """
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT DISTINCT engine FROM segment")
+            existing_engines = [row[0] for row in cursor.fetchall() if row[0]]
+        except Exception:
+            return
+
+        migrations = {}
+        for eng in existing_engines:
+            target = cls.ENGINE_MIGRATION_MAP.get(eng.lower(), eng.lower())
+            if target != eng:
+                migrations[eng] = target
+
+        if not migrations:
+            return
+
+        rank_map = {'locked': 0, 'reviewed': 1, 'machine': 2}
+        for old_eng, new_eng in migrations.items():
+            cursor.execute("""
+                SELECT old.id, old.status, old.target, old.updated_at, old.context, old.model, old.game,
+                       new.id, new.status, new.updated_at
+                FROM segment old
+                JOIN segment new ON old.src_lang = new.src_lang
+                                AND old.tgt_lang = new.tgt_lang
+                                AND old.source_hash = new.source_hash
+                WHERE old.engine = ? AND new.engine = ?
+            """, (old_eng, new_eng))
+            conflicts = cursor.fetchall()
+
+            for (old_id, old_status, old_target, old_updated, old_context, old_model, old_game,
+                 new_id, new_status, new_updated) in conflicts:
+                old_rank = rank_map.get(old_status, 2)
+                new_rank = rank_map.get(new_status, 2)
+                if old_rank < new_rank or (old_rank == new_rank and (old_updated or '') > (new_updated or '')):
+                    cursor.execute("""
+                        UPDATE segment SET target = ?, status = ?, updated_at = ?,
+                                           context = COALESCE(?, context),
+                                           model = COALESCE(?, model),
+                                           game = COALESCE(?, game)
+                        WHERE id = ?
+                    """, (old_target, old_status, old_updated, old_context, old_model, old_game, new_id))
+                cursor.execute("DELETE FROM segment WHERE id = ?", (old_id,))
+
+            cursor.execute("UPDATE segment SET engine = ? WHERE engine = ?", (new_eng, old_eng))
+
+        conn.commit()
 
     @classmethod
     def _get_shared_connection(cls, db_path):
@@ -99,6 +169,7 @@ class TranslationMemory:
                 conn = sqlite3.connect(db_path, check_same_thread=False)
                 conn.execute('PRAGMA journal_mode=WAL')
                 conn.executescript(SCHEMA)
+                cls.migrate_engine_names(conn)
                 conn.commit()
                 entry = {'conn': conn, 'lock': threading.Lock()}
                 cls._connections[db_path] = entry

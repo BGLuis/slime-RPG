@@ -23,9 +23,9 @@ from .WolfBinaryAdapter import WolfBinaryAdapter, WolfDatabase
 from .WolfArchive import WolfArchive
 
 
-@register_extractor("Wolf RPG")
+@register_extractor("wolfrpg", display_name="Wolf RPG", aliases=["Wolf RPG", "wolf_rpg", "wolf-rpg", "wolf"])
 class WolfRPGExtractor(BaseExtractor):
-    name = "Wolf RPG"
+    name = "wolfrpg"
     files_types = ['mps', 'dat', 'project', 'wolf']
 
     def __init__(self, translate):

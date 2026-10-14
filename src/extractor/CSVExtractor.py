@@ -40,8 +40,9 @@ def detect_delimiter_from_file(file_path: str) -> str:
         pass
     return ','
 
-@register_extractor("CSV")
+@register_extractor("csv", aliases=["CSV"])
 class CSVExtractor(BaseExtractor):
+    name = "csv"
     files_types = ['csv']
     _detected_delimiters = {}
 

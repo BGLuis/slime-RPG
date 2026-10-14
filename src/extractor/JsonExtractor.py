@@ -1,8 +1,9 @@
 from src.extractor.BaseExtractor import BaseExtractor
 from src.factory import register_extractor
 
-@register_extractor("Json")
+@register_extractor("json", aliases=["Json", "JSON"])
 class JsonExtractor(BaseExtractor):
+    name = "json"
     files_types = ['json']
 
     @classmethod

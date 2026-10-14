@@ -6,8 +6,9 @@ import src.utils.TextsUtils as TextsUtils
 from src.factory import register_translator
 load_dotenv()
 
-@register_translator("ollamaTranslator")
+@register_translator("ollama", aliases=["ollamaTranslator", "ollama_translator"])
 class OllamaTranslate(BaseTranslate):
+    agent = 'ollama'
     MAX_REQUESTS_SIMULTANEOUSLY = 10
     char_limit = 10000
     context_function = "Reply with only the translated text, without any additional comments, explanations, or notes."

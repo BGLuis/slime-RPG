@@ -11,8 +11,9 @@ from .RPGEventStrategy import (
 )
 from src.factory import register_extractor
 
-@register_extractor("RPG Maker")
+@register_extractor("rpgmaker", display_name="RPG Maker", aliases=["RPG Maker", "rpg_maker", "rpg-maker"])
 class RPGMakerExtractor(BaseExtractor):
+    name = "rpgmaker"
     files_types = ['json', 'rvdata2']
 
     def __init__(self, translate):

@@ -148,3 +148,267 @@ def test_store_many_rejects_identical_machine_translation_when_languages_differ(
     assert tm.lookup('Banana') is None
     assert tm.lookup('Orange') == 'Laranja'
 
+
+def test_legacy_engine_migration_google_traslator_to_google(tmp_path):
+    import sqlite3
+    from src.translate.TranslationMemory import SCHEMA, source_hash
+
+    db_file = str(tmp_path / 'legacy_migrate.db')
+    conn = sqlite3.connect(db_file)
+    conn.executescript(SCHEMA)
+    h = source_hash('Hello World')
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'Hello World', 'Ola Mundo', ?, 'googleTraslator', 'machine', '2026-01-01', '2026-01-01')""",
+        (h,)
+    )
+    conn.commit()
+    conn.close()
+
+    TranslationMemory._reset_pools()
+    tm = TranslationMemory(db_file, 'en', 'pt', engine='google')
+
+    assert tm.lookup('Hello World') == 'Ola Mundo'
+
+    read_conn = sqlite3.connect(db_file)
+    row = read_conn.execute("SELECT engine FROM segment WHERE source_hash=?", (h,)).fetchone()
+    read_conn.close()
+    assert row[0] == 'google'
+
+
+def test_engine_migration_resolves_conflict_retaining_higher_status(tmp_path):
+    import sqlite3
+    from src.translate.TranslationMemory import SCHEMA, source_hash
+
+    db_file = str(tmp_path / 'conflict_migrate.db')
+    conn = sqlite3.connect(db_file)
+    conn.executescript(SCHEMA)
+    h = source_hash('Conflict Text')
+    # Row 1: legacy engine with 'reviewed'
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'Conflict Text', 'Texto Revisado', ?, 'googleTraslator', 'reviewed', '2026-01-01', '2026-01-01')""",
+        (h,)
+    )
+    # Row 2: new engine with 'machine'
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'Conflict Text', 'Texto Maquina', ?, 'google', 'machine', '2026-01-02', '2026-01-02')""",
+        (h,)
+    )
+    conn.commit()
+    conn.close()
+
+    TranslationMemory._reset_pools()
+    # Deve migrar sem disparar sqlite3.IntegrityError (UNIQUE constraint failed)
+    tm = TranslationMemory(db_file, 'en', 'pt', engine='google')
+
+    assert tm.lookup('Conflict Text') == 'Texto Revisado'
+
+    read_conn = sqlite3.connect(db_file)
+    rows = read_conn.execute("SELECT engine, status, target FROM segment WHERE source_hash=?", (h,)).fetchall()
+    read_conn.close()
+    assert len(rows) == 1
+    assert rows[0] == ('google', 'reviewed', 'Texto Revisado')
+
+
+def test_engine_migration_resolves_conflict_retaining_locked_over_machine(tmp_path):
+    import sqlite3
+    from src.translate.TranslationMemory import SCHEMA, source_hash
+
+    db_file = str(tmp_path / 'conflict_locked.db')
+    conn = sqlite3.connect(db_file)
+    conn.executescript(SCHEMA)
+    h = source_hash('Locked Text')
+    # Row 1: legacy engine with 'machine'
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'Locked Text', 'Texto Maquina', ?, 'googleTraslator', 'machine', '2026-01-01', '2026-01-01')""",
+        (h,)
+    )
+    # Row 2: new engine with 'locked'
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'Locked Text', 'Texto Travado', ?, 'google', 'locked', '2026-01-02', '2026-01-02')""",
+        (h,)
+    )
+    conn.commit()
+    conn.close()
+
+    TranslationMemory._reset_pools()
+    tm = TranslationMemory(db_file, 'en', 'pt', engine='google')
+
+    assert tm.lookup('Locked Text') == 'Texto Travado'
+
+    read_conn = sqlite3.connect(db_file)
+    rows = read_conn.execute("SELECT engine, status, target FROM segment WHERE source_hash=?", (h,)).fetchall()
+    read_conn.close()
+    assert len(rows) == 1
+    assert rows[0] == ('google', 'locked', 'Texto Travado')
+
+
+def test_engine_migration_deepl_and_ollama(tmp_path):
+    import sqlite3
+    from src.translate.TranslationMemory import SCHEMA, source_hash
+
+    db_file = str(tmp_path / 'multi_migrate.db')
+    conn = sqlite3.connect(db_file)
+    conn.executescript(SCHEMA)
+    h1 = source_hash('DeepL Test')
+    h2 = source_hash('Ollama Test')
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'DeepL Test', 'Teste DeepL', ?, 'deeplTranslator', 'machine', '2026-01-01', '2026-01-01')""",
+        (h1,)
+    )
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'Ollama Test', 'Teste Ollama', ?, 'ollamaTranslator', 'machine', '2026-01-01', '2026-01-01')""",
+        (h2,)
+    )
+    conn.commit()
+    conn.close()
+
+    TranslationMemory._reset_pools()
+    _ = TranslationMemory(db_file, 'en', 'pt', engine='deepl')
+
+    read_conn = sqlite3.connect(db_file)
+    r1 = read_conn.execute("SELECT engine FROM segment WHERE source_hash=?", (h1,)).fetchone()
+    r2 = read_conn.execute("SELECT engine FROM segment WHERE source_hash=?", (h2,)).fetchone()
+    read_conn.close()
+    assert r1[0] == 'deepl'
+    assert r2[0] == 'ollama'
+
+
+def test_engine_migration_tripartite_conflict(tmp_path):
+    import sqlite3
+    from src.translate.TranslationMemory import SCHEMA, source_hash
+
+    db_file = str(tmp_path / 'tripartite.db')
+    conn = sqlite3.connect(db_file)
+    conn.executescript(SCHEMA)
+    h = source_hash('Tripartite Text')
+
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'Tripartite Text', 'Versao Maquina', ?, 'google', 'machine', '2026-01-01', '2026-01-01')""",
+        (h,)
+    )
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'Tripartite Text', 'Versao Revisada', ?, 'googleTraslator', 'reviewed', '2026-01-02', '2026-01-02')""",
+        (h,)
+    )
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'Tripartite Text', 'Versao Travada', ?, 'googleTranslator', 'locked', '2026-01-03', '2026-01-03')""",
+        (h,)
+    )
+    conn.commit()
+    conn.close()
+
+    TranslationMemory._reset_pools()
+    tm = TranslationMemory(db_file, 'en', 'pt', engine='google')
+    assert tm.lookup('Tripartite Text') == 'Versao Travada'
+
+    read_conn = sqlite3.connect(db_file)
+    rows = read_conn.execute("SELECT engine, status, target FROM segment WHERE source_hash=?", (h,)).fetchall()
+    read_conn.close()
+    assert len(rows) == 1
+    assert rows[0] == ('google', 'locked', 'Versao Travada')
+
+
+def test_engine_migration_equal_status_keeps_newer_timestamp(tmp_path):
+    import sqlite3
+    from src.translate.TranslationMemory import SCHEMA, source_hash
+
+    db_file = str(tmp_path / 'newer_ts.db')
+    conn = sqlite3.connect(db_file)
+    conn.executescript(SCHEMA)
+    h = source_hash('Timestamp Text')
+
+    # canonical row older
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'Timestamp Text', 'Traducao Antiga', ?, 'google', 'machine', '2026-01-01T00:00:00', '2026-01-01T00:00:00')""",
+        (h,)
+    )
+    # legacy row newer
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'Timestamp Text', 'Traducao Nova', ?, 'googleTraslator', 'machine', '2026-02-01T00:00:00', '2026-02-01T00:00:00')""",
+        (h,)
+    )
+    conn.commit()
+    conn.close()
+
+    TranslationMemory._reset_pools()
+    tm = TranslationMemory(db_file, 'en', 'pt', engine='google')
+    assert tm.lookup('Timestamp Text') == 'Traducao Nova'
+
+    read_conn = sqlite3.connect(db_file)
+    rows = read_conn.execute("SELECT engine, status, target FROM segment WHERE source_hash=?", (h,)).fetchall()
+    read_conn.close()
+    assert len(rows) == 1
+    assert rows[0] == ('google', 'machine', 'Traducao Nova')
+
+
+def test_engine_migration_two_legacies_without_canonical(tmp_path):
+    import sqlite3
+    from src.translate.TranslationMemory import SCHEMA, source_hash
+
+    db_file = str(tmp_path / 'two_legacies.db')
+    conn = sqlite3.connect(db_file)
+    conn.executescript(SCHEMA)
+    h = source_hash('No Canonical Init')
+
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'No Canonical Init', 'De Maquina', ?, 'googleTraslator', 'machine', '2026-01-01', '2026-01-01')""",
+        (h,)
+    )
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'No Canonical Init', 'Revisada', ?, 'googleTranslator', 'reviewed', '2026-01-02', '2026-01-02')""",
+        (h,)
+    )
+    conn.commit()
+    conn.close()
+
+    TranslationMemory._reset_pools()
+    tm = TranslationMemory(db_file, 'en', 'pt', engine='google')
+    assert tm.lookup('No Canonical Init') == 'Revisada'
+
+    read_conn = sqlite3.connect(db_file)
+    rows = read_conn.execute("SELECT engine, status, target FROM segment WHERE source_hash=?", (h,)).fetchall()
+    read_conn.close()
+    assert len(rows) == 1
+    assert rows[0] == ('google', 'reviewed', 'Revisada')
+
+
+def test_engine_migration_capitalized_and_variants(tmp_path):
+    import sqlite3
+    from src.translate.TranslationMemory import SCHEMA, source_hash
+
+    db_file = str(tmp_path / 'capitalized.db')
+    conn = sqlite3.connect(db_file)
+    conn.executescript(SCHEMA)
+    h = source_hash('Cap Text')
+
+    conn.execute(
+        """INSERT INTO segment (src_lang, tgt_lang, source, target, source_hash, engine, status, created_at, updated_at)
+           VALUES ('en', 'pt', 'Cap Text', 'Cap Target', ?, 'Google', 'machine', '2026-01-01', '2026-01-01')""",
+        (h,)
+    )
+    conn.commit()
+    conn.close()
+
+    TranslationMemory._reset_pools()
+    tm = TranslationMemory(db_file, 'en', 'pt', engine='Google')
+    assert tm.engine == 'google'
+    assert tm.lookup('Cap Text') == 'Cap Target'
+
+    read_conn = sqlite3.connect(db_file)
+    row = read_conn.execute("SELECT engine FROM segment WHERE source_hash=?", (h,)).fetchone()
+    read_conn.close()
+    assert row[0] == 'google'

@@ -8,8 +8,9 @@ from deep_translator import GoogleTranslator
 import src.utils.TextsUtils as TextsUtils
 from src.factory import register_translator
 
-@register_translator("googleTraslator")
+@register_translator("google", aliases=["googleTraslator", "googleTranslator", "google_translator"])
 class GoogleTranslate(BaseTranslate):
+    agent = 'google'
     # Evita inconsistências em lotes com o cliente HTTP compartilhado.
     MAX_REQUESTS_SIMULTANEOUSLY = 4
     USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'

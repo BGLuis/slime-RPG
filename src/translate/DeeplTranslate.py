@@ -5,9 +5,9 @@ from src.translate.BaseTranslate import BaseTranslate
 import src.utils.TextsUtils as TextsUtils
 from src.factory import register_translator
 
-@register_translator("deeplTranslator")
+@register_translator("deepl", aliases=["deeplTranslator", "deepl_translator"])
 class DeeplTranslate(BaseTranslate):
-    agent = 'deeplTranslator'
+    agent = 'deepl'
     MAX_REQUESTS_SIMULTANEOUSLY = 5
     char_limit = 10000
 
