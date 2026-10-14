@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slime-rpg"
+version = "1.0.0"
+description = "Extrator e tradutor modular de textos para jogos (RPG Maker, Wolf RPG, CSV, JSON)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "defusedxml>=0.7.1",
+    "deep_translator>=1.11.4",
+    "requests>=2.31.0",
+    "textual>=8.2.8",
+    "rich>=15.0.0",
+    "python-dotenv>=1.0.0",
+    "ollama>=0.2.1",
+    "PyQt5>=5.15.9",
+    "qtawesome>=1.3.0",
+    "qt-material>=2.14",
+    "rubymarshal>=1.2.10",
+    "platformdirs>=4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1.1",
+    "flake8>=7.3.0",
+]
+
+[project.scripts]
+slime = "main:main"
+
+[project.entry-points."slime.extractors"]
+rpgmaker = "src.extractor.rpgmaker.RPGMakerExtractor:RPGMakerExtractor"
+wolfrpg = "src.extractor.wolfrpg.WolfRPGExtractor:WolfRPGExtractor"
+csv = "src.extractor.CSVExtractor:CSVExtractor"
+json = "src.extractor.JsonExtractor:JsonExtractor"
+
+[project.entry-points."slime.providers"]
+google = "src.translate.GoogleTranslate:GoogleTranslate"
+deepl = "src.translate.DeeplTranslate:DeeplTranslate"
+ollama = "src.translate.OllamaTranslate:OllamaTranslate"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
