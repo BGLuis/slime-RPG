@@ -1,23 +1,29 @@
-import src.extractor  # noqa: F401 (Importado para registrar as classes na Factory)
-import src.translate  # noqa: F401 (Importado para registrar as classes na Factory)
-from src.services.FileNameTranslator import FileNameTranslator
-import shutil
-from src import cli
-from src.cli import _i18n  # instância compartilhada: a paleta de idioma do cli.py também retraduz aqui
-import os
 import argparse
+import logging
+import os
+import shutil
 import sys
 import time
-import logging
 from logging.handlers import RotatingFileHandler
+
+from src import cli
+from src.cli import _i18n  # instância compartilhada: a paleta de idioma do cli.py também retraduz aqui
+from src import extractor as _extractor  # noqa: F401 (Importado para registrar as classes na Factory)
+from src import translate as _translate  # noqa: F401 (Importado para registrar as classes na Factory)
+from src.factory import ExtractorFactory, TranslatorFactory, AmbiguousPluginError
+from src.utils.paths import get_log_file_path
+
 
 def setup_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler = RotatingFileHandler('processamento.log', maxBytes=5*1024*1024, backupCount=2, encoding='utf-8')
+    log_path = get_log_file_path()
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    file_handler = RotatingFileHandler(log_path, maxBytes=5 * 1024 * 1024, backupCount=2, encoding='utf-8')
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
+
 
 lang_options = {
     'Português': 'pt',
@@ -29,7 +35,6 @@ lang_options = {
     'Automático (Detectar)': 'auto'
 }
 
-from src.factory import ExtractorFactory, TranslatorFactory
 
 def target_lang_options(lang_source):
     """Opções de idioma de destino: sem o idioma de origem e, se a origem não for
@@ -39,17 +44,21 @@ def target_lang_options(lang_source):
         options = {k: v for k, v in options.items() if v != 'auto'}
     return options
 
+
 def copy_file(src, dst):
     shutil.copy(src, dst)
 
+
 def copy_folder(src, dst):
     shutil.copytree(src, dst)
+
 
 def delete_file_folder(pasta):
     for arquivo in os.listdir(pasta):
         caminho = os.path.join(pasta, arquivo)
         if os.path.isfile(caminho):
             os.remove(caminho)
+
 
 def copy_files_only(src, dst, clear_destination=True):
     src_real = os.path.realpath(src)
@@ -77,7 +86,7 @@ def copy_files_only(src, dst, clear_destination=True):
 
 def copy_matching_files(src, dst, extensions=None):
     """Copia recursivamente arquivos de `src` para `dst` preservando a estrutura de subpastas.
-    
+
     Se `extensions` for fornecido, filtra apenas os arquivos correspondentes.
     """
     if not os.path.exists(src):
@@ -103,7 +112,7 @@ def sync_folder_tree(src, dst):
     """Copia recursivamente todos os arquivos e subpastas de `src` para `dst`,
     sobrescrevendo apenas os arquivos correspondentes e preservando os demais no destino.
     """
-    if not os.path.exists(src):
+    if not os.path.exists(src) or os.path.abspath(src) == os.path.abspath(dst):
         return []
 
     copied_files = []
@@ -112,6 +121,8 @@ def sync_folder_tree(src, dst):
             src_path = os.path.join(root, f)
             rel_path = os.path.relpath(src_path, src)
             dst_path = os.path.join(dst, rel_path)
+            if os.path.abspath(src_path) == os.path.abspath(dst_path):
+                continue
             os.makedirs(os.path.dirname(dst_path), exist_ok=True)
             shutil.copy2(src_path, dst_path)
             copied_files.append(rel_path)
@@ -121,7 +132,7 @@ def sync_folder_tree(src, dst):
 
 def ensure_backup(input_dir, backup_dir, extensions=None):
     """Garante que todos os arquivos de `input_dir` existam em `backup_dir`.
-    
+
     Para arquivos translatáveis (conforme `extensions`), realiza cópia independente (`shutil.copy2`).
     Para arquivos de mídia/não-translatáveis, utiliza hardlink (`os.link`) com fallback para cópia,
     garantindo um backup 100% funcional e autônomo sem consumir espaço extra em disco.
@@ -153,7 +164,7 @@ def ensure_backup(input_dir, backup_dir, extensions=None):
     return newly_backed_up
 
 
-def parse_arguments():
+def parse_arguments(args=None):
     """Parse command line arguments"""
     invoked_cmd = os.environ.get('SLIME_INVOKED_AS') or (
         'slime' if os.path.basename(sys.argv[0]) in ('main.py', '') else os.path.basename(sys.argv[0])
@@ -178,55 +189,63 @@ Atalhos/abreviações de terminal disponíveis:
     )
 
     parser.add_argument('-g', '--gui', action='store_true',
-                       help='Iniciar interface gráfica (PyQt5)')
+                        help='Iniciar interface gráfica (PyQt5)')
     parser.add_argument('-e', '--extractor',
-                       help='Tipo de extrator (use --list-extractors para ver opções)')
+                        help='Tipo de extrator (use --list-extractors para ver opções)')
     parser.add_argument('-t', '--translator',
-                       help='Tipo de tradutor (use --list-translators para ver opções)')
+                        help='Tipo de tradutor (use --list-translators para ver opções)')
     parser.add_argument('-s', '--source',
-                       help='Idioma de origem (pt, en, es, fr, it, ja, auto)')
+                        help='Idioma de origem (pt, en, es, fr, it, ja, auto)')
     parser.add_argument('-d', '--target',
-                       help='Idioma de destino (pt, en, es, fr, it, ja)')
+                        help='Idioma de destino (pt, en, es, fr, it, ja)')
     parser.add_argument('-i', '--input',
-                       help='Pasta de entrada dos arquivos')
+                        help='Pasta de entrada dos arquivos')
     parser.add_argument('-o', '--output',
-                       help='Pasta de destino dos arquivos traduzidos (opcional, padrão: mesma pasta de entrada)')
+                        help='Pasta de destino dos arquivos traduzidos (opcional, padrão: mesma pasta de entrada)')
     parser.add_argument('--synopsis', '--sinopse',
-                       help='Sinopse do jogo para melhorar contexto da tradução')
+                        help='Sinopse do jogo para melhorar contexto da tradução')
 
     parser.add_argument('--no-backup', action='store_true',
-                       help='Não criar backup dos arquivos originais')
+                        help='Não criar backup dos arquivos originais')
     parser.add_argument('--no-verify', action='store_true',
-                       help='Não pausar para verificação manual dos arquivos processados')
+                        help='Não pausar para verificação manual dos arquivos processados')
     parser.add_argument('--interactive', action='store_true',
-                       help='Modo interativo (padrão se nenhum argumento for fornecido)')
+                        help='Modo interativo (padrão se nenhum argumento for fornecido)')
 
     parser.add_argument('--mode', choices=['content', 'filenames'], default='content',
-                       help='Modo de operação: traduzir conteúdo de arquivos (content) ou nomes de arquivos (filenames)')
+                        help='Modo de operação: traduzir conteúdo de arquivos (content) ou nomes de arquivos (filenames)')
     parser.add_argument('--keep-original', action='store_true',
-                       help='No modo filenames, manter o arquivo original e criar uma cópia traduzida')
+                        help='No modo filenames, manter o arquivo original e criar uma cópia traduzida')
 
     parser.add_argument('--list-extractors', action='store_true',
-                       help='Listar extratores disponíveis')
+                        help='Listar extratores disponíveis')
     parser.add_argument('--list-translators', action='store_true',
-                       help='Listar tradutores disponíveis')
+                        help='Listar tradutores disponíveis')
     parser.add_argument('--list-languages', action='store_true',
-                       help='Listar idiomas suportados')
+                        help='Listar idiomas suportados')
 
-    return parser.parse_args()
+    return parser.parse_args(args)
 
 
 def list_options():
     """Print available options and exit"""
     print(_i18n.tr('cli_extractors_available'))
     extractors = ExtractorFactory.get_available()
-    for name in extractors.keys():
-        print(f"  - {name}")
+    for name, cls in extractors.items():
+        display = getattr(cls, 'display_name', None)
+        if display and display.lower() != name.lower():
+            print(f"  - {name} ({display})")
+        else:
+            print(f"  - {name}")
 
     print(_i18n.tr('cli_translators_available'))
     translators = TranslatorFactory.get_available()
-    for name in translators.keys():
-        print(f"  - {name}")
+    for name, cls in translators.items():
+        display = getattr(cls, 'display_name', None)
+        if display and display.lower() != name.lower():
+            print(f"  - {name} ({display})")
+        else:
+            print(f"  - {name}")
 
     print(_i18n.tr('cli_languages_supported'))
     for lang_name, lang_code in lang_options.items():
@@ -237,20 +256,26 @@ def validate_arguments(args):
     errors = []
 
     if args.extractor:
-        match = ExtractorFactory.find_match(args.extractor)
-        if match:
-            args.extractor = match
-        else:
-            extractors = ExtractorFactory.get_available()
-            errors.append(_i18n.tr('error_extractor_not_found', name=args.extractor, options=list(extractors.keys())))
+        try:
+            match = ExtractorFactory.find_match(args.extractor)
+            if match:
+                args.extractor = match
+            else:
+                extractors = ExtractorFactory.get_available()
+                errors.append(_i18n.tr('error_extractor_not_found', name=args.extractor, options=list(extractors.keys())))
+        except AmbiguousPluginError as e:
+            errors.append(str(e))
 
     if args.translator:
-        match = TranslatorFactory.find_match(args.translator)
-        if match:
-            args.translator = match
-        else:
-            translators = TranslatorFactory.get_available()
-            errors.append(_i18n.tr('error_translator_not_found', name=args.translator, options=list(translators.keys())))
+        try:
+            match = TranslatorFactory.find_match(args.translator)
+            if match:
+                args.translator = match
+            else:
+                translators = TranslatorFactory.get_available()
+                errors.append(_i18n.tr('error_translator_not_found', name=args.translator, options=list(translators.keys())))
+        except AmbiguousPluginError as e:
+            errors.append(str(e))
 
     if args.source and args.source not in lang_options.values():
         errors.append(_i18n.tr('error_source_lang_unsupported', lang=args.source, options=list(lang_options.values())))
@@ -352,7 +377,8 @@ def run_filename_translation_workflow(args, translators):
         translator_class = translators[args.translator]
     else:
         translator_class = cli.select_option(lambda: _i18n.tr('prompt_select_translator'), translators)
-        if translator_class == "Exit": return False
+        if translator_class == "Exit":
+            return False
 
     translate = TranslatorFactory.create(translator_class.agent)
 
@@ -361,14 +387,16 @@ def run_filename_translation_workflow(args, translators):
         lang_source = args.source
     else:
         lang_source = cli.select_option(lambda: _i18n.tr('prompt_select_source_lang'), lang_options)
-        if lang_source == "Exit": return False
+        if lang_source == "Exit":
+            return False
 
     # 3. Selecionar Idioma de Destino
     if args.target and args.target in lang_options.values() and args.target != lang_source:
         lang_target = args.target
     else:
         lang_target = cli.select_option(lambda: _i18n.tr('prompt_select_target_lang'), target_lang_options(lang_source))
-        if lang_target == "Exit": return False
+        if lang_target == "Exit":
+            return False
 
     translate.change_language(lang_source, lang_target)
 
@@ -392,7 +420,8 @@ def run_filename_translation_workflow(args, translators):
                 _i18n.tr('save_both'): True
             }
         keep_original = cli.select_option(lambda: _i18n.tr('prompt_how_to_save'), save_options)
-        if keep_original == "Exit": return False
+        if keep_original == "Exit":
+            return False
 
     # 6. Selecionar Pasta de Entrada
     if args.input and os.path.exists(args.input):
@@ -404,10 +433,24 @@ def run_filename_translation_workflow(args, translators):
             cli.print_colored_line(_i18n.tr('error_no_folder_selected'), 'red')
             return False
 
-    # 7. Executar Tradução
-    fn_translator = FileNameTranslator(translate)
-    fn_translator.process_directory(input_dir, keep_original)
-    return True
+    # 7. Executar Tradução via TranslationJob
+    from src.job import JobConfig, TranslationJob
+    from src.workspace import Workspace
+
+    job_config = JobConfig(
+        mode='filenames',
+        translator_name=translator_class.agent,
+        lang_source=lang_source,
+        lang_target=lang_target,
+        translator_config=translator_config if 'translator_config' in locals() and translator_config else {},
+        synopsis=args.synopsis,
+        keep_original=keep_original,
+        input_dir=input_dir,
+        output_dir=args.output
+    )
+    ws = Workspace(input_dir, output_dir=args.output)
+    job = TranslationJob(job_config, workspace=ws)
+    return job.run(is_interactive=False)
 
 
 def run_workflow(args):
@@ -437,7 +480,8 @@ def run_workflow(args):
                 _i18n.tr('mode_exit'): 'Exit'
             }
         mode = cli.select_option(lambda: _i18n.tr('prompt_what_to_do'), modes)
-        if mode == "Exit": return False
+        if mode == "Exit":
+            return False
 
     if mode == 'filenames':
         return run_filename_translation_workflow(args, translators)
@@ -450,14 +494,16 @@ def run_workflow(args):
         cli.print_colored_line(_i18n.tr('log_extractor_suggested', name=extractor_class.name), 'green')
     else:
         extractor_class = cli.select_option(lambda: _i18n.tr('prompt_select_extractor'), extractors)
-        if extractor_class == "Exit": return False
+        if extractor_class == "Exit":
+            return False
 
     # 2. Selecionar Tradutor
     if args.translator and args.translator in translators:
         translator_class = translators[args.translator]
     else:
         translator_class = cli.select_option(lambda: _i18n.tr('prompt_select_translator'), translators)
-        if translator_class == "Exit": return False
+        if translator_class == "Exit":
+            return False
 
     translate = TranslatorFactory.create(translator_class.agent)
 
@@ -466,14 +512,16 @@ def run_workflow(args):
         lang_source = args.source
     else:
         lang_source = cli.select_option(lambda: _i18n.tr('prompt_select_source_lang'), lang_options)
-        if lang_source == "Exit": return False
+        if lang_source == "Exit":
+            return False
 
     # 4. Selecionar Idioma de Destino
     if args.target and args.target in lang_options.values() and args.target != lang_source:
         lang_target = args.target
     else:
         lang_target = cli.select_option(lambda: _i18n.tr('prompt_select_target_lang'), target_lang_options(lang_source))
-        if lang_target == "Exit": return False
+        if lang_target == "Exit":
+            return False
 
     translate.change_language(lang_source, lang_target)
 
@@ -526,123 +574,73 @@ def run_workflow(args):
     cli.print_colored_line(_i18n.tr('log_translating_from_to', source=lang_source, target=lang_target), 'cyan')
     cli.print_colored_line(_i18n.tr('log_input_folder', path=input_dir), 'cyan')
 
-    return run_extraction_process(
-        extractor, translate, input_dir, lang_source, 
-        output_dir=args.output,
-        backup=not args.no_backup, 
+    from src.job import JobConfig, TranslationJob
+    from src.workspace import Workspace
+
+    synopsis_val = args.synopsis if args.synopsis else (
+        translator_config.get('synopsis') if 'translator_config' in locals() and translator_config else None
+    )
+
+    job_config = JobConfig(
+        mode='content',
+        extractor_name=extractor_class.name,
+        translator_name=translator_class.agent,
+        lang_source=lang_source,
+        lang_target=lang_target,
+        extractor_config=extractor_config if 'extractor_config' in locals() and extractor_config else {},
+        translator_config=translator_config if 'translator_config' in locals() and translator_config else {},
+        synopsis=synopsis_val,
+        backup=not args.no_backup,
         verify=not args.no_verify,
+        input_dir=input_dir,
+        output_dir=args.output,
+        is_interactive=is_interactive
+    )
+    ws = Workspace(input_dir, output_dir=args.output)
+    job = TranslationJob(job_config, workspace=ws)
+    return job.run(is_interactive=is_interactive)
+
+
+def run_extraction_process(extractor, translate, input_dir, lang_source, output_dir=None,
+                           backup=True, verify=True, is_interactive=True,
+                           gui_signals=None, gui_verify_callback=None):
+    """Run the main extraction and translation process"""
+    from src.workspace import Workspace
+    from src.job import JobConfig, TranslationJob
+
+    ws = getattr(extractor, 'workspace', None)
+    if ws is None:
+        ws = Workspace(input_dir, output_dir=output_dir)
+        extractor.workspace = ws
+
+    job_config = JobConfig(
+        mode='content',
+        extractor_name=extractor.name,
+        translator_name=getattr(translate, 'agent', getattr(translate, 'name', 'Google')),
+        lang_source=lang_source,
+        lang_target=getattr(translate, 'lang_target', 'pt'),
+        backup=backup,
+        verify=verify,
+        input_dir=input_dir,
+        output_dir=output_dir,
+        is_interactive=is_interactive
+    )
+    job = TranslationJob(
+        job_config,
+        workspace=ws,
+        extractor=extractor,
+        translator=translate
+    )
+    return job.run(
+        gui_signals=gui_signals,
+        gui_verify_callback=gui_verify_callback,
         is_interactive=is_interactive
     )
 
 
-def run_extraction_process(extractor, translate, input_dir, lang_source, output_dir=None, backup=True, verify=True, is_interactive=True, gui_signals=None, gui_verify_callback=None):
-    """Run the main extraction and translation process"""
-    def log(msg, color='white'):
-        logging.info(msg)
-        if gui_signals:
-            gui_signals.log.emit(msg, color)
-        else:
-            cli.print_colored_line(msg, color)
-
-    from src.services.GameDetector import is_trash_path, is_project_repo_root
-
-    if is_trash_path(input_dir):
-        log(_i18n.tr('error_folder_in_trash', path=input_dir), 'red')
-        return False
-
-    if is_project_repo_root(input_dir):
-        log(_i18n.tr('error_folder_is_repo_root', path=input_dir), 'red')
-        return False
-
-    try:
-        files_types = getattr(extractor, 'files_types', [])
-        if backup:
-            backup_dir = input_dir + "-" + lang_source
-            newly_backed_up = ensure_backup(input_dir, backup_dir, extensions=files_types)
-            if newly_backed_up:
-                log(_i18n.tr('log_creating_backup', path=backup_dir), 'yellow')
-            else:
-                log(_i18n.tr('log_backup_exists', path=backup_dir), 'yellow')
-
-        extractor.clean_folder(extractor.folderInput)
-        extractor.init_folder()
-        copied_input = copy_matching_files(input_dir, extractor.folderInput, extensions=files_types)
-        logging.info(f"Arquivos copiados para entrada ({len(copied_input)})")
-
-        log(_i18n.tr('log_processing_files'), 'green')
-
-        if not gui_signals:
-            if is_interactive and sys.stdin.isatty():
-                extractor.process_files()
-                cli.show_status(extractor)
-            else:
-                import concurrent.futures
-                logged_done = set()
-
-                def _on_progress(event_name, data):
-                    if event_name == 'status_update' and isinstance(data, list):
-                        for item in data:
-                            f = item.get('file')
-                            st = item.get('status')
-                            if st in ('success', 'erro', 'ignore') and f not in logged_done:
-                                logged_done.add(f)
-                                msg = item.get('msg', '')
-                                color = 'green' if st == 'success' else ('yellow' if st == 'ignore' else 'red')
-                                cli.print_colored_line(f"[{st.upper()}] {f} - {msg}", color)
-
-                extractor.add_observer(_on_progress)
-                extractor.process_files()
-                if hasattr(extractor, 'wait_for_dispatch'):
-                    extractor.wait_for_dispatch()
-                pending = list(getattr(extractor, 'futures', [])) + list(getattr(extractor, 'fast_futures', []))
-                if pending:
-                    concurrent.futures.wait(pending)
-        else:
-            # No modo CLI o show_status já bloqueia até o pool terminar; na GUI
-            # precisamos aguardar explicitamente antes de pedir a verificação manual.
-            import concurrent.futures
-            if hasattr(extractor, 'wait_for_dispatch'):
-                extractor.wait_for_dispatch()
-            pending = list(getattr(extractor, 'futures', [])) + list(getattr(extractor, 'fast_futures', []))
-            concurrent.futures.wait(pending)
-
-        if verify:
-            if gui_verify_callback:
-                log(_i18n.tr('log_waiting_verification', path=extractor.folderProcess), 'yellow')
-                if not gui_verify_callback(extractor.folderProcess):
-                    log(_i18n.tr('log_verification_aborted'), 'red')
-                    return False
-            elif gui_signals:
-                log(_i18n.tr('log_gui_verification_notice', path=extractor.folderProcess), 'yellow')
-            else:
-                cli.instruction(lambda: _i18n.tr('instruction_verify_folder', path=extractor.folderProcess))
-
-        log(_i18n.tr('log_exporting_files'), 'green')
-        extractor.import_files()
-        target_dest = output_dir or input_dir
-        sync_folder_tree(extractor.folderOutput, target_dest)
-
-        log(_i18n.tr('log_finished_success'), 'green')
-
-        return True
-
-    except Exception as e:
-        log(_i18n.tr('log_processing_error', error=str(e)), 'red')
-        return False
-
-    finally:
-        # Persiste o cache de traduções mesmo se o processamento falhar ou for
-        # interrompido (Ctrl+C incluso, já que finally roda também nesse caso),
-        # para não perder o trabalho já feito na sessão.
-        try:
-            translate.save_cache()
-        except Exception as cache_error:
-            log(_i18n.tr('log_cache_save_warning', error=cache_error), 'yellow')
-
-
-if __name__ == '__main__':
+def main(argv=None):
     setup_logging()
-    args = parse_arguments()
+    args = parse_arguments(argv)
 
     # Opção para iniciar GUI
     if args.gui:
@@ -673,11 +671,16 @@ if __name__ == '__main__':
             # Limpar argumentos inválidos para forçar prompt
             extractors = ExtractorFactory.get_available()
             translators = TranslatorFactory.get_available()
-            if args.extractor not in extractors: args.extractor = None
-            if args.translator not in translators: args.translator = None
-            if args.source not in lang_options.values(): args.source = None
-            if args.target not in lang_options.values(): args.target = None
-            if args.input and not os.path.exists(args.input): args.input = None
+            if args.extractor not in extractors:
+                args.extractor = None
+            if args.translator not in translators:
+                args.translator = None
+            if args.source not in lang_options.values():
+                args.source = None
+            if args.target not in lang_options.values():
+                args.target = None
+            if args.input and not os.path.exists(args.input):
+                args.input = None
 
     # Iniciar workflow unificado
     try:
@@ -691,3 +694,7 @@ if __name__ == '__main__':
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
