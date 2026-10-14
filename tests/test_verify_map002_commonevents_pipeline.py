@@ -1,15 +1,18 @@
 import os
 import json
+import pytest
 from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
 from src.pipeline import (
     TranslationContext, TranslationPipeline,
-    GetPatternsStep, MaskingStep, UnmaskingStep, FixingStep
+    GetPatternsStep, MaskingStep, UnmaskingStep
 )
 import src.utils.TextsUtils as TextsUtils
 
 
 def test_map002_and_commonevents_pipeline():
     base_ja = "/mnt/hdd/game/Mahou Shoujo Shirufiina otomi-games/otomi-games.com_GN6UASU1O/魔法少女シルフィーナ/www/data-ja"
+    if not os.path.exists(base_ja):
+        pytest.skip(f"Base path local não encontrado: {base_ja}")
     extractor = RPGMakerExtractor(None)
 
     for fname in ["Map002.json", "CommonEvents.json"]:
@@ -47,7 +50,7 @@ def test_map002_and_commonevents_pipeline():
         fixed_text = extractor.fix_text_translate(result_text, raw_text)
 
         # Validar update_json
-        merged = extractor.merge_dicts_texts(result_text, raw_text)
+        merged = extractor.merge_dicts_texts(fixed_text, raw_text)
         updated_data = extractor.update_json(fname, data, merged)
 
         # Validar serialização JSON
