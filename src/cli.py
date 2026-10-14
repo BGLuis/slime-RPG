@@ -21,7 +21,9 @@ STYLE_MAP = {
 
 _console = Console()
 _settings = SettingsStore()
-_i18n = Translator(_settings.get('ui_language'))
+_saved_lang = _settings.get('ui_language')
+_env_lang = os.environ.get('LANGUAGE') or os.environ.get('LC_ALL')
+_i18n = Translator(_env_lang if _env_lang in LANGUAGES else _saved_lang)
 
 
 def colored_string(text, color='white'):
@@ -302,7 +304,7 @@ def select_folder(title=None):
     options_map = {}
     detected_path_val = None
     caller_path_val = None
-    
+
     if detected:
         desc = detected.get('description', 'Jogo')
         detected_path_val = detected['detected_path']
@@ -373,6 +375,12 @@ class _StatusApp(_LanguagePaletteMixin, App):
     def __init__(self, extractor):
         super().__init__()
         self.extractor = extractor
+        self._status_map = {}
+        self._pending_files = set()
+        self.col_file = None
+        self.col_status = None
+        self.col_msg = None
+        self.col_progress = None
 
     def compose(self) -> ComposeResult:
         table = DataTable()
@@ -381,7 +389,7 @@ class _StatusApp(_LanguagePaletteMixin, App):
         yield Footer()
 
     def _add_columns(self, table):
-        table.add_columns(
+        self.col_file, self.col_status, self.col_msg, self.col_progress = table.add_columns(
             _i18n.tr('cli_table_file'), _i18n.tr('cli_table_status'),
             _i18n.tr('cli_table_message'), _i18n.tr('cli_table_progress'),
         )
@@ -394,12 +402,8 @@ class _StatusApp(_LanguagePaletteMixin, App):
         if event_name == 'status_update':
             self.call_from_thread(self._refresh, data)
 
-    def _refresh(self, status_list) -> None:
+    def _refresh(self, data) -> None:
         table = self.query_one(DataTable)
-        table.clear()
-        all_done = True
-
-        # Coloca arquivos em processamento ('process') no topo da listagem
         status_priority = {
             'process': 0,
             'waiting': 1,
@@ -408,31 +412,50 @@ class _StatusApp(_LanguagePaletteMixin, App):
             'success': 3,
             'ignore': 4,
         }
-        sorted_status_list = sorted(
-            status_list,
-            key=lambda s: (status_priority.get(s.get('status', ''), 99), s.get('file', ''))
-        )
+        if isinstance(data, list):
+            items = sorted(
+                data,
+                key=lambda s: (status_priority.get(s.get('status', ''), 99), s.get('file', ''))
+            )
+        elif isinstance(data, dict):
+            items = [data]
+        else:
+            return
 
-        for status in sorted_status_list:
-            s_code = status.get('status', '')
+        for status in items:
             file_name = status.get('file', '')
+            if not file_name:
+                continue
+            s_code = status.get('status', '')
             msg = status.get('msg', '')
             progress = ''
             if 'current' in status and 'total' in status:
                 progress = f"{status['current']}/{status['total']}"
-            table.add_row(file_name, Text(s_code, style=status_color(s_code)), msg, progress)
-            if s_code not in ('erro', 'success', 'ignore'):
-                all_done = False
 
-        if status_list and all_done:
+            self._status_map[file_name] = status
+
+            if s_code in ('erro', 'success', 'ignore'):
+                self._pending_files.discard(file_name)
+            else:
+                self._pending_files.add(file_name)
+
+            if file_name in table.rows:
+                table.update_cell(file_name, self.col_status, Text(s_code, style=status_color(s_code)))
+                table.update_cell(file_name, self.col_msg, msg)
+                table.update_cell(file_name, self.col_progress, progress)
+            else:
+                table.add_row(
+                    file_name, Text(s_code, style=status_color(s_code)), msg, progress, key=file_name
+                )
+
+        if self._status_map and not self._pending_files:
             self.exit()
 
     def _apply_language(self):
         table = self.query_one(DataTable)
-        status_list = list(self.extractor.threads_status)
         table.clear(columns=True)
         self._add_columns(table)
-        self._refresh(status_list)
+        self._refresh(list(self._status_map.values()))
 
 
 def show_status(extractor):
@@ -445,4 +468,3 @@ def show_status(extractor):
             concurrent.futures.wait(pending)
         return
     _StatusApp(extractor).run()
-

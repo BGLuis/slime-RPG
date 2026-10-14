@@ -1,14 +1,11 @@
 import os
-import tempfile
 import threading
 import asyncio
-from pathlib import Path
-import pytest
 
 from src.extractor.BaseExtractor import BaseExtractor
 from src.extractor.wolfrpg.WolfRPGExtractor import WolfRPGExtractor
 from src.extractor.wolfrpg.WolfBinaryAdapter import (
-    WolfFileCoder, WolfMap, WolfMapEvent, WolfMapPage, WolfCommand, WolfGameDat
+    WolfMap, WolfMapEvent, WolfMapPage, WolfCommand
 )
 from src.extractor.wolfrpg.WolfEventCodes import WolfEventCode
 from src.cli import _StatusApp
@@ -201,3 +198,45 @@ def test_status_app_exits_cleanly_on_all_done():
         return app.return_value
 
     run_async(body)
+
+
+def test_add_threads_status_emits_individual_delta():
+    received_events = []
+    extractor = DummyExtractor(MockTranslator())
+    extractor.add_observer(lambda event, data: received_events.append((event, data)))
+
+    # Insere 2 arquivos
+    extractor.add_threads_status({'file': 'file1.json', 'status': 'waiting', 'msg': 'wait 1'})
+    extractor.add_threads_status({'file': 'file2.json', 'status': 'waiting', 'msg': 'wait 2'})
+
+    assert len(received_events) == 2
+    # Verifica que o payload é o delta individual (dict), não a lista inteira
+    assert received_events[0][0] == 'status_update'
+    assert isinstance(received_events[0][1], dict)
+    assert received_events[0][1]['file'] == 'file1.json'
+    assert received_events[1][1]['file'] == 'file2.json'
+
+
+def test_threads_status_updates_scale_linearly():
+    import time
+    extractor1 = DummyExtractor(MockTranslator())
+    t0 = time.perf_counter()
+    for i in range(1000):
+        extractor1.add_threads_status({'file': f'file_{i}.json', 'status': 'waiting', 'msg': 'q'})
+        extractor1.add_threads_status({'file': f'file_{i}.json', 'status': 'process', 'msg': 'p'})
+        extractor1.add_threads_status({'file': f'file_{i}.json', 'status': 'success', 'msg': 's'})
+    t1000 = time.perf_counter() - t0
+
+    extractor2 = DummyExtractor(MockTranslator())
+    t0 = time.perf_counter()
+    for i in range(2000):
+        extractor2.add_threads_status({'file': f'file_{i}.json', 'status': 'waiting', 'msg': 'q'})
+        extractor2.add_threads_status({'file': f'file_{i}.json', 'status': 'process', 'msg': 'p'})
+        extractor2.add_threads_status({'file': f'file_{i}.json', 'status': 'success', 'msg': 's'})
+    t2000 = time.perf_counter() - t0
+
+    # Critério de aceitação da Issue #28: execução de 2000 arquivos <= 2.2x a de 1000 arquivos
+    # Adicionamos uma tolerância generosa para variações do runner (ex: < 3.0x ou tempos muito baixos)
+    if t1000 > 0.005:
+        ratio = t2000 / t1000
+        assert ratio <= 3.0

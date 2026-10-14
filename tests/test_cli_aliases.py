@@ -1,7 +1,6 @@
 import os
 import subprocess
 import sys
-import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SLIME_SCRIPT = os.path.join(PROJECT_ROOT, "scripts", "slime")
@@ -21,11 +20,14 @@ def test_extractor_translation_is_symlink_to_slime():
 
 
 def test_slime_script_list_extractors():
+    env = os.environ.copy()
+    env["LANGUAGE"] = "pt"
     result = subprocess.run(
         [SLIME_SCRIPT, "--list-extractors"],
         capture_output=True,
         text=True,
-        cwd=PROJECT_ROOT
+        cwd=PROJECT_ROOT,
+        env=env,
     )
     assert result.returncode == 0
     assert "EXTRATORES DISPONÍVEIS" in result.stdout
