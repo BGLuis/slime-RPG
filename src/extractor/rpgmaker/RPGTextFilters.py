@@ -15,7 +15,7 @@ class RPGTextFilters:
     # "if", "for", "try" etc. também são palavras comuns em diálogo real
     # ("If you go there...", "Try again!", "For the king!"), então só contam como
     # código quando têm a forma de código: seguidas de "(" ou "{".
-    _CONTROL_KEYWORD_PATTERN = re.compile(r'^(?:if|else\s*if|else|while|for|try|catch|finally|switch)\s*[\(\{]', re.IGNORECASE)
+    _CONTROL_KEYWORD_PATTERN = re.compile(r'^(?:if|else\s*if|else|while|for|try|catch|finally|switch)\s*[\(\{]')
     _VAR_DECLARATION_PATTERN = re.compile(r'^var\s+[A-Za-z_$][\w$]*\s*=', re.IGNORECASE)
     _PURE_ESCAPE_OR_TAG_PATTERN = re.compile(r'^\s*(?:\\[A-Za-z]+(?:\s*\[[^\]]*\])?\s*)+$')
 

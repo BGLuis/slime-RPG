@@ -11,6 +11,148 @@ from .RPGEventStrategy import (
 )
 from src.factory import register_extractor
 
+class _MatchSpan:
+    """Objeto de match leve compatível com a interface esperada por callers de re.Pattern."""
+    def __init__(self, text: str, start: int, end: int):
+        self._text = text
+        self._start = start
+        self._end = end
+
+    def group(self, idx: int = 0) -> str:
+        if idx == 0:
+            return self._text[self._start:self._end]
+        raise IndexError("No such group")
+
+    def start(self) -> int:
+        return self._start
+
+    def end(self) -> int:
+        return self._end
+
+    def span(self):
+        return (self._start, self._end)
+
+
+class _CodeOnlyPattern:
+    """Wrapper de padrão regex que só casa quando o segmento inteiro é código técnico."""
+    def __init__(self, regex: re.Pattern):
+        self._regex = regex
+        self.pattern = regex.pattern
+
+    def _active(self, s: str) -> bool:
+        return isinstance(s, str) and RPGTextFilters.is_technical_or_code(s)
+
+    def finditer(self, s: str):
+        if not self._active(s):
+            return iter(())
+        return self._regex.finditer(s)
+
+    def search(self, s: str):
+        if not self._active(s):
+            return None
+        return self._regex.search(s)
+
+    def findall(self, s: str):
+        if not self._active(s):
+            return []
+        return self._regex.findall(s)
+
+    def sub(self, repl, s: str) -> str:
+        if not self._active(s):
+            return s
+        return self._regex.sub(repl, s)
+
+
+class _BalancedConditionPattern:
+    """
+    Reconhece condições com parênteses balanceados (incluindo aninhamento como `if (a(b) && c)`).
+    - Em segmentos de código: aceita `if|en|pt|ja|es|fr|show_if|hide_if` seguidos de `(...)`.
+    - Em segmentos de diálogo/prosa: ignora palavras naturais (`es`, `fr`, `pt`, `ja`, `If (you)`)
+      e só mascara condições inline de escolhas do RPG Maker (`show_if(...)`, `hide_if(...)` ou
+      `if(...)`/`en(...)` sem espaço e contendo sintaxe de código `[...]`, `$`, `!`, `=`, `<`, `>`, `&`, `|`).
+    """
+    _CODE_HEAD = re.compile(r'(?<![a-zA-Z0-9_])(if|en|pt|ja|es|fr|show_if|hide_if)\s*\(', re.IGNORECASE)
+    _PROSE_HEAD = re.compile(r'(?<![a-zA-Z0-9_])(show_if|hide_if|if|en)(\s*)\(', re.IGNORECASE)
+    _INLINE_CODE_CHARS = re.compile(r'[\[\]\$=<>!&|]')
+    pattern = r'(?<![a-zA-Z0-9_])(?:if|show_if|hide_if)\s*\((?:[^()]|\([^()]*\))+\)'
+
+    @staticmethod
+    def _find_balanced_end(s: str, open_paren_idx: int) -> int:
+        depth = 0
+        in_quote = None
+        escaped = False
+        for idx in range(open_paren_idx, len(s)):
+            ch = s[idx]
+            if escaped:
+                escaped = False
+                continue
+            if ch == '\\':
+                escaped = True
+                continue
+            if in_quote is not None:
+                if ch == in_quote:
+                    in_quote = None
+                continue
+            if ch in ('"', "'"):
+                in_quote = ch
+                continue
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0:
+                    return idx + 1
+        return -1
+
+    def finditer(self, s: str):
+        if not isinstance(s, str):
+            return
+        is_code = RPGTextFilters.is_technical_or_code(s)
+        head_re = self._CODE_HEAD if is_code else self._PROSE_HEAD
+        pos = 0
+        n = len(s)
+        while pos < n:
+            m = head_re.search(s, pos)
+            if not m:
+                break
+            open_idx = m.end() - 1
+            end_idx = self._find_balanced_end(s, open_idx)
+            if end_idx == -1:
+                pos = m.end()
+                continue
+
+            if not is_code:
+                kw = m.group(1).lower()
+                ws = m.group(2)
+                inner = s[open_idx + 1:end_idx - 1]
+                if kw in ('if', 'en'):
+                    if ws or not self._INLINE_CODE_CHARS.search(inner):
+                        pos = m.end()
+                        continue
+
+            yield _MatchSpan(s, m.start(), end_idx)
+            pos = end_idx
+
+    def search(self, s: str):
+        return next(self.finditer(s), None)
+
+    def findall(self, s: str):
+        return [m.group(0) for m in self.finditer(s)]
+
+    def sub(self, repl, s: str) -> str:
+        matches = list(self.finditer(s))
+        if not matches:
+            return s
+        out = []
+        last = 0
+        for m in matches:
+            out.append(s[last:m.start()])
+            out.append(repl(m) if callable(repl) else repl)
+            last = m.end()
+        out.append(s[last:])
+        return ''.join(out)
+
+
 @register_extractor("rpgmaker", display_name="RPG Maker", aliases=["RPG Maker", "rpg_maker", "rpg-maker"])
 class RPGMakerExtractor(BaseExtractor):
     name = "rpgmaker"
@@ -47,17 +189,17 @@ class RPGMakerExtractor(BaseExtractor):
 
     def get_mask_patterns(self, file_name=None, data=None):
         p_format_codes = re.compile(r'\\[A-Za-z]+\s*\[[^\]]*\]', re.IGNORECASE)
+        p_condition = _BalancedConditionPattern()
         game_keys = ['variables', 'switches', 'party', 'actors', 'player', 'map', 'system', 'screen', 'timer', 'message', 'temp', 'troop', 'interpreter']
         p_game = re.compile(r'\$game(?:' + '|'.join(game_keys) + r')\b', re.IGNORECASE)
-        p_condition = re.compile(r'(?<![a-zA-Z0-9_])(?:if|en|pt|ja|es|fr|show_if|hide_if)\s*\([^)]+\)', re.IGNORECASE)
         p_bracket_vars = re.compile(r'!?(?<!\\)(?<![a-zA-Z0-9_])[A-Za-z]{1,2}\s*\[\s*\d+\s*\]', re.IGNORECASE)
-        p_boolean_literals = re.compile(r'\b(?:true|false|null|undefined|NaN)\b', re.IGNORECASE)
-        p_operators = re.compile(r'(?:&&|\|\||>=|<=|!==|===|!=|==)')
+        p_boolean_literals = _CodeOnlyPattern(re.compile(r'\b(?:true|false|null|undefined|NaN)\b', re.IGNORECASE))
+        p_operators = _CodeOnlyPattern(re.compile(r'(?:&&|\|\||>=|<=|!==|===|!=|==)'))
         p_dollar_camel = re.compile(r'\$\s*[a-z]+[A-Z][a-zA-Z]*')
         p_html_tags = re.compile(r'</?[a-zA-Z][a-zA-Z0-9]*(?:\s+[^>]*)?/?>', re.IGNORECASE)
         p_technical_values = re.compile(r'^(?:Yes|No|OK|Cancel|end|start|stop|play|pause|nochannel|channel)$', re.IGNORECASE)
 
-        return [p_format_codes, p_game, p_condition, p_bracket_vars, p_boolean_literals, p_operators, p_dollar_camel, p_html_tags, p_technical_values]
+        return [p_format_codes, p_condition, p_game, p_bracket_vars, p_boolean_literals, p_operators, p_dollar_camel, p_html_tags, p_technical_values]
 
     @staticmethod
     def ignore_text(text):
@@ -346,13 +488,15 @@ class RPGMakerExtractor(BaseExtractor):
         texts_list = TextsUtils.dictToList(texts)
         original_list = TextsUtils.dictToList(original_texts) if original_texts else None
 
-        _format_codes_pattern = re.compile(r'\\([A-Za-z]+)(?:\s*(\[[^\]]*\]))?', re.IGNORECASE)
+        _format_codes_pattern = re.compile(r'(?<!\\)\\([A-Za-z]+)(?:\s*(\[[^\]]*\]))?', re.IGNORECASE)
         _format_upper = {'c', 'v', 'i', 'ce', 'm', 'n', 'p', 'g'}
 
         def _fix_format_code(m):
             code = m.group(1)
             code_lower = code.lower()
             arg = m.group(2) or ""
+            if not arg and code_lower != 'g':
+                return m.group(0)
             if code_lower in ("name", "nome"):
                 return f"\\NAME{arg}"
             if code_lower in _format_upper:
@@ -368,50 +512,58 @@ class RPGMakerExtractor(BaseExtractor):
             (re.compile(r'=\s*='), '=='),
         ]
 
+        boolean_corrections = {
+            r'\b(?:verdadeiro|verdadeira|verdadero|verdadera|vrai|vraie)\b': 'true',
+            r'\b(?:falso|falsa|faux|fausse)\b': 'false',
+            r'\b(?:nulo|nula|nul)\b': 'null',
+            r'\b(?:indefinido|indéfini)\b': 'undefined',
+        }
+
         _game_objects = {k: k.capitalize() for k in ['variables', 'switches', 'party', 'actors', 'player', 'map', 'system', 'screen', 'timer', 'message', 'temp', 'troop', 'interpreter']}
         _game_pattern = re.compile(r'\$game(' + '|'.join(_game_objects.keys()) + r')\b', re.IGNORECASE)
         _property_pattern = re.compile(r'\.([_a-zA-Z][_a-zA-Z0-9]*)(?=[\[\(\.]|\s|$)')
         _code_pattern = re.compile(r'(\$game\s*[a-zA-Z]+(?:\s*\.\s*[_a-zA-Z][_a-zA-Z0-9]*(?:\s*\[\s*[^\\\]]+\s*\])?)*|\$\s*[a-z]+[A-Z][a-zA-Z]*|!(?<!\\)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\]|(?<!\\)(?<!!)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\])', re.IGNORECASE)
 
         for i, text in enumerate(texts_list):
-            if not isinstance(text, str): continue
-            # Sanitizar aspas tipográficas (smart quotes) para aspas ASCII padrão
-            text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+            if not isinstance(text, str):
+                continue
             original_text = original_list[i] if original_list and i < len(original_list) else None
+            ref_text = original_text if original_text is not None else text
+            is_code = RPGTextFilters.is_technical_or_code(ref_text)
 
             text = _format_codes_pattern.sub(_fix_format_code, text)
-            for pattern, repl in _compiled_patterns: text = pattern.sub(repl, text)
 
-            boolean_corrections = {
-                r'\b(?:verdadeiro|verdadeira|verdadero|verdadera|vrai|vraie)\b': 'true',
-                r'\b(?:falso|falsa|faux|fausse)\b': 'false',
-                r'\b(?:nulo|nula|nul)\b': 'null',
-                r'\b(?:indefinido|indéfini)\b': 'undefined',
-            }
-            for pattern, replacement in boolean_corrections.items():
-                text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+            if is_code:
+                # Sanitizar aspas tipográficas (smart quotes) para aspas ASCII padrão apenas em código (#37)
+                text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+                for pattern, repl in _compiled_patterns:
+                    text = pattern.sub(repl, text)
 
-            if original_text:
-                original_codes = {re.sub(r'\s+', '', m.group(0)).lower(): m.group(0) for m in _code_pattern.finditer(original_text)}
-                def restore_code(match):
-                    code = match.group(0)
-                    key = re.sub(r'\s+', '', code).lower()
-                    return original_codes.get(key, re.sub(r'\s+', '', code))
-                text = _code_pattern.sub(restore_code, text)
+                for pattern, replacement in boolean_corrections.items():
+                    text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
 
-            text = _game_pattern.sub(lambda m: f'$game{_game_objects.get(m.group(1).lower(), m.group(1))}', text)
-            if not original_text:
-                text = _property_pattern.sub(lambda m: '.' + m.group(1).lower() if m.group(1).isupper() or (len(m.group(1)) > 1 and m.group(1)[0].isupper() and '_' in m.group(1)) else m.group(0), text)
+                if original_text:
+                    original_codes = {re.sub(r'\s+', '', m.group(0)).lower(): m.group(0) for m in _code_pattern.finditer(original_text)}
+                    def restore_code(match):
+                        code = match.group(0)
+                        key = re.sub(r'\s+', '', code).lower()
+                        return original_codes.get(key, re.sub(r'\s+', '', code))
+                    text = _code_pattern.sub(restore_code, text)
 
-            texts_list[i] = text
-            if any(t in text for t in ['if(', 'var ', 'return', '=>', 'function', 'mes =', 'text =']):
+                text = _game_pattern.sub(lambda m: f'$game{_game_objects.get(m.group(1).lower(), m.group(1))}', text)
+                if not original_text:
+                    text = _property_pattern.sub(lambda m: '.' + m.group(1).lower() if m.group(1).isupper() or (len(m.group(1)) > 1 and m.group(1)[0].isupper() and '_' in m.group(1)) else m.group(0), text)
+
                 try:
                     parts = re.split(r'(\'.*?\'|".*?")', text)
                     for j in range(0, len(parts), 2):
                         parts[j] = re.sub(r'\b0+([1-9]\d*)\b', r'\1', parts[j])
                         parts[j] = re.sub(r'\b00+\b', '0', parts[j])
-                    texts_list[i] = ''.join(parts)
-                except Exception as e: logging.warning(f'Erro ao sanitizar literais octais: {e}')
+                    text = ''.join(parts)
+                except Exception as e:
+                    logging.warning(f'Erro ao sanitizar literais octais: {e}')
+
+            texts_list[i] = text
 
         TextsUtils.interactive_item(texts, texts_list)
         return texts

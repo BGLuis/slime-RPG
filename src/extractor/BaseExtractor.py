@@ -160,7 +160,7 @@ class BaseExtractor(ABC):
     @classmethod
     def sanitize_octal_data(cls, data):
         """Sanitiza números com zeros à esquerda em trechos de código em estruturas de dados na memória."""
-        code_triggers = ['if(', 'var ', 'return', '=>', 'function', 'mes =', 'text =']
+        from src.extractor.rpgmaker.RPGTextFilters import RPGTextFilters
         num_leading_zero = re.compile(r"\b0+([0-9]+)\b")
 
         def walk(obj):
@@ -174,7 +174,7 @@ class BaseExtractor(ABC):
                 return obj
             elif isinstance(obj, str):
                 s = obj
-                if any(t in s for t in code_triggers) and num_leading_zero.search(s):
+                if RPGTextFilters.is_technical_or_code(s) and num_leading_zero.search(s):
                     def repl(m):
                         start, end = m.start(), m.end()
                         before = s[:start]

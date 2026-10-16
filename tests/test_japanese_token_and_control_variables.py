@@ -49,18 +49,22 @@ class TestJapaneseTokenAndControlVariables(unittest.TestCase):
         self.assertNotIn("”", inserted_val)
 
     def test_smart_quotes_sanitized_in_fix_text_translate(self):
-        dirty_texts = ["Ele disse: “Normalmente” e ‘sim’."]
-        fixed = self.extractor.fix_text_translate(dirty_texts)
-        self.assertEqual(fixed[0], 'Ele disse: "Normalmente" e \'sim\'.')
+        # Diálogo preserva aspas tipográficas (#37); segmento de código converte para ASCII
+        dialogue_texts = ["Ele disse: “Normalmente” e ‘sim’."]
+        fixed_dialogue = self.extractor.fix_text_translate(dialogue_texts)
+        self.assertEqual(fixed_dialogue[0], "Ele disse: “Normalmente” e ‘sim’.")
+
+        code_texts = ["if(v[1] == “sim” && s[2] != ‘nao’)"]
+        fixed_code = self.extractor.fix_text_translate(code_texts)
+        self.assertEqual(fixed_code[0], 'if(v[1] == "sim" && s[2] != \'nao\')')
 
     def test_numeric_placeholder_generation(self):
-        ph = TextsUtils._generate_placeholder()
-        self.assertTrue(ph.startswith("__XTOK_"))
-        self.assertTrue(ph.endswith("__"))
-        # Must be 8 pure digits
-        digits = ph[len("__XTOK_"):-len("__")]
-        self.assertTrue(digits.isdigit(), f"Placeholder {ph} should be numeric digits")
-        self.assertEqual(len(digits), 8)
+        ph0 = TextsUtils._generate_placeholder(0)
+        ph1 = TextsUtils._generate_placeholder(1)
+        self.assertEqual(ph0, "__XTOK_0__")
+        self.assertEqual(ph1, "__XTOK_1__")
+        digits = ph0[len("__XTOK_"):-len("__")]
+        self.assertTrue(digits.isdigit(), f"Placeholder {ph0} should be numeric digits")
 
     def test_unmask_robust_to_spaces_and_case(self):
         text = "Sensibilidade __ XTOK_12345678 __ e mais __xtok_99887766__"
@@ -72,13 +76,13 @@ class TestJapaneseTokenAndControlVariables(unittest.TestCase):
         self.assertEqual(restored, "Sensibilidade \\V[59] e mais \\C[0]")
 
     def test_unmask_fuzzy_match_one_char_mutation(self):
-        # February -> fev (Google Translate altering 'b' to 'v')
+        # Mutação de 1 caractere não deve restaurar outro token por engano (#38)
         text = "Sensibilidade __XTOK_00817FEV__"
         mapping = {
             "__XTOK_00817FEB__": "\\V[59]"
         }
-        restored = TextsUtils.unmask_tokens_in_structure(text, mapping)
-        self.assertEqual(restored, "Sensibilidade \\V[59]")
+        with self.assertRaises(ValueError):
+            TextsUtils.unmask_tokens_in_structure(text, mapping)
 
     def test_create_batches_does_not_multiply_cjk_by_six(self):
         class ConcreteTranslate(BaseTranslate):
