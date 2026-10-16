@@ -55,25 +55,38 @@ import uuid
 import re
 
 
-def _generate_placeholder(prefix="__XTOK_"):
-    """Gera um placeholder numérico curto e único para evitar traduções indevidas de palavras/abreviações."""
-    return f"{prefix}{random.randint(10000000, 99999999)}__"
+class MaskMap(dict):
+    """
+    Dicionário de mapeamento {placeholder: original_code} que também preserva
+    o registro por segmento (texto original do segmento e lista de tokens esperados)
+    para permitir validação estrita e fallback isolado por segmento no desmascaramento.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.segment_records = []
+
+
+def _generate_placeholder(index=0, prefix="__XTOK_"):
+    """Gera um placeholder numérico determinístico e sequencial (__XTOK_<n>__)."""
+    return f"{prefix}{index}__"
 
 
 def mask_tokens_in_structure(obj, patterns, prefix="__XTOK_"):
     """
     Percorre uma estrutura (dict/list/tuple/str) e substitui trechos que casam com
-    qualquer regex em `patterns` por placeholders únicos. Retorna (new_obj, mapping)
+    qualquer regex em `patterns` por placeholders determinísticos únicos. Retorna (new_obj, mapping)
 
     - obj: estrutura que contém strings (pode ser dict/list/tuple/str)
     - patterns: lista de objetos compilados re.Pattern (a ordem importa)
     - prefix: prefixo do placeholder gerado
 
-    mapping: dict {placeholder: original_text}
+    mapping: MaskMap(dict) {placeholder: original_text}
     """
-    mapping = {}
+    mapping = MaskMap()
+    counter = IntWrapper(0)
 
     def mask_string(s):
+        original_s = s
         # Aplica cada padrão em ordem; cada match vira um placeholder
         for pat in patterns:
             # Substituição via função para guardar o original
@@ -88,10 +101,12 @@ def mask_tokens_in_structure(obj, patterns, prefix="__XTOK_"):
                         if ph in orig:
                             orig = orig.replace(ph, mapping[ph])
                             del mapping[ph]
-                ph = _generate_placeholder(prefix)
+                ph = _generate_placeholder(counter.get(), prefix)
+                counter.add(1)
                 # Garantir unicidade
                 while ph in mapping or ph in s:
-                    ph = _generate_placeholder(prefix)
+                    ph = _generate_placeholder(counter.get(), prefix)
+                    counter.add(1)
                 mapping[ph] = orig
                 return ph
 
@@ -100,6 +115,9 @@ def mask_tokens_in_structure(obj, patterns, prefix="__XTOK_"):
             except Exception:
                 # Em caso de algum problema com a regex, apenas pule
                 continue
+
+        seg_tokens = [ph for ph in mapping.keys() if ph in s]
+        mapping.segment_records.append((original_s, seg_tokens))
         return s
 
     def walk(o):
@@ -133,7 +151,10 @@ def unmask_tokens_in_structure(obj, mapping):
     """
     Restaura placeholders em `obj` usando o dicionário `mapping` (placeholder -> original).
     Funciona recursivamente sobre dict/list/tuple/str.
-    Tolerante a alterações de caixa, espaços, mutações de caracteres e tokens aninhados.
+    Tolerante a alterações de caixa, espaços e tokens aninhados.
+    Quando `mapping` possui metadados por segmento (`MaskMap`), verifica que cada token
+    esperado do segmento aparece exatamente uma vez; em caso de perda ou mutação de token,
+    faz fallback para o texto original apenas daquele segmento (#38).
     """
     if not mapping:
         return obj
@@ -156,29 +177,38 @@ def unmask_tokens_in_structure(obj, mapping):
     ci_map = {k.upper(): v for k, v in resolved_map.items()}
     ci_keys = sorted(ci_map.keys(), key=len, reverse=True)
     exact_pattern = re.compile("|".join(re.escape(k) for k in ci_keys), re.IGNORECASE)
+    norm_tok_pattern = re.compile(r'__\s*XTOK[_\s]+([a-zA-Z0-9]+)\s*__', re.IGNORECASE)
+    any_tok_pattern = re.compile(r'__XTOK_[A-Z0-9]+__', re.IGNORECASE)
 
-    def _fuzzy_match(token_str):
-        upper = token_str.upper()
-        for k in ci_keys:
-            if len(k) == len(upper):
-                diffs = sum(1 for a, b in zip(k, upper) if a != b)
-                if diffs == 1:
-                    return ci_map[k]
-        return token_str
+    seg_records = getattr(mapping, 'segment_records', None)
+    seg_cursor = IntWrapper(0)
 
     def unmask_string(s):
+        idx = seg_cursor.get()
+        seg_cursor.add(1)
+
+        s_work = norm_tok_pattern.sub(lambda m: f'__XTOK_{m.group(1).upper()}__', s)
+
+        if seg_records is not None and idx < len(seg_records):
+            orig_str, expected_tokens = seg_records[idx]
+            found_tokens = [m.group(0).upper() for m in any_tok_pattern.finditer(s_work)]
+            expected_upper = [t.upper() for t in expected_tokens]
+            if len(found_tokens) != len(expected_upper) or any(found_tokens.count(t) != 1 for t in expected_upper):
+                return orig_str
+
         # Repetir desmascaramento até não sobrar nenhum placeholder (máximo 5 passadas)
         for _ in range(5):
-            # 1. Normalizar espaços internos que tradutores costumam inserir
-            s = re.sub(r'__\s*XTOK[_\s]+([a-zA-Z0-9]+)\s*__', lambda m: f'__XTOK_{m.group(1)}__', s, flags=re.IGNORECASE)
-            # 2. Substituir matches exatos ou case-insensitive
-            s = exact_pattern.sub(lambda m: ci_map[m.group(0).upper()], s)
-            # 3. Se ainda houver qualquer __XTOK_ remanescente, tentar fuzzy match (ex: feb -> fev)
-            if '__XTOK_' in s.upper():
-                s = re.sub(r'__XTOK_[a-zA-Z0-9]+__', lambda m: _fuzzy_match(m.group(0)), s, flags=re.IGNORECASE)
-            if not _contains_any_placeholder(s):
+            s_work = norm_tok_pattern.sub(lambda m: f'__XTOK_{m.group(1)}__', s_work)
+            s_work = exact_pattern.sub(lambda m: ci_map[m.group(0).upper()], s_work)
+            if not _contains_any_placeholder(s_work):
                 break
-        return s
+
+        if _contains_any_placeholder(s_work) and seg_records is not None and idx < len(seg_records):
+            orig_str, _ = seg_records[idx]
+            if not _contains_any_placeholder(orig_str):
+                return orig_str
+
+        return s_work
 
     def walk(o):
         if isinstance(o, str):

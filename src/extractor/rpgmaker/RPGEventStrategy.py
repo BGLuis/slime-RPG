@@ -172,22 +172,35 @@ class ScriptStrategy(EventStrategy):
 
         return extracted
 
+    _PRE_ESCAPED_FORMAT_CODE = re.compile(r'\\\\([A-Za-z]+\[[^\]]*\])')
+
     @classmethod
-    def _sanitize_script_param(cls, text, quote_char):
+    def _sanitize_script_param(cls, text, quote_char, original_text=None):
         if not isinstance(text, str):
             return text
+        import json
         s = text.strip()
-        # Normalizar aspas tipográficas curvas
-        s = s.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
-        # Remover aspas externas redundantes inseridas pelo tradutor
-        while len(s) >= 2 and ((s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")):
-            s = s[1:-1].strip()
-        # Escapar aspas internas para não quebrar a sintaxe do JavaScript
-        if quote_char == '"':
-            s = re.sub(r'(?<!\\)"', r'\"', s)
-        elif quote_char == "'":
-            s = re.sub(r"(?<!\\)'", r"\'", s)
-        return s
+
+        # Remover aspas externas redundantes inseridas pelo tradutor apenas quando o original
+        # usava delimitadores de fala japoneses (「...」 ou 『...』) e não tinha aspas próprias (#36).
+        if isinstance(original_text, str):
+            orig_s = original_text.strip()
+            if (orig_s.startswith('「') and orig_s.endswith('」')) or (orig_s.startswith('『') and orig_s.endswith('』')):
+                while len(s) >= 2 and (
+                    (s[0] == '"' and s[-1] == '"') or
+                    (s[0] == "'" and s[-1] == "'") or
+                    (s[0] == '“' and s[-1] == '”') or
+                    (s[0] == '‘' and s[-1] == '’')
+                ):
+                    s = s[1:-1].strip()
+            if cls._PRE_ESCAPED_FORMAT_CODE.search(original_text):
+                s = cls._PRE_ESCAPED_FORMAT_CODE.sub(r'\\\1', s)
+
+        escaped = json.dumps(s, ensure_ascii=False)[1:-1]
+        escaped = escaped.replace('\u2028', r'\u2028').replace('\u2029', r'\u2029')
+        if quote_char == "'":
+            escaped = escaped.replace(r'\"', '"').replace("'", r"\'")
+        return escaped
 
     @classmethod
     def insert_script_string(cls, script_content, text_iter):
@@ -211,8 +224,8 @@ class ScriptStrategy(EventStrategy):
                         new_msg = str(next(text_iter))
                     except StopIteration:
                         new_msg = msg
-                new_name = cls._sanitize_script_param(new_name, q1)
-                new_msg = cls._sanitize_script_param(new_msg, q2)
+                new_name = cls._sanitize_script_param(new_name, q1, original_text=name)
+                new_msg = cls._sanitize_script_param(new_msg, q2, original_text=msg)
                 prefix_call = m.group(0)[:m.start(1) - m.start(0)]
                 return f"{prefix_call}{q1}{new_name}{q1}, {q2}{new_msg}{q2}"
 
@@ -230,7 +243,7 @@ class ScriptStrategy(EventStrategy):
                         next_text = str(next(text_iter))
                     except StopIteration:
                         next_text = target_text
-                    next_text = cls._sanitize_script_param(next_text, quote_char)
+                    next_text = cls._sanitize_script_param(next_text, quote_char, original_text=target_text)
                     return m.group(0)[:m.start(2) - m.start(0)] + next_text + m.group(0)[m.end(2) - m.start(0):]
 
                 script_content = pattern.sub(replacer, script_content)
@@ -239,10 +252,12 @@ class ScriptStrategy(EventStrategy):
         if cls._subject_pattern.search(script_content):
             parts = script_content.split('_subject=')
             if len(parts) > 1:
+                orig_subj = parts[1].strip('"')
                 try:
                     next_text = str(next(text_iter))
                 except StopIteration:
-                    next_text = parts[1].strip('"')
+                    next_text = orig_subj
+                next_text = cls._sanitize_script_param(next_text, '"', original_text=orig_subj)
                 parts[1] = f'{next_text}"'
                 script_content = '_subject='.join(parts)
 
