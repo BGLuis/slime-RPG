@@ -7,6 +7,31 @@ from src.translate.BaseTranslate import BaseTranslate
 from deep_translator import GoogleTranslator
 import src.utils.TextsUtils as TextsUtils
 from src.factory import register_translator
+from src.exceptions import (
+    ProviderRateLimited,
+    ProviderAuthError,
+    ProviderUnavailable,
+)
+
+try:
+    from deep_translator.exceptions import TooManyRequests
+except ImportError:
+    class TooManyRequests(Exception):
+        pass
+
+
+def _is_rate_limit_exception(e) -> bool:
+    if isinstance(e, (ProviderRateLimited, TooManyRequests)):
+        return True
+    if isinstance(e, requests.exceptions.HTTPError):
+        if e.response is not None and e.response.status_code == 429:
+            return True
+    if getattr(e, 'status_code', None) == 429:
+        return True
+    err_cls = type(e).__name__.lower()
+    if "toomanyrequests" in err_cls or "ratelimit" in err_cls:
+        return True
+    return False
 
 @register_translator("google", aliases=["googleTraslator", "googleTranslator", "google_translator"])
 class GoogleTranslate(BaseTranslate):
@@ -113,7 +138,10 @@ class GoogleTranslate(BaseTranslate):
                     proxy_mgr.set_direct_blocked(True)
                 else:
                     proxy_mgr.report_proxy_failure(proxy_dict)
-                r.raise_for_status()
+                raise ProviderRateLimited("Google GTX HTTP 429")
+
+            if r.status_code in (401, 403):
+                raise ProviderAuthError(f"Google GTX HTTP {r.status_code}")
 
             r.raise_for_status()
             data_json = r.json()
@@ -127,9 +155,10 @@ class GoogleTranslate(BaseTranslate):
         except Exception as e:
             if proxy_dict:
                 proxy_mgr.report_proxy_failure(proxy_dict)
-            err_str = str(e).lower()
-            if "429" in err_str:
+            if _is_rate_limit_exception(e):
                 proxy_mgr.set_direct_blocked(True)
+                if not proxy_mgr.get_proxy_dict():
+                    raise ProviderRateLimited("Google rate limit exceeded") from e
             raise
 
     def _translate_with_deep_translator(self, text):
@@ -236,6 +265,8 @@ class GoogleTranslate(BaseTranslate):
         try:
             return self._translate_with_mymemory(text)
         except Exception as e:
+            if isinstance(e, (ProviderRateLimited, ProviderAuthError)):
+                raise
             logging.warning(f"Fallback para texto original: {e}")
             return text
 
@@ -252,7 +283,7 @@ class GoogleTranslate(BaseTranslate):
                 list_join = self.delimiter.join(texts)
                 translate_str = self._translate_raw(list_join)
                 if not translate_str:
-                    raise ValueError("Empty translation received")
+                    raise ProviderUnavailable("Empty translation received")
                 translate_list = translate_str.split(self.delimiter)
 
                 # Se o delimitador foi ligeiramente alterado por espaços/tags pelo provedor:
@@ -272,16 +303,15 @@ class GoogleTranslate(BaseTranslate):
                 return translate_list
             except Exception as e:
                 last_error = e
-                err_str = str(e).lower()
-                is_429 = "429" in err_str or "too many requests" in err_str or "toomanyrequests" in type(e).__name__.lower()
+                is_429 = _is_rate_limit_exception(e)
                 from src.services.ProxyManager import ProxyManager
                 pm = ProxyManager.get_instance()
 
                 # Se o IP direto foi bloqueado com 429 e o usuário desativou o pool de proxies:
                 if is_429 and not pm.enabled:
-                    logging.error("❌ IP direto bloqueado pelo Google (HTTP 429) e o pool de proxies está DESATIVADO.")
-                    raise RuntimeError(
-                        "IP bloqueado pelo Google (HTTP 429) e o pool de proxies está desativado. "
+                    logging.error("❌ IP direto bloqueado por limite de requisições (HTTP 429) e o pool de proxies está DESATIVADO.")
+                    raise ProviderRateLimited(
+                        "IP bloqueado por limite de requisições (HTTP 429) e o pool de proxies está desativado. "
                         "Conecte sua VPN (ex: ProtonVPN) ou reative o pool de proxies no menu para continuar."
                     ) from e
 

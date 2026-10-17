@@ -45,16 +45,16 @@ def test_translate_with_deep_translator_does_not_modify_global_requests_get():
 
 
 def test_google_translate_fails_fast_when_429_and_proxy_disabled():
+    from src.exceptions import ProviderRateLimited
     pm = ProxyManager.get_instance()
     pm.set_enabled(False)
 
     gt = GoogleTranslate(lang_source="ja", lang_target="pt")
 
-    with patch.object(gt, '_translate_raw', side_effect=Exception("HTTP 429 Too Many Requests")):
-        with pytest.raises(RuntimeError) as exc_info:
+    with patch.object(gt, '_translate_raw', side_effect=ProviderRateLimited("HTTP 429 Too Many Requests")):
+        with pytest.raises(ProviderRateLimited) as exc_info:
             gt._translate_single_batch(["teste"])
-        
-        assert "IP bloqueado pelo Google (HTTP 429)" in str(exc_info.value)
+
         assert "pool de proxies está desativado" in str(exc_info.value)
 
 
@@ -67,14 +67,15 @@ class DummyTranslator(BaseTranslate):
 
 
 def test_translate_batch_parallel_raises_fatal_error_when_all_fail():
+    from src.exceptions import ProviderRateLimited
     trans = DummyTranslator(char_limit=100)
     batches = [["text1"], ["text2"]]
 
-    # Simular erro 429 em todos os lotes
-    with patch.object(trans, '_translate_single_batch', side_effect=Exception("429 Too Many Requests")):
-        with pytest.raises(Exception) as exc_info:
+    # Simular erro ProviderRateLimited em todos os lotes
+    with patch.object(trans, '_translate_single_batch', side_effect=ProviderRateLimited("Rate limit exceeded")):
+        with pytest.raises(ProviderRateLimited) as exc_info:
             trans.translate_batch_parallel(batches)
-        assert "429" in str(exc_info.value)
+        assert "Rate limit exceeded" in str(exc_info.value)
 
 
 def test_translate_batch_fallback_reports_progress():

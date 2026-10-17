@@ -210,12 +210,12 @@ class TranslationJob:
                         for item in items:
                             f = item.get('file')
                             st = item.get('status')
-                            if st in ('success', 'erro', 'ignore') and f not in logged_done:
+                            if st in ('success', 'erro', 'ignore', 'partial') and f not in logged_done:
                                 logged_done.add(f)
                                 msg = item.get('msg', '')
                                 color = (
                                     'green' if st == 'success'
-                                    else ('yellow' if st == 'ignore' else 'red')
+                                    else ('yellow' if st in ('ignore', 'partial') else 'red')
                                 )
                                 cli.print_colored_line(f"[{st.upper()}] {f} - {msg}", color)
 
@@ -259,6 +259,19 @@ class TranslationJob:
         if os.path.abspath(self.extractor.folderOutput) != os.path.abspath(self.workspace.output_dir):
             from main import sync_folder_tree
             sync_folder_tree(self.extractor.folderOutput, self.workspace.output_dir)
+
+        # Resumo final de arquivos abaixo de 100% / parciais
+        threads_status = getattr(self.extractor, 'threads_status', [])
+        partial_files = [
+            s for s in threads_status
+            if s.get('status') == 'partial'
+        ]
+        if partial_files:
+            log("--- Resumo de Arquivos com Tradução Parcial (<100%) ---", 'yellow')
+            for pf in partial_files:
+                f_name = pf.get('file', '')
+                f_msg = pf.get('msg', '')
+                log(f"  • {f_name}: {f_msg}", 'yellow')
 
         log(_i18n.tr('log_finished_success'), 'green')
         return True

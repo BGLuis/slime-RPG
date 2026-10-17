@@ -26,7 +26,7 @@ from .WolfArchive import WolfArchive
 @register_extractor("wolfrpg", display_name="Wolf RPG", aliases=["Wolf RPG", "wolf_rpg", "wolf-rpg", "wolf"])
 class WolfRPGExtractor(BaseExtractor):
     name = "wolfrpg"
-    files_types = ['mps', 'dat', 'project', 'wolf']
+    files_types = ['mps', 'dat', 'project']
 
     def __init__(self, translate):
         super().__init__(translate)
@@ -41,6 +41,24 @@ class WolfRPGExtractor(BaseExtractor):
         }
         self.target_font = None
         self.repack_wolf = False
+
+    def prepare(self):
+        """Procura recursivamente por arquivos .wolf em folderInput e descompacta cada um no seu diretório."""
+        folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
+        if not os.path.exists(folder_input):
+            return
+
+        for root, _, filenames in os.walk(folder_input):
+            for filename in filenames:
+                if filename.lower().endswith('.wolf'):
+                    archive_path = os.path.join(root, filename)
+                    dest_dir = os.path.dirname(archive_path)
+                    try:
+                        WolfArchive.extract_archive(archive_path, dest_dir)
+                        logging.info(f"✓ Extraído contêiner .wolf {filename} para {dest_dir}")
+                    except Exception as e:
+                        logging.error(f"✗ Falha ao descompactar contêiner .wolf {archive_path}: {e}")
+                        raise
 
     @classmethod
     def get_interactive_questions(cls):
@@ -108,17 +126,6 @@ class WolfRPGExtractor(BaseExtractor):
             return [os.path.basename(file_path), None]
 
         file_name = os.path.basename(file_path)
-
-        # Se for um arquivo .wolf, descompacta para folderInput
-        if file_path.endswith('.wolf'):
-            try:
-                dest_dir = os.path.join(cls.folderInput, os.path.splitext(file_name)[0])
-                WolfArchive.extract_archive(file_path, dest_dir)
-                logging.info(f"✓ Extraído arquivo .wolf {file_name} para {dest_dir}")
-                return [file_name, None]
-            except Exception as e:
-                logging.error(f"✗ Falha ao extrair .wolf {file_name}: {e}")
-                raise
 
         # Arquivos binários do Wolf RPG
         if file_path.endswith(('.mps', '.dat', '.project')):

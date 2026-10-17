@@ -7,6 +7,7 @@ import shutil
 import threading
 import time
 import logging
+import requests
 from abc import ABC, abstractmethod
 
 
@@ -73,6 +74,7 @@ class BaseExtractor(ABC):
 
         self.translate = translate
         self._threads_status_map = {}
+        self.file_translation_stats = {}
         self.threads_status_lock = threading.Lock()
         self.futures = []
         self.executor = None
@@ -145,6 +147,10 @@ class BaseExtractor(ABC):
         return []
 
     def apply_configuration(self, config):
+        pass
+
+    def prepare(self):
+        """Hook executado antes do processamento de arquivos (ex: descompactação de contêineres)."""
         pass
 
     @staticmethod
@@ -444,6 +450,28 @@ class BaseExtractor(ABC):
         NÃO devem ser retentados pois nunca terão sucesso.
         """
         import json
+        from src.exceptions import (
+            ProviderAuthError,
+            ProviderRateLimited,
+            ProviderUnavailable,
+            MaskIntegrityError,
+        )
+
+        if isinstance(exc, ProviderAuthError):
+            return False
+
+        if isinstance(exc, (ProviderRateLimited, ProviderUnavailable, MaskIntegrityError)):
+            return True
+
+        if isinstance(exc, requests.exceptions.HTTPError) or hasattr(exc, 'response'):
+            resp = getattr(exc, 'response', None)
+            status = getattr(resp, 'status_code', None) if resp is not None else getattr(exc, 'status_code', None)
+            if status is not None:
+                if status in (400, 401, 403, 404, 456):
+                    return False
+                if status in (408, 429, 500, 502, 503, 504):
+                    return True
+
         NON_RETRIABLE_EXCEPTIONS = (
             TypeError,
             KeyError,
@@ -462,13 +490,18 @@ class BaseExtractor(ABC):
         if isinstance(exc, NON_RETRIABLE_EXCEPTIONS):
             return False
 
+        if isinstance(exc, (ConnectionError, TimeoutError, OSError, requests.exceptions.RequestException)):
+            return True
+
         if isinstance(exc, ValueError):
+            if isinstance(exc, MaskIntegrityError):
+                return True
             msg = str(exc).lower()
             if "desmascaramento incompleto" in msg or "placeholder" in msg or "empty translation" in msg:
                 return True
             return False
 
-        return True
+        return False
 
     def process_file(self, file, retries=5, delay=5, max_delay=60, data=None, raw_text=None):
         translate = copy.deepcopy(self.translate)
@@ -553,7 +586,49 @@ class BaseExtractor(ABC):
             merged_data = self.merge_dicts_texts(translated_text, raw_text)
             updated_data = self.update_json(file_name, data, merged_data)
             self.import_file(rel_path, updated_data, self.folderProcess)
-            self.add_threads_status({'file': rel_path, 'status': 'success', 'msg': "Processed successfully"})
+
+            import src.utils.TextsUtils as TextsUtils
+            orig_list = TextsUtils.dictToList(raw_text)
+            trans_list = TextsUtils.dictToList(translated_text)
+            translatable_items = [
+                (o, t) for o, t in zip(orig_list, trans_list)
+                if isinstance(o, str) and o.strip()
+            ]
+            total_count = len(translatable_items)
+
+            pipeline_stats = getattr(self, '_last_stats', None)
+            if pipeline_stats and pipeline_stats[1] == total_count:
+                translated_count = pipeline_stats[0]
+            else:
+                lang_src = getattr(translate, 'lang_source', None)
+                lang_tgt = getattr(translate, 'lang_target', None)
+                is_different_langs = bool(lang_src and lang_tgt and lang_src.lower() != lang_tgt.lower())
+                cache = getattr(translate, 'cache', None)
+
+                translated_count = 0
+                for orig_str, trans_str in translatable_items:
+                    orig_clean = orig_str.strip()
+                    trans_clean = trans_str.strip() if isinstance(trans_str, str) else ""
+                    if is_different_langs:
+                        if orig_clean != trans_clean:
+                            translated_count += 1
+                        elif cache is not None:
+                            hits = cache.lookup_many([orig_str]) if hasattr(cache, 'lookup_many') else {}
+                            if orig_str in hits or (not hasattr(cache, 'lookup_many') and orig_str in cache):
+                                translated_count += 1
+                    else:
+                        translated_count += 1
+
+            self.file_translation_stats[rel_path] = (translated_count, total_count)
+
+            if total_count > 0 and translated_count < total_count:
+                self.add_threads_status({
+                    'file': rel_path,
+                    'status': 'partial',
+                    'msg': f"Partially translated ({translated_count}/{total_count})"
+                })
+            else:
+                self.add_threads_status({'file': rel_path, 'status': 'success', 'msg': "Processed successfully"})
         except Exception as e:
             logging.error(f"Erro ao salvar arquivo traduzido {file}: {e}")
             self.add_threads_status(
@@ -618,6 +693,12 @@ class BaseExtractor(ABC):
             merged_data = self.merge_dicts_texts(translated_text, raw_text)
             updated_data = self.update_json(file_name, data, merged_data)
             self.import_file(rel_path, updated_data, self.folderProcess)
+
+            import src.utils.TextsUtils as TextsUtils
+            orig_list = TextsUtils.dictToList(raw_text)
+            total_count = sum(1 for s in orig_list if isinstance(s, str) and s.strip())
+            self.file_translation_stats[rel_path] = (total_count, total_count)
+
             self.add_threads_status({'file': rel_path, 'status': 'success', 'msg': "Processed successfully"})
         except Exception as e:
             logging.error(f"Fast-lane falhou para {file}, reprocessando pelo fluxo normal: {e}")
@@ -631,6 +712,7 @@ class BaseExtractor(ABC):
         self._handle_no_text(file_path_str, rel_path, data)
 
     def process_files(self):
+        self.prepare()
         import concurrent.futures
 
         slow_workers = max(1, int(os.environ.get('EXTRACTOR_MAX_WORKERS', 8)))

@@ -4,6 +4,11 @@ import os
 import ollama
 import src.utils.TextsUtils as TextsUtils
 from src.factory import register_translator
+from src.exceptions import (
+    ProviderRateLimited,
+    ProviderAuthError,
+    ProviderUnavailable,
+)
 load_dotenv()
 
 @register_translator("ollama", aliases=["ollamaTranslator", "ollama_translator"])
@@ -67,31 +72,49 @@ class OllamaTranslate(BaseTranslate):
         return [[text] for text in texts]
 
     def _translate_single_batch(self, texts):
-        if not texts or len(texts) != 1:
-            return texts
+        if not texts:
+            return []
 
-        text = texts[0]
+        results = []
+        for text in texts:
+            messages = [
+                {"role": "system", "content": self.context_function},
+                {"role": "system", "content": self.context_additional},
+                {"role": "system", "content": "Tokens like __XTOK_12345678__ are placeholders for game control codes: copy each one into the translation exactly as written, without translating, reformatting, or removing it."},
+            ]
 
-        messages = [
-            {"role": "system", "content": self.context_function},
-            {"role": "system", "content": self.context_additional},
-            {"role": "system", "content": "Tokens like __XTOK_12345678__ are placeholders for game control codes: copy each one into the translation exactly as written, without translating, reformatting, or removing it."},
-        ]
+            if self.game_synopsis:
+                synopsis_context = f"Game Synopsis/Context: {self.game_synopsis}\n\nUse this synopsis to better understand the game's context and provide more accurate, context-aware translations."
+                messages.append({"role": "system", "content": synopsis_context})
 
-        if self.game_synopsis:
-            synopsis_context = f"Game Synopsis/Context: {self.game_synopsis}\n\nUse this synopsis to better understand the game's context and provide more accurate, context-aware translations."
-            messages.append({"role": "system", "content": synopsis_context})
+            messages.append({"role": "system", "content": self.context_language})
+            messages.append({"role": "user", "content": text})
 
-        messages.append({"role": "system", "content": self.context_language})
-        messages.append({"role": "user", "content": text})
+            try:
+                response = ollama.chat(
+                    model=self.model,
+                    messages=messages
+                )
+                result = response['message']['content'].strip()
+                results.append(result)
+            except Exception as e:
+                status_code = getattr(e, 'status_code', None) or getattr(e, 'code', None)
+                if hasattr(e, 'response') and getattr(e.response, 'status_code', None):
+                    status_code = e.response.status_code
 
-        response = ollama.chat(
-            model=self.model,
-            messages=messages
-        )
-        result = response['message']['content'].strip()
+                if status_code in (401, 403):
+                    raise ProviderAuthError(f"Ollama auth error (HTTP {status_code}): {e}") from e
+                if status_code == 429:
+                    raise ProviderRateLimited(f"Ollama rate limit exceeded (HTTP 429): {e}") from e
+                if (status_code and 500 <= status_code < 600) or isinstance(e, (ConnectionError, TimeoutError, OSError)):
+                    raise ProviderUnavailable(f"Ollama server unavailable: {e}") from e
 
-        return [result]
+                err_cls = type(e).__name__.lower()
+                if "connection" in err_cls or "timeout" in err_cls or "request" in err_cls:
+                    raise ProviderUnavailable(f"Ollama network error: {e}") from e
+                raise
+
+        return results
 
     def translator(self, texts, progress_callback=None):
         treated_text = TextsUtils.dictToList(texts)

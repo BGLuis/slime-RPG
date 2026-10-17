@@ -59,7 +59,7 @@ def test_wolf_rpg_extractor_registration():
     assert "Wolf RPG" in extractors
     cls = extractors["Wolf RPG"]
     assert cls == WolfRPGExtractor
-    assert set(['mps', 'dat', 'project', 'wolf']).issubset(set(cls.files_types))
+    assert set(['mps', 'dat', 'project']).issubset(set(cls.files_types))
 
 
 def test_wolf_rpg_extractor_mask_patterns():

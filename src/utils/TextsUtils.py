@@ -225,7 +225,8 @@ def unmask_tokens_in_structure(obj, mapping):
     restored = walk(obj)
 
     if _contains_any_placeholder(restored):
-        raise ValueError("Desmascaramento incompleto: placeholder de texto sobrou no resultado final.")
+        from src.exceptions import MaskIntegrityError
+        raise MaskIntegrityError("Desmascaramento incompleto: placeholder de texto sobrou no resultado final.")
 
     return restored
 

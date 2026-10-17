@@ -1,4 +1,5 @@
 import csv
+import codecs
 import os
 import re
 import logging
@@ -44,15 +45,38 @@ def detect_delimiter_from_file(file_path: str) -> str:
 class CSVExtractor(BaseExtractor):
     name = "csv"
     files_types = ['csv']
-    _detected_delimiters = {}
 
-    def __init__(self, translate):
-        super().__init__(translate)
+    def __init__(self, translate, workspace=None):
+        super().__init__(translate, workspace=workspace)
         self.columns_to_translate = ['value', 'text']
         self.csv_delimiter = ','
         self.skip_empty = True
         self.skip_headers = True
         self._file_modes = {}
+        self._detected_delimiters = {}
+        self._file_boms = {}
+        self._file_lineterminators = {}
+
+    def _normalize_file_key(self, file_path_or_name: str) -> str:
+        if not file_path_or_name:
+            return ""
+        folder_input = getattr(self, 'folderInput', getattr(self.__class__, 'folderInput', None))
+        norm_path = os.path.normpath(str(file_path_or_name))
+        if folder_input:
+            try:
+                norm_input = os.path.normpath(str(folder_input))
+                if os.path.isabs(norm_path) and os.path.isabs(norm_input):
+                    if os.path.commonpath([norm_path, norm_input]) == norm_input:
+                        return os.path.normpath(os.path.relpath(norm_path, norm_input))
+                elif not os.path.isabs(norm_path) and (norm_path.startswith(norm_input + os.sep) or norm_path.startswith(norm_input + "/")):
+                    return os.path.normpath(os.path.relpath(norm_path, norm_input))
+                elif os.path.isabs(norm_path):
+                    abs_input = os.path.abspath(norm_input)
+                    if os.path.commonpath([norm_path, abs_input]) == abs_input:
+                        return os.path.normpath(os.path.relpath(norm_path, abs_input))
+            except Exception:
+                pass
+        return norm_path
 
     @classmethod
     def get_interactive_questions(cls):
@@ -78,9 +102,9 @@ class CSVExtractor(BaseExtractor):
         if 'columns' in config and config['columns']:
             columns = [col.strip() for col in config['columns'].split(',')]
             self.columns_to_translate = columns
-            print(f"✓ Colunas configuradas para tradução: {', '.join(columns)}")
+            logging.info(f"✓ Colunas configuradas para tradução: {', '.join(columns)}")
         else:
-            print(f"⚠ Usando colunas padrão / detecção automática: {', '.join(self.columns_to_translate)}")
+            logging.info(f"⚠ Usando colunas padrão / detecção automática: {', '.join(self.columns_to_translate)}")
 
         if 'delimiter' in config and config['delimiter']:
             delimiter = config['delimiter']
@@ -89,7 +113,7 @@ class CSVExtractor(BaseExtractor):
             elif delimiter == '\\n':
                 delimiter = '\n'
             self.csv_delimiter = delimiter
-            print(f"✓ Delimitador configurado: '{delimiter}'")
+            logging.info(f"✓ Delimitador configurado: '{delimiter}'")
 
     def get_mask_patterns(self, file_name=None, data=None):
         p_format_codes = re.compile(r'\\[A-Za-z]+\s*\[[^\]]*\]', re.IGNORECASE)
@@ -125,15 +149,41 @@ class CSVExtractor(BaseExtractor):
             return generate_target_filename(file_name, target_code)
         return file_name
 
-    @classmethod
-    def extract_files(cls, file_path):
-        if not file_path.endswith(tuple(cls.files_types)):
+    def extract_files(self_or_cls, file_path=None):
+        if file_path is None:
+            file_path = self_or_cls
+            self_or_cls = None
+
+        files_types = self_or_cls.files_types if isinstance(self_or_cls, CSVExtractor) else CSVExtractor.files_types
+        if not file_path.endswith(tuple(files_types)):
             return [os.path.basename(file_path), None]
 
         base_name = os.path.basename(file_path)
         delimiter = detect_delimiter_from_file(file_path)
-        cls._detected_delimiters[base_name] = delimiter
-        cls._detected_delimiters[file_path] = delimiter
+
+        has_bom = False
+        lineterminator = '\n'
+        try:
+            with open(file_path, 'rb') as f_bin:
+                raw_bytes = f_bin.read()
+            has_bom = raw_bytes.startswith(codecs.BOM_UTF8)
+            lineterminator = '\r\n' if b'\r\n' in raw_bytes else ('\r' if b'\r' in raw_bytes and b'\n' not in raw_bytes else '\n')
+        except Exception as e:
+            logging.error(f"Erro ao analisar cabeçalho binário do CSV {file_path}: {e}")
+
+        if isinstance(self_or_cls, CSVExtractor):
+            rel_key = self_or_cls._normalize_file_key(file_path)
+            self_or_cls._detected_delimiters[rel_key] = delimiter
+            self_or_cls._detected_delimiters[file_path] = delimiter
+            self_or_cls._detected_delimiters[base_name] = delimiter
+
+            self_or_cls._file_boms[rel_key] = has_bom
+            self_or_cls._file_boms[file_path] = has_bom
+            self_or_cls._file_boms[base_name] = has_bom
+
+            self_or_cls._file_lineterminators[rel_key] = lineterminator
+            self_or_cls._file_lineterminators[file_path] = lineterminator
+            self_or_cls._file_lineterminators[base_name] = lineterminator
 
         try:
             with open(file_path, 'r', encoding='utf-8-sig', newline='', errors='replace') as f:
@@ -259,13 +309,15 @@ class CSVExtractor(BaseExtractor):
         if not data:
             return data
 
-        mode_info = self._file_modes.get(file_name, {})
-        mode = mode_info.get('mode', 'standard')
-        source_col = mode_info.get('source_col')
-        target_col = mode_info.get('target_col')
-        text_cols = mode_info.get('text_cols', self.columns_to_translate)
+        mode_info = self._file_modes.get(file_name)
+        if not mode_info:
+            mode, source_col, target_col, text_cols = self._resolve_columns_for_data(file_name, data)
+        else:
+            mode = mode_info.get('mode', 'standard')
+            source_col = mode_info.get('source_col')
+            target_col = mode_info.get('target_col')
+            text_cols = mode_info.get('text_cols', self.columns_to_translate)
 
-        is_file_per_lang = self.get_target_filename(file_name) != file_name
         updated_data = []
 
         if mode == 'columns':
@@ -284,9 +336,6 @@ class CSVExtractor(BaseExtractor):
                     if column in row:
                         key = f"row_{row_idx}_col_{column}"
                         if new_data and key in new_data:
-                            if not is_file_per_lang:
-                                if row[column] and row[column] != new_data[key]:
-                                    updated_row[f"{column}_old"] = row[column]
                             updated_row[column] = new_data[key]
                 updated_data.append(updated_row)
 
@@ -298,15 +347,37 @@ class CSVExtractor(BaseExtractor):
 
         if isinstance(self_or_cls, CSVExtractor):
             target_name = self_or_cls.get_target_filename(file_name)
+            rel_key = self_or_cls._normalize_file_key(file_name)
+            base_key = os.path.basename(file_name)
             delimiter = (
+                self_or_cls._detected_delimiters.get(rel_key) or
                 self_or_cls._detected_delimiters.get(file_name) or
-                self_or_cls._detected_delimiters.get(os.path.basename(file_name)) or
+                self_or_cls._detected_delimiters.get(base_key) or
                 self_or_cls.csv_delimiter
+            )
+            has_bom = (
+                self_or_cls._file_boms.get(rel_key)
+                if rel_key in self_or_cls._file_boms
+                else (
+                    self_or_cls._file_boms.get(file_name)
+                    if file_name in self_or_cls._file_boms
+                    else self_or_cls._file_boms.get(base_key, False)
+                )
+            )
+            lineterminator = (
+                self_or_cls._file_lineterminators.get(rel_key) or
+                self_or_cls._file_lineterminators.get(file_name) or
+                self_or_cls._file_lineterminators.get(base_key) or
+                '\n'
             )
         else:
             target_name = file_name
             delims = getattr(self_or_cls, '_detected_delimiters', {})
-            delimiter = delims.get(file_name, ',')
+            delimiter = delims.get(file_name, ',') if isinstance(delims, dict) else ','
+            boms = getattr(self_or_cls, '_file_boms', {})
+            has_bom = boms.get(file_name, False) if isinstance(boms, dict) else False
+            lineterms = getattr(self_or_cls, '_file_lineterminators', {})
+            lineterminator = lineterms.get(file_name, '\n') if isinstance(lineterms, dict) else '\n'
 
         file_path = os.path.join(folder, target_name)
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -323,11 +394,18 @@ class CSVExtractor(BaseExtractor):
             else:
                 return
 
-            with open(file_path, 'w', encoding='utf-8-sig', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=delimiter, extrasaction='ignore')
+            encoding = 'utf-8-sig' if has_bom else 'utf-8'
+            with open(file_path, 'w', encoding=encoding, newline='') as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=fieldnames,
+                    delimiter=delimiter,
+                    lineterminator=lineterminator,
+                    extrasaction='ignore'
+                )
                 writer.writeheader()
                 writer.writerows(data)
-            logging.info(f"✓ Salvo CSV: {target_name} com delimitador '{delimiter}'")
+            logging.info(f"✓ Salvo CSV: {target_name} com delimitador '{delimiter}' (BOM={has_bom})")
         except Exception as e:
             logging.error(f"Erro ao salvar CSV {file_path}: {e}")
 

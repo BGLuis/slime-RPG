@@ -20,8 +20,7 @@ def test_extractor_translation_is_symlink_to_slime():
 
 
 def test_slime_script_list_extractors():
-    env = os.environ.copy()
-    env["LANGUAGE"] = "pt"
+    env = {**os.environ, "LANGUAGE": "pt", "SLIME_PYTHON": sys.executable}
     result = subprocess.run(
         [SLIME_SCRIPT, "--list-extractors"],
         capture_output=True,

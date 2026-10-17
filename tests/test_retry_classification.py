@@ -26,6 +26,14 @@ class DummyExtractor(BaseExtractor):
 
 
 def test_is_retriable_error_classification():
+    from src.exceptions import (
+        ProviderAuthError,
+        ProviderRateLimited,
+        ProviderUnavailable,
+        MaskIntegrityError,
+    )
+    import requests
+
     # Erros não recuperáveis (devem retornar False)
     assert not BaseExtractor._is_retriable_error(TypeError("bool is not iterable"))
     assert not BaseExtractor._is_retriable_error(KeyError("missing_key"))
@@ -36,13 +44,24 @@ def test_is_retriable_error_classification():
     assert not BaseExtractor._is_retriable_error(PermissionError("denied"))
     assert not BaseExtractor._is_retriable_error(json.JSONDecodeError("msg", "doc", 0))
     assert not BaseExtractor._is_retriable_error(ValueError("invalid literal for int()"))
+    assert not BaseExtractor._is_retriable_error(ProviderAuthError("Auth failed 401"))
+
+    mock_resp_403 = MagicMock(status_code=403)
+    assert not BaseExtractor._is_retriable_error(requests.exceptions.HTTPError(response=mock_resp_403))
 
     # Erros recuperáveis de tradução (devem retornar True)
     assert BaseExtractor._is_retriable_error(ConnectionError("Connection reset"))
     assert BaseExtractor._is_retriable_error(TimeoutError("Request timed out"))
     assert BaseExtractor._is_retriable_error(ValueError("Desmascaramento incompleto: placeholder sobrou"))
     assert BaseExtractor._is_retriable_error(ValueError("Empty translation received"))
-    assert BaseExtractor._is_retriable_error(Exception("HTTP 429 Too Many Requests"))
+    assert BaseExtractor._is_retriable_error(MaskIntegrityError("Desmascaramento incompleto"))
+    assert BaseExtractor._is_retriable_error(ProviderRateLimited("Rate limited"))
+    assert BaseExtractor._is_retriable_error(ProviderUnavailable("Service down"))
+
+    mock_resp_429 = MagicMock(status_code=429)
+    assert BaseExtractor._is_retriable_error(requests.exceptions.HTTPError(response=mock_resp_429))
+    mock_resp_503 = MagicMock(status_code=503)
+    assert BaseExtractor._is_retriable_error(requests.exceptions.HTTPError(response=mock_resp_503))
 
 
 @patch("time.sleep")

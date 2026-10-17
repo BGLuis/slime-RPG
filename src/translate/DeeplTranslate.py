@@ -4,6 +4,11 @@ import requests
 from src.translate.BaseTranslate import BaseTranslate
 import src.utils.TextsUtils as TextsUtils
 from src.factory import register_translator
+from src.exceptions import (
+    ProviderRateLimited,
+    ProviderAuthError,
+    ProviderUnavailable
+)
 
 @register_translator("deepl", aliases=["deeplTranslator", "deepl_translator"])
 class DeeplTranslate(BaseTranslate):
@@ -48,7 +53,11 @@ class DeeplTranslate(BaseTranslate):
         return "https://api.deepl.com/v2/translate"
 
     def _map_lang_code(self, code, is_target=False):
+        if not code:
+            return None if not is_target else "EN-US"
         c = code.lower().strip()
+        if not is_target and (c == 'auto' or not c):
+            return None
         if c == 'ja':
             return 'JA'
         if c == 'en':
@@ -61,26 +70,48 @@ class DeeplTranslate(BaseTranslate):
         if not texts:
             return []
         if not self.api_key:
-            raise ValueError("DEEPL_API_KEY não informada. Defina no .env ou na inicialização.")
+            raise ProviderAuthError("DEEPL_API_KEY não informada. Defina no .env ou na inicialização.")
 
         url = self._get_api_url()
         src_lang = self._map_lang_code(self.lang_source, is_target=False)
         tgt_lang = self._map_lang_code(self.lang_target, is_target=True)
 
         payload = {
-            "source_lang": src_lang,
             "target_lang": tgt_lang,
             "text": texts,
-            "tag_handling": "xml",
-            "preserve_formatting": "1"
+            "preserve_formatting": True,
+            "tag_handling": "xml"
         }
+        if src_lang is not None and src_lang.upper() != "AUTO":
+            payload["source_lang"] = src_lang
+
         headers = {
             "Authorization": f"DeepL-Auth-Key {self.api_key}"
         }
 
-        r = requests.post(url, data=payload, headers=headers, timeout=20)
-        r.raise_for_status()
-        data = r.json()
+        try:
+            r = requests.post(url, data=payload, headers=headers, timeout=20)
+            status_code = r.status_code
+            if status_code in (401, 403, 456):
+                raise ProviderAuthError(f"DeepL auth/quota error (HTTP {status_code}): {r.text}")
+            if status_code == 429:
+                raise ProviderRateLimited("DeepL rate limit exceeded (HTTP 429)")
+            if 500 <= status_code < 600:
+                raise ProviderUnavailable(f"DeepL server error (HTTP {status_code}): {r.text}")
+            r.raise_for_status()
+            data = r.json()
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response is not None else None
+            if status_code in (401, 403, 456):
+                raise ProviderAuthError(f"DeepL auth/quota error (HTTP {status_code})") from e
+            if status_code == 429:
+                raise ProviderRateLimited("DeepL rate limit exceeded (HTTP 429)") from e
+            if status_code and 500 <= status_code < 600:
+                raise ProviderUnavailable(f"DeepL server error (HTTP {status_code})") from e
+            raise ProviderUnavailable(f"DeepL HTTP error: {e}") from e
+        except requests.exceptions.RequestException as e:
+            raise ProviderUnavailable(f"DeepL network error: {e}") from e
+
         translations = [item.get("text", "") for item in data.get("translations", [])]
         if len(translations) != len(texts):
             raise ValueError(f"Divergência no número de itens traduzidos pelo DeepL: esperados {len(texts)}, recebidos {len(translations)}")
@@ -88,8 +119,6 @@ class DeeplTranslate(BaseTranslate):
 
     def translator(self, texts, progress_callback=None):
         treated_text = TextsUtils.dictToList(texts)
-        self.preprocess_text(treated_text)
         translate_text = self.translate_batch(treated_text, progress_callback)
-        self.postprocess_text(translate_text)
         TextsUtils.interactive_item(texts, translate_text)
         return texts

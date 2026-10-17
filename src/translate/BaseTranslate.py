@@ -8,6 +8,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.translate.TranslationMemory import TranslationMemory
 from src.utils.paths import get_app_dir, get_memory_db_path
+from src.exceptions import (
+    TranslationError,
+    ProviderRateLimited,
+    ProviderAuthError,
+    ProviderUnavailable,
+    MaskIntegrityError,
+)
 
 
 class BaseTranslate(ABC):
@@ -222,15 +229,7 @@ class BaseTranslate(ABC):
                     translated_batches[batch_idx] = future.result()
                 except Exception as e:
                     translated_batches[batch_idx] = None
-                    err_name = type(e).__name__.lower()
-                    err_str = str(e).lower()
-                    is_fatal = (
-                        isinstance(e, RecursionError)
-                        or "recursion" in err_name
-                        or "429" in err_str
-                        or "toomanyrequests" in err_name
-                        or "bloqueado pelo google" in err_str
-                    )
+                    is_fatal = isinstance(e, (ProviderRateLimited, ProviderAuthError, RecursionError))
                     if is_fatal and fatal_error is None:
                         fatal_error = e
                     logging.warning(f"Erro ao traduzir lote {batch_idx + 1}/{len(batches)}: {e}")
@@ -322,11 +321,7 @@ class BaseTranslate(ABC):
                                     t = self._translate_single_batch([p])
                                 translated_pieces.append(t[0] if t else p)
                             except Exception as e:
-                                err_name = type(e).__name__.lower()
-                                err_str = str(e).lower()
-                                if (isinstance(e, (requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError, RecursionError))
-                                        or "429" in err_str or "toomanyrequests" in err_name or "request" in err_name or "recursion" in err_name
-                                        or "bloqueado pelo google" in err_str):
+                                if isinstance(e, (ProviderRateLimited, ProviderAuthError, RecursionError)):
                                     raise
                                 translated_pieces.append(p)
                         safe_results.append("".join(translated_pieces))
@@ -336,11 +331,7 @@ class BaseTranslate(ABC):
                                 single = self._translate_single_batch([text])
                             safe_results.append(single[0] if single else text)
                         except Exception as e:
-                            err_name = type(e).__name__.lower()
-                            err_str = str(e).lower()
-                            if (isinstance(e, (requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError, RecursionError))
-                                    or "429" in err_str or "toomanyrequests" in err_name or "request" in err_name or "recursion" in err_name
-                                    or "bloqueado pelo google" in err_str):
+                            if isinstance(e, (ProviderRateLimited, ProviderAuthError, RecursionError)):
                                 raise
                             safe_results.append(text)
                 translated_results.extend(safe_results)

@@ -16,7 +16,7 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 4
     permissions:
       contents: read # checkout do codigo do repositorio
     steps:

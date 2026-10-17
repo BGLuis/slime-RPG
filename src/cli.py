@@ -40,7 +40,7 @@ def clear_screen():
 
 def status_color(status):
     return {
-        'success': 'green', 'erro': 'red', 'danger': 'red',
+        'success': 'green', 'partial': 'yellow', 'erro': 'red', 'danger': 'red',
         'waiting': 'yellow', 'process': 'cyan',
     }.get(status, 'white')
 
@@ -409,6 +409,7 @@ class _StatusApp(_LanguagePaletteMixin, App):
             'waiting': 1,
             'erro': 2,
             'danger': 2,
+            'partial': 2,
             'success': 3,
             'ignore': 4,
         }
@@ -434,7 +435,7 @@ class _StatusApp(_LanguagePaletteMixin, App):
 
             self._status_map[file_name] = status
 
-            if s_code in ('erro', 'success', 'ignore'):
+            if s_code in ('erro', 'success', 'ignore', 'partial'):
                 self._pending_files.discard(file_name)
             else:
                 self._pending_files.add(file_name)

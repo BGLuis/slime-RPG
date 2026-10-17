@@ -89,7 +89,9 @@ class CacheLookupStep(PipelineStep):
             else:
                 TextsUtils.interactive_item(context.text, resolved_list)
             context.all_cached = True
+            total_valid = sum(1 for s in all_strings if isinstance(s, str) and s.strip())
             if context.extractor:
+                context.extractor._last_stats = (total_valid, total_valid)
                 context.extractor.add_threads_status({
                     'file': context.file_path_str,
                     'status': 'process',
@@ -240,6 +242,22 @@ class CacheStoreStep(PipelineStep):
                 context.text = final_list[0] if final_list else context.text
             else:
                 TextsUtils.interactive_item(context.text, final_list)
+
+            if context.extractor:
+                cached_valid = sum(
+                    1 for v in context.cached_positions.values()
+                    if isinstance(v, str) and v.strip()
+                )
+                fixed_valid = sum(
+                    1 for orig, fixed in zip(context.pending_originals, context.fixed_pending)
+                    if isinstance(orig, str) and orig.strip() and fixed is not None
+                    and orig.strip() != fixed.strip()
+                )
+                total_valid = cached_valid + sum(
+                    1 for orig in context.pending_originals
+                    if isinstance(orig, str) and orig.strip()
+                )
+                context.extractor._last_stats = (cached_valid + fixed_valid, total_valid)
 
         return context
 

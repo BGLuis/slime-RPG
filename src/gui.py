@@ -738,7 +738,7 @@ class TranslationGUI(QMainWindow):
             return
 
         total_files = len(status_list)
-        done_files = sum(1 for s in status_list if s.get('status') in ['success', 'erro', 'ignore'])
+        done_files = sum(1 for s in status_list if s.get('status') in ['success', 'partial', 'erro', 'ignore'])
         processing_files = [os.path.basename(s.get('file', '')) for s in status_list if s.get('status') == 'process']
         if total_files > 0:
             percent = int((done_files / total_files) * 100)
