@@ -2,6 +2,7 @@ import os
 import re
 import copy
 import logging
+import threading
 from typing import Any, Dict, List, Optional, Union
 
 from src.extractor.BaseExtractor import BaseExtractor
@@ -40,6 +41,8 @@ class WolfRPGExtractor(BaseExtractor):
         self.target_font = None
         self.repack_wolf = False
         self.preserve_title = False
+        self._lookup_types = None
+        self._lookup_types_lock = threading.Lock()
 
     def prepare(self):
         """Procura recursivamente por arquivos .wolf em folderInput e descompacta cada um no seu diretório."""
@@ -393,17 +396,59 @@ class WolfRPGExtractor(BaseExtractor):
     # Banco de Dados (*.dat / *.project)
     # =========================================================================
 
+    def _name_lookup_types(self):
+        """Nomes dos tipos de banco que os eventos consultam por nome literal do dado.
+
+        Nesses tipos, o texto igual ao nome do dado é chave de busca e não pode ser traduzido.
+        Retorna None se algum arquivo não pôde ser lido: sem certeza, o chamador é conservador.
+        """
+        with self._lookup_types_lock:
+            if self._lookup_types is None:
+                self._lookup_types = self._scan_name_lookup_types()
+            return self._lookup_types
+
+    def _scan_name_lookup_types(self):
+        folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
+        found = set()
+
+        def scan(commands):
+            for cmd in commands:
+                if cmd.get('code') != WolfEventCode.DATABASE:
+                    continue
+                strings = cmd.get('string_args') or []
+                if len(strings) >= 3 and strings[1] and strings[2]:
+                    found.add(strings[1])
+
+        try:
+            for root, _, filenames in os.walk(folder_input):
+                for filename in filenames:
+                    path = os.path.join(root, filename)
+                    if filename == 'CommonEvent.dat':
+                        for event in WolfBinaryAdapter.load_file(path):
+                            if event:
+                                scan(event.get('list', []))
+                    elif filename.endswith('.mps'):
+                        for event in WolfBinaryAdapter.load_file(path).get('events', []):
+                            for page in (event or {}).get('pages', []):
+                                scan(page.get('list', []))
+        except Exception as e:
+            logging.warning(f"Não foi possível mapear buscas por nome no banco ({e}); mantendo nomes de dado intactos.")
+            return None
+        return found
+
     def extract_text_database(self, data):
         results = []
+        lookup_types = self._name_lookup_types()
         for type_idx, type_item in enumerate(data.get('types', [])):
             type_obj = {"id": type_item.get('id', type_idx), "data": []}
+            keeps_names = lookup_types is None or type_item.get('name') in lookup_types
 
             for datum_idx, datum_item in enumerate(type_item.get('data', [])):
                 translatable = {}
                 for s_idx, val in enumerate(datum_item.get('string_values', [])):
                     # O jogo busca dados pelo nome (ex.: tipo Costume 'Hair 1'); o nome do
                     # dado não é traduzido, então o valor igual a ele também não pode ser.
-                    if val == datum_item.get('name'):
+                    if keeps_names and val == datum_item.get('name'):
                         continue
                     if WolfTextFilters.is_translatable(val):
                         translatable[str(s_idx)] = val
