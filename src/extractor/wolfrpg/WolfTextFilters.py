@@ -57,12 +57,25 @@ class WolfTextFilters:
 
         return False
 
+    _CONTROL_CODE = re.compile(r'\\[A-Za-z]+(?:\[[^\]]*\])?|\\[^A-Za-z]')
+    _HAS_LETTER = re.compile(r'[^\W\d_]', re.UNICODE)
+
+    @classmethod
+    def contains_media_path(cls, text: str) -> bool:
+        """Texto de várias linhas em que alguma linha é caminho/arquivo (ex.: 'SystemFile/Enter.wav\\r\\n100\\r\\n100')."""
+        if not isinstance(text, str):
+            return False
+        return any(cls.is_media_path(line) for line in text.splitlines())
+
     @classmethod
     def is_translatable(cls, text: str) -> bool:
         """Determina se o texto deve ser enviado para tradução."""
         if not isinstance(text, str):
             return False
-        if cls.is_technical_or_code(text):
+        if cls.is_technical_or_code(text) or cls.contains_media_path(text):
+            return False
+        # Só códigos de controle (ex.: '\\s[1]') não têm o que traduzir.
+        if not cls._HAS_LETTER.search(cls._CONTROL_CODE.sub('', text)):
             return False
         # Remove quebras de linha e checa se sobra conteúdo legível
         stripped = text.replace('\r', '').replace('\n', '').strip()

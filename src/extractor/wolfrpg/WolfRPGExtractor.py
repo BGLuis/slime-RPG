@@ -16,7 +16,6 @@ from .WolfEventStrategy import (
     ChoicesStrategy,
     SetStringStrategy,
     PictureStrategy,
-    CommentStrategy,
     CommonEventParamStrategy
 )
 from .WolfBinaryAdapter import WolfBinaryAdapter, WolfDatabase, WolfProEncryptedError
@@ -35,9 +34,8 @@ class WolfRPGExtractor(BaseExtractor):
             WolfEventCode.SHOW_CHOICES: ChoicesStrategy(),
             WolfEventCode.SET_STRING: SetStringStrategy(),
             WolfEventCode.PICTURE: PictureStrategy(),
-            WolfEventCode.COMMENT: CommentStrategy(),
             WolfEventCode.CALL_COMMON_EVENT: CommonEventParamStrategy(),
-            WolfEventCode.CALL_COMMON_BY_NAME: CommonEventParamStrategy(),
+            WolfEventCode.CALL_COMMON_BY_NAME: CommonEventParamStrategy(skip_first=True),
         }
         self.target_font = None
         self.repack_wolf = False
@@ -403,6 +401,10 @@ class WolfRPGExtractor(BaseExtractor):
             for datum_idx, datum_item in enumerate(type_item.get('data', [])):
                 translatable = {}
                 for s_idx, val in enumerate(datum_item.get('string_values', [])):
+                    # O jogo busca dados pelo nome (ex.: tipo Costume 'Hair 1'); o nome do
+                    # dado não é traduzido, então o valor igual a ele também não pode ser.
+                    if val == datum_item.get('name'):
+                        continue
                     if WolfTextFilters.is_translatable(val):
                         translatable[str(s_idx)] = val
 

@@ -87,23 +87,23 @@ class SetStringStrategy(WolfEventStrategy):
 
 
 class CommonEventParamStrategy(WolfEventStrategy):
-    """Estratégia para chamadas de evento comum com parâmetros textuais (CID 210 / 300)"""
+    """Estratégia para chamadas de evento comum com parâmetros textuais (CID 210 / 300).
+
+    No CID 300 o primeiro string_arg é o nome do evento chamado: traduzi-lo quebra a chamada.
+    """
+    def __init__(self, skip_first=False):
+        self.skip_first = skip_first
+
+    def _is_param(self, idx, value):
+        return not (self.skip_first and idx == 0) and WolfTextFilters.is_translatable(value)
+
     def extract(self, item, context=None):
         string_args = item.get('string_args', item.get('parameters', []))
         if not string_args:
             return None
-        
-        extracted = []
-        has_translatable = False
-        for s in string_args:
-            if WolfTextFilters.is_translatable(s):
-                extracted.append(s)
-                has_translatable = True
-            else:
-                extracted.append(s)
-        
-        if has_translatable:
-            return extracted
+
+        if any(self._is_param(i, s) for i, s in enumerate(string_args)):
+            return list(string_args)
         return None
 
     def insert(self, item, translated_text, context=None):
@@ -111,18 +111,15 @@ class CommonEventParamStrategy(WolfEventStrategy):
             return
         key = 'string_args' if 'string_args' in item else 'parameters'
         original_list = item.get(key, [])
-        
+
         if isinstance(translated_text, list) and len(original_list) == len(translated_text):
-            final_list = []
-            for orig, trans in zip(original_list, translated_text):
-                if WolfTextFilters.is_translatable(orig):
-                    final_list.append(str(trans))
-                else:
-                    final_list.append(orig)
-            item[key] = final_list
+            item[key] = [
+                str(trans) if self._is_param(i, orig) else orig
+                for i, (orig, trans) in enumerate(zip(original_list, translated_text))
+            ]
         elif isinstance(translated_text, str) and len(original_list) > 0:
             for i in range(len(original_list)):
-                if WolfTextFilters.is_translatable(original_list[i]):
+                if self._is_param(i, original_list[i]):
                     original_list[i] = str(translated_text)
                     break
 
