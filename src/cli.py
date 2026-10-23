@@ -372,6 +372,24 @@ def select_folder(title=None):
 
 
 class _StatusApp(_LanguagePaletteMixin, App):
+    BINDINGS = [
+        Binding("escape", "cancel", _i18n.tr('cli_binding_cancel')),
+        Binding("ctrl+c", "cancel", _i18n.tr('cli_binding_cancel')),
+        Binding("q", "cancel", _i18n.tr('cli_binding_cancel')),
+    ]
+    CSS = """
+    #status-summary {
+        padding: 0 1;
+        height: 3;
+        background: $surface;
+        color: $text;
+        border-bottom: solid $primary;
+    }
+    DataTable {
+        height: 1fr;
+    }
+    """
+
     def __init__(self, extractor):
         super().__init__()
         self.extractor = extractor
@@ -383,10 +401,14 @@ class _StatusApp(_LanguagePaletteMixin, App):
         self.col_progress = None
 
     def compose(self) -> ComposeResult:
-        table = DataTable()
+        yield Static("", id="status-summary")
+        table = DataTable(cursor_type="row", zebra_stripes=True)
         self._add_columns(table)
         yield table
         yield Footer()
+
+    def action_cancel(self) -> None:
+        self.exit()
 
     def _add_columns(self, table):
         self.col_file, self.col_status, self.col_msg, self.col_progress = table.add_columns(
@@ -429,6 +451,10 @@ class _StatusApp(_LanguagePaletteMixin, App):
                 continue
             s_code = status.get('status', '')
             msg = status.get('msg', '')
+
+            # Trunca mensagens longas para nunca quebrar o layout da tabela (máximo 60 caracteres)
+            display_msg = (msg[:57] + "...") if len(msg) > 60 else msg
+
             progress = ''
             if 'current' in status and 'total' in status:
                 progress = f"{status['current']}/{status['total']}"
@@ -442,12 +468,35 @@ class _StatusApp(_LanguagePaletteMixin, App):
 
             if file_name in table.rows:
                 table.update_cell(file_name, self.col_status, Text(s_code, style=status_color(s_code)))
-                table.update_cell(file_name, self.col_msg, msg)
+                table.update_cell(file_name, self.col_msg, display_msg)
                 table.update_cell(file_name, self.col_progress, progress)
             else:
                 table.add_row(
-                    file_name, Text(s_code, style=status_color(s_code)), msg, progress, key=file_name
+                    file_name, Text(s_code, style=status_color(s_code)), display_msg, progress, key=file_name
                 )
+
+        # Atualiza a barra de resumo superior
+        try:
+            summary_widget = self.query_one("#status-summary", Static)
+            total = len(self._status_map)
+            done = sum(1 for s in self._status_map.values() if s.get('status') == 'success')
+            part = sum(1 for s in self._status_map.values() if s.get('status') == 'partial')
+            errs = sum(1 for s in self._status_map.values() if s.get('status') in ('erro', 'danger'))
+            wait = sum(1 for s in self._status_map.values() if s.get('status') == 'waiting')
+            proc = sum(1 for s in self._status_map.values() if s.get('status') == 'process')
+
+            summary_text = (
+                f"Total: {total} | Concluídos: {done} | "
+                f"Processando: {proc} | Na fila: {wait} | "
+                f"Parciais: {part} | Erros: {errs}"
+            )
+            has_rate_limit = any('rate limit' in str(s.get('msg', '')).lower() or 'taxa' in str(s.get('msg', '')).lower() or 'limite' in str(s.get('msg', '')).lower() for s in self._status_map.values())
+            if has_rate_limit:
+                summary_text += "\n[bold red]⚠️ Alerta: Bloqueio por limite de requisições excedido. Ative proxies ou use VPN.[/]"
+
+            summary_widget.update(summary_text)
+        except Exception:
+            pass
 
         if self._status_map and not self._pending_files:
             self.exit()

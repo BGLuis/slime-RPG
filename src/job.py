@@ -260,8 +260,19 @@ class TranslationJob:
             from main import sync_folder_tree
             sync_folder_tree(self.extractor.folderOutput, self.workspace.output_dir)
 
-        # Resumo final de arquivos abaixo de 100% / parciais
+        # Resumo final de arquivos com erro ou parciais
         threads_status = getattr(self.extractor, 'threads_status', [])
+        error_files = [
+            s for s in threads_status
+            if s.get('status') == 'erro'
+        ]
+        if error_files:
+            log("--- Resumo de Arquivos com Falha de Processamento ---", 'red')
+            for ef in error_files:
+                f_name = ef.get('file', '')
+                f_msg = ef.get('msg', '')
+                log(f"  ✗ {f_name}: {f_msg}", 'red')
+
         partial_files = [
             s for s in threads_status
             if s.get('status') == 'partial'
@@ -273,7 +284,10 @@ class TranslationJob:
                 f_msg = pf.get('msg', '')
                 log(f"  • {f_name}: {f_msg}", 'yellow')
 
-        log(_i18n.tr('log_finished_success'), 'green')
+        if error_files:
+            log(f"Processamento concluído com {len(error_files)} arquivo(s) com erro.", 'yellow')
+        else:
+            log(_i18n.tr('log_finished_success'), 'green')
         return True
 
     def _run_filenames_mode(self, log):
