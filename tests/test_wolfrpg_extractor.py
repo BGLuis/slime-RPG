@@ -246,9 +246,10 @@ def test_wolf_rpg_extractor_font_and_repack_config(tmp_path, monkeypatch):
 def test_wolf_rpg_interactive_questions_schema():
     questions = WolfRPGExtractor.get_interactive_questions()
     assert isinstance(questions, list)
-    assert len(questions) == 2
+    assert len(questions) == 3
 
     keys = [q.get("key") for q in questions]
+    assert "preserve_title" in keys
     assert "target_font" in keys
     assert "repack_mode" in keys
 

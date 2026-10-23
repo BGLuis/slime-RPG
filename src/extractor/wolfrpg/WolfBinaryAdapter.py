@@ -15,6 +15,11 @@ RAND_MAX = 0x7FFF
 MAX_INT32 = 0x7FFFFFFF
 
 
+class WolfProEncryptedError(Exception):
+    """Exceção levantada quando um arquivo está cifrado ou compactado pela engine comercial Wolf RPG Pro."""
+    pass
+
+
 class MSVCRandom:
     """Implementação pura do gerador de números pseudo-aleatórios da MSVCRT (Windows)."""
     def __init__(self, seed: int = 0):
@@ -483,6 +488,19 @@ class WolfMap:
     @classmethod
     def load(cls, file_path_or_bytes: Union[str, bytes]) -> 'WolfMap':
         coder = WolfFileCoder.open_read(file_path_or_bytes)
+        raw_val = coder.stream.getvalue()
+        if len(raw_val) >= 33 and raw_val.startswith(cls.MAP_MAGIC):
+            encoding_type = struct.unpack_from('<I', raw_val, 16)[0]
+            if encoding_type == 85 and len(raw_val) >= 25:
+                attr = struct.unpack_from('<I', raw_val, 20)[0]
+                ver = raw_val[24]
+                if attr == 103 and ver == 105:
+                    fname = os.path.basename(file_path_or_bytes) if isinstance(file_path_or_bytes, str) else "Map"
+                    raise WolfProEncryptedError(
+                        f"O mapa '{fname}' utiliza compressão/proteção do WOLF RPG Pro 3.x. "
+                        "Para traduzir este arquivo, desproteja-o previamente utilizando o UberWolf (opção 'Remove Pro Protection')."
+                    )
+
         coder.verify(cls.MAP_MAGIC)
 
         m = cls()
@@ -720,6 +738,12 @@ class WolfCommonEvents:
     @classmethod
     def load(cls, file_path_or_bytes: Union[str, bytes]) -> 'WolfCommonEvents':
         coder = WolfFileCoder.open_read(file_path_or_bytes)
+        raw_val = coder.stream.getvalue()
+        if raw_val[:10] == b'\x00W\x00\x00OLUFC\x00' and len(raw_val) > 10 and raw_val[10] == 0xCC:
+            raise WolfProEncryptedError(
+                "O arquivo CommonEvent.dat utiliza proteção comercial do WOLF RPG Pro 3.x. "
+                "Para traduzir este arquivo, desproteja-o previamente utilizando o UberWolf (opção 'Remove Pro Protection')."
+            )
         ce = cls()
         try:
             coder.verify(cls.COMMON_MAGIC2)
@@ -833,6 +857,14 @@ class WolfDatabase:
         db = cls()
         with open(dat_path, 'rb') as f:
             dat_bytes = bytearray(f.read())
+
+        # Verifica se o arquivo .dat é do Wolf RPG Pro 3.x
+        if dat_bytes.startswith(b'\x00W\x00\x00OLUFM\x00') and len(dat_bytes) > 10 and dat_bytes[10] in (0xC4, 0xCC):
+            fname = os.path.basename(dat_path)
+            raise WolfProEncryptedError(
+                f"O banco de dados '{fname}' utiliza proteção compactada/cifrada do WOLF RPG Pro 3.x. "
+                "Para traduzir este arquivo, desproteja-o previamente utilizando o UberWolf (opção 'Remove Pro Protection')."
+            )
 
         db.has_leading_zero = dat_bytes.startswith(b'\x00' + cls.DATABASE_MAGIC)
         # Verifica se o arquivo .dat é criptografado

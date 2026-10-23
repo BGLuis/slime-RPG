@@ -98,14 +98,15 @@ def detect_game_environment(candidate_path: Optional[str] = None) -> Optional[Di
                 'file_count': len(rpg_files)
             }
 
-    # 2. Checagem de pastas e arquivos WOLF RPG Editor (Data.wolf, Data/BasicData, Data/MapData)
+    # 2. Checagem de pastas e arquivos WOLF RPG Editor (Data.wolf, Data/BasicData, Data/MapData, Data/Evtext)
     wolf_data_dir = os.path.join(target, 'Data')
     if os.path.isdir(wolf_data_dir):
         common_dat = os.path.join(wolf_data_dir, 'BasicData', 'CommonEvent.dat')
         map_files = glob.glob(os.path.join(wolf_data_dir, 'MapData', '*.mps'))
         wolf_archives = glob.glob(os.path.join(wolf_data_dir, '*.wolf'))
-        if os.path.isfile(common_dat) or len(map_files) > 0 or len(wolf_archives) > 0:
-            total_files = (1 if os.path.isfile(common_dat) else 0) + len(map_files) + len(wolf_archives)
+        evtext_files = glob.glob(os.path.join(wolf_data_dir, 'Evtext', '**', '*.txt'), recursive=True)
+        if os.path.isfile(common_dat) or len(map_files) > 0 or len(wolf_archives) > 0 or len(evtext_files) > 0:
+            total_files = (1 if os.path.isfile(common_dat) else 0) + len(map_files) + len(wolf_archives) + len(evtext_files)
             return {
                 'detected_path': wolf_data_dir,
                 'extractor': 'Wolf RPG',
@@ -132,14 +133,15 @@ def detect_game_environment(candidate_path: Optional[str] = None) -> Optional[Di
     json_files = [f for f in entries if f.lower().endswith('.json')]
     csv_files = [f for f in entries if f.lower().endswith('.csv')]
     wolf_entries = [f for f in entries if f.lower().endswith(('.mps', '.wolf')) or f in ('CommonEvent.dat', 'Game.dat')]
+    evtext_files = glob.glob(os.path.join(target, 'Evtext', '**', '*.txt'), recursive=True)
 
     # Wolf RPG no diretório atual
-    if len(wolf_entries) > 0:
+    if len(wolf_entries) > 0 or len(evtext_files) > 0:
         return {
             'detected_path': target,
             'extractor': 'Wolf RPG',
             'description': 'WOLF RPG Editor (pasta atual)',
-            'file_count': len(wolf_entries)
+            'file_count': len(wolf_entries) + len(evtext_files)
         }
 
     # RPG Maker no diretório atual

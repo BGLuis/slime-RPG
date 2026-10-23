@@ -19,14 +19,14 @@ from .WolfEventStrategy import (
     CommentStrategy,
     CommonEventParamStrategy
 )
-from .WolfBinaryAdapter import WolfBinaryAdapter, WolfDatabase
+from .WolfBinaryAdapter import WolfBinaryAdapter, WolfDatabase, WolfProEncryptedError
 from .WolfArchive import WolfArchive
 
 
 @register_extractor("wolfrpg", display_name="Wolf RPG", aliases=["Wolf RPG", "wolf_rpg", "wolf-rpg", "wolf"])
 class WolfRPGExtractor(BaseExtractor):
     name = "wolfrpg"
-    files_types = ['mps', 'dat', 'project']
+    files_types = ['mps', 'dat', 'project', 'txt']
 
     def __init__(self, translate):
         super().__init__(translate)
@@ -41,6 +41,7 @@ class WolfRPGExtractor(BaseExtractor):
         }
         self.target_font = None
         self.repack_wolf = False
+        self.preserve_title = False
 
     def prepare(self):
         """Procura recursivamente por arquivos .wolf em folderInput e descompacta cada um no seu diretório."""
@@ -63,6 +64,16 @@ class WolfRPGExtractor(BaseExtractor):
     @classmethod
     def get_interactive_questions(cls):
         return [
+            {
+                "key": "preserve_title",
+                "id": "preserve_title",
+                "question": "Deseja preservar o título original do jogo no Game.dat?",
+                "options": [
+                    "(Recomendado) Sim, manter título original (evita invalidar saves existentes)",
+                    "Não, traduzir o título do jogo"
+                ],
+                "default": "(Recomendado) Sim, manter título original (evita invalidar saves existentes)"
+            },
             {
                 "key": "target_font",
                 "id": "target_font",
@@ -90,6 +101,16 @@ class WolfRPGExtractor(BaseExtractor):
     def apply_configuration(self, config):
         if not config:
             return
+        if "preserve_title" in config:
+            title_opt = config.get("preserve_title")
+            if isinstance(title_opt, bool):
+                self.preserve_title = title_opt
+            elif isinstance(title_opt, str):
+                if "Sim" in title_opt or title_opt.lower() in ("true", "1", "yes", "sim"):
+                    self.preserve_title = True
+                elif "Não" in title_opt or title_opt.lower() in ("false", "0", "no", "nao", "não"):
+                    self.preserve_title = False
+
         font_opt = config.get("target_font", "")
         if font_opt and not font_opt.startswith("(Recomendado)"):
             self.target_font = font_opt.strip()
@@ -127,6 +148,30 @@ class WolfRPGExtractor(BaseExtractor):
 
         file_name = os.path.basename(file_path)
 
+        # Arquivos de script de texto (Evtext)
+        if file_path.endswith('.txt'):
+            try:
+                with open(file_path, 'rb') as f:
+                    raw_bytes = f.read()
+
+                encoding = 'cp932'
+                try:
+                    content = raw_bytes.decode('cp932')
+                except UnicodeDecodeError:
+                    content = raw_bytes.decode('utf-8', errors='replace')
+                    encoding = 'utf-8'
+
+                lineterminator = '\r\n' if b'\r\n' in raw_bytes else '\n'
+                data = {
+                    'encoding': encoding,
+                    'lineterminator': lineterminator,
+                    'lines': content.splitlines(keepends=True)
+                }
+                return [file_name, data]
+            except Exception as e:
+                logging.error(f"Erro ao ler arquivo de texto {file_path}: {e}")
+                raise
+
         # Arquivos binários do Wolf RPG
         if file_path.endswith(('.mps', '.dat', '.project')):
             data = WolfBinaryAdapter.load_file(file_path)
@@ -137,6 +182,25 @@ class WolfRPGExtractor(BaseExtractor):
     @classmethod
     def import_file(cls, file_name, json_data, folder):
         dest_path = os.path.join(folder, file_name)
+        if file_name.endswith('.txt') and isinstance(json_data, dict) and 'lines' in json_data:
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            encoding = json_data.get('encoding', 'cp932')
+            content = "".join(json_data.get('lines', []))
+            if encoding == 'cp932':
+                try:
+                    raw_bytes = content.encode('cp932')
+                except UnicodeEncodeError:
+                    from src.utils.TextsUtils import normalize_western_chars
+                    norm_content = normalize_western_chars(content)
+                    raw_bytes = norm_content.encode('cp932', errors='replace')
+            else:
+                raw_bytes = content.encode(encoding, errors='replace')
+
+            with open(dest_path, 'wb') as f:
+                f.write(raw_bytes)
+            logging.info(f"✓ Validado e salvo script WOLF RPG Evtext: {file_name}")
+            return
+
         if file_name.endswith(('.mps', '.dat')):
             try:
                 original_raw = getattr(json_data, '_raw_wolf', None)
@@ -164,11 +228,16 @@ class WolfRPGExtractor(BaseExtractor):
 
         super().import_file(file_name, json_data, folder)
 
-    def is_translatable_file(self, file_name):
+    def is_translatable_file(self, file_name, file_path=None):
         base_name = os.path.basename(file_name)
         if base_name.endswith('.mps'):
             return True
         if base_name in ('Game.dat', 'CommonEvent.dat', 'DataBase.dat', 'CDataBase.dat', 'SysDatabase.dat'):
+            return True
+        if base_name.endswith('.txt'):
+            lower_name = base_name.lower()
+            if lower_name in ('readme.txt', 'license.txt', 'patch-config.txt', 'patch-config.example.txt', 'game_errorlog.txt'):
+                return False
             return True
         return False
 
@@ -185,6 +254,8 @@ class WolfRPGExtractor(BaseExtractor):
             return self.extract_text_database(data)
         elif base_name == 'Game.dat':
             return self.extract_text_gamedat(data)
+        elif base_name.endswith('.txt'):
+            return self.extract_text_evtext(data)
 
         return None
 
@@ -205,6 +276,8 @@ class WolfRPGExtractor(BaseExtractor):
             self.insert_text_database(updated, new_data)
         elif base_name == 'Game.dat':
             self.insert_text_gamedat(updated, new_data)
+        elif base_name.endswith('.txt'):
+            self.insert_text_evtext(updated, new_data)
 
         return updated
 
@@ -371,6 +444,8 @@ class WolfRPGExtractor(BaseExtractor):
     # =========================================================================
 
     def extract_text_gamedat(self, data):
+        if getattr(self, 'preserve_title', False):
+            return None
         title = data.get('title', '')
         if WolfTextFilters.is_translatable(title):
             return {"title": title}
@@ -387,6 +462,62 @@ class WolfRPGExtractor(BaseExtractor):
             data['font'] = self.target_font
             if hasattr(data, '_raw_wolf') and hasattr(data._raw_wolf, 'font'):
                 data._raw_wolf.font = self.target_font
+
+    # =========================================================================
+    # Scripts de Texto (Evtext/*.txt)
+    # =========================================================================
+
+    def extract_text_evtext(self, data):
+        if not isinstance(data, dict) or 'lines' not in data:
+            return None
+
+        lines = data.get('lines', [])
+        results = {}
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            # Ignora linhas vazias ou comandos/comentários que iniciam com / ou //
+            if not stripped or stripped.startswith('/') or stripped.startswith('//'):
+                continue
+            if WolfTextFilters.is_translatable(stripped):
+                results[str(idx)] = stripped
+
+        return {"lines": results} if results else None
+
+    def insert_text_evtext(self, data, new_data):
+        if not isinstance(data, dict) or 'lines' not in data:
+            return
+        if not isinstance(new_data, dict) or 'lines' not in new_data:
+            return
+
+        lines_map = new_data.get('lines', {})
+        original_lines = data['lines']
+        for idx_str, trans_text in lines_map.items():
+            try:
+                idx = int(idx_str)
+                if idx < len(original_lines):
+                    orig_line = original_lines[idx]
+                    if orig_line.endswith('\r\n'):
+                        terminator = '\r\n'
+                    elif orig_line.endswith('\n'):
+                        terminator = '\n'
+                    else:
+                        terminator = data.get('lineterminator', '\r\n')
+
+                    leading_spaces = len(orig_line) - len(orig_line.lstrip(' \t'))
+                    prefix = orig_line[:leading_spaces]
+                    raw_trans = str(trans_text).strip()
+                    raw_trans = " ".join(raw_trans.splitlines())
+
+                    orig_stripped = orig_line.rstrip('\r\n \t')
+                    if orig_stripped.endswith('：'):
+                        if raw_trans.endswith(':'):
+                            raw_trans = raw_trans[:-1] + '：'
+                        elif not raw_trans.endswith('：'):
+                            raw_trans = raw_trans + '：'
+
+                    data['lines'][idx] = f"{prefix}{raw_trans}{terminator}"
+            except (ValueError, IndexError):
+                continue
 
     # =========================================================================
     # Pós-processamento e Correção de Textos

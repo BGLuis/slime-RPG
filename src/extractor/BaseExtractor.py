@@ -129,6 +129,20 @@ class BaseExtractor(ABC):
             from src.extractor.wolfrpg.WolfBinaryAdapter import WolfBinaryAdapter
             data = WolfBinaryAdapter.load_file(file_path)
             return [os.path.basename(file_path), data]
+        if file_path.endswith('.txt'):
+            try:
+                with open(file_path, 'rb') as f:
+                    raw_bytes = f.read()
+                encoding = 'cp932'
+                try:
+                    content = raw_bytes.decode('cp932')
+                except UnicodeDecodeError:
+                    content = raw_bytes.decode('utf-8', errors='replace')
+                    encoding = 'utf-8'
+                lineterminator = '\r\n' if b'\r\n' in raw_bytes else '\n'
+                return [os.path.basename(file_path), {'encoding': encoding, 'lineterminator': lineterminator, 'lines': content.splitlines(keepends=True)}]
+            except Exception:
+                pass
         with open(file_path, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
             return [os.path.basename(file_path), data]
@@ -237,6 +251,22 @@ class BaseExtractor(ABC):
             except Exception as e:
                 logging.error(f"✗ Failed to save WOLF RPG binary {file_name}: {e}")
                 raise
+
+        if file_name.endswith('.txt') and isinstance(json_data, dict) and 'lines' in json_data:
+            encoding = json_data.get('encoding', 'utf-8')
+            content = "".join(json_data.get('lines', []))
+            if encoding == 'cp932':
+                try:
+                    raw_bytes = content.encode('cp932')
+                except UnicodeEncodeError:
+                    from src.utils.TextsUtils import normalize_western_chars
+                    raw_bytes = normalize_western_chars(content).encode('cp932', errors='replace')
+            else:
+                raw_bytes = content.encode(encoding, errors='replace')
+            with open(dest_path, 'wb') as f:
+                f.write(raw_bytes)
+            logging.info(f"✓ Validated and saved text: {file_name}")
+            return
 
         try:
             if isinstance(json_data, (dict, list)):
@@ -543,7 +573,13 @@ class BaseExtractor(ABC):
         file_name = os.path.basename(file_path_str)
 
         if hasattr(self, 'is_translatable_file') and callable(getattr(self, 'is_translatable_file')):
-            if not self.is_translatable_file(file_name):
+            try:
+                import inspect
+                sig = inspect.signature(self.is_translatable_file)
+                can_trans = self.is_translatable_file(file_name, file_path_str) if len(sig.parameters) >= 2 else self.is_translatable_file(file_name)
+            except Exception:
+                can_trans = self.is_translatable_file(file_name)
+            if not can_trans:
                 self._handle_no_text(file_path_str, rel_path, None)
                 return
 
@@ -680,7 +716,13 @@ class BaseExtractor(ABC):
                 rel_path = file_name
 
             if hasattr(self, 'is_translatable_file') and callable(getattr(self, 'is_translatable_file')):
-                if not self.is_translatable_file(file_name):
+                try:
+                    import inspect
+                    sig = inspect.signature(self.is_translatable_file)
+                    can_trans = self.is_translatable_file(file_name, file_path_str) if len(sig.parameters) >= 2 else self.is_translatable_file(file_name)
+                except Exception:
+                    can_trans = self.is_translatable_file(file_name)
+                if not can_trans:
                     return 'empty', (rel_path, file_path_str, file_name, None)
 
             _, data = self.extract_files(file_path_str)
