@@ -148,3 +148,5 @@ output/
 *.sublime-workspace
 
 test/
+# Lista de proxies do usuario (local, nao versionar)
+proxies.txt
