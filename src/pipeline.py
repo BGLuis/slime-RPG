@@ -248,15 +248,13 @@ class CacheStoreStep(PipelineStep):
                     1 for v in context.cached_positions.values()
                     if isinstance(v, str) and v.strip()
                 )
-                fixed_valid = sum(
-                    1 for orig, fixed in zip(context.pending_originals, context.fixed_pending)
-                    if isinstance(orig, str) and orig.strip() and fixed is not None
-                    and orig.strip() != fixed.strip()
-                )
-                total_valid = cached_valid + sum(
+                last_failed = getattr(context.translate_instance, 'last_failed_items', 0) if context.translate_instance else 0
+                fixed_total = sum(
                     1 for orig in context.pending_originals
                     if isinstance(orig, str) and orig.strip()
                 )
+                fixed_valid = max(0, fixed_total - last_failed)
+                total_valid = cached_valid + fixed_total
                 context.extractor._last_stats = (cached_valid + fixed_valid, total_valid)
 
         return context

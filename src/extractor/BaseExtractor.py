@@ -508,6 +508,19 @@ class BaseExtractor(ABC):
         file_path_str = str(file)
         folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
 
+        if getattr(self, '_aborted', False):
+            folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
+            try:
+                rel_path = os.path.relpath(file_path_str, folder_input)
+            except Exception:
+                rel_path = os.path.basename(file_path_str)
+            self.add_threads_status({
+                'file': rel_path,
+                'status': 'erro',
+                'msg': "Interrompido: limite de requisições excedido"
+            })
+            return
+
         if not os.path.exists(file_path_str) and os.path.exists(os.path.join(folder_input, file_path_str)):
             file_path_str = os.path.join(folder_input, file_path_str)
 
@@ -562,6 +575,18 @@ class BaseExtractor(ABC):
             except Exception as e:
                 logging.error(f"Erro ao traduzir {file} (tentativa {attempt + 1}/{retries}): {e}")
 
+                from src.services.ProxyManager import ProxyManager
+                from src.exceptions import ProviderRateLimited
+                proxy_mgr = ProxyManager.get_instance()
+                if isinstance(e, ProviderRateLimited) and proxy_mgr.direct_blocked and not proxy_mgr.enabled:
+                    self._aborted = True
+                    self.add_threads_status({
+                        'file': rel_path,
+                        'status': 'erro',
+                        'msg': "Limite de requisições excedido. Ative proxies ou VPN."
+                    })
+                    return
+
                 if not self._is_retriable_error(e):
                     self.add_threads_status(
                         {'file': rel_path, 'status': 'erro', 'msg': f"Erro não recuperável: {e}"})
@@ -605,19 +630,23 @@ class BaseExtractor(ABC):
                 is_different_langs = bool(lang_src and lang_tgt and lang_src.lower() != lang_tgt.lower())
                 cache = getattr(translate, 'cache', None)
 
-                translated_count = 0
-                for orig_str, trans_str in translatable_items:
-                    orig_clean = orig_str.strip()
-                    trans_clean = trans_str.strip() if isinstance(trans_str, str) else ""
-                    if is_different_langs:
-                        if orig_clean != trans_clean:
-                            translated_count += 1
-                        elif cache is not None:
-                            hits = cache.lookup_many([orig_str]) if hasattr(cache, 'lookup_many') else {}
-                            if orig_str in hits or (not hasattr(cache, 'lookup_many') and orig_str in cache):
+                last_failed = getattr(translate, 'last_failed_items', 0)
+                if last_failed == 0 and translatable_items:
+                    translated_count = total_count
+                else:
+                    translated_count = 0
+                    for orig_str, trans_str in translatable_items:
+                        orig_clean = orig_str.strip()
+                        trans_clean = trans_str.strip() if isinstance(trans_str, str) else ""
+                        if is_different_langs:
+                            if orig_clean != trans_clean:
                                 translated_count += 1
-                    else:
-                        translated_count += 1
+                            elif cache is not None:
+                                hits = cache.lookup_many([orig_str]) if hasattr(cache, 'lookup_many') else {}
+                                if orig_str in hits or (not hasattr(cache, 'lookup_many') and orig_str in cache):
+                                    translated_count += 1
+                        else:
+                            translated_count += 1
 
             self.file_translation_stats[rel_path] = (translated_count, total_count)
 

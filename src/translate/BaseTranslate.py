@@ -301,6 +301,7 @@ class BaseTranslate(ABC):
         semaphore = self.__class__._get_request_semaphore()
 
         translated_results = []
+        failed_items_count = 0
         for batch_idx, batch_result in enumerate(translated_batches_results):
             original_batch = batches[batch_idx]
             if batch_result is None or len(batch_result) != len(original_batch):
@@ -323,6 +324,7 @@ class BaseTranslate(ABC):
                             except Exception as e:
                                 if isinstance(e, (ProviderRateLimited, ProviderAuthError, RecursionError)):
                                     raise
+                                failed_items_count += 1
                                 translated_pieces.append(p)
                         safe_results.append("".join(translated_pieces))
                     else:
@@ -333,10 +335,13 @@ class BaseTranslate(ABC):
                         except Exception as e:
                             if isinstance(e, (ProviderRateLimited, ProviderAuthError, RecursionError)):
                                 raise
+                            failed_items_count += 1
                             safe_results.append(text)
                 translated_results.extend(safe_results)
             else:
                 translated_results.extend(batch_result)
+
+        self.last_failed_items = failed_items_count
 
         if progress_callback:
             self._report_progress(progress_callback, len(batches), len(batches), 0, msg="Gravando cache e finalizando...")

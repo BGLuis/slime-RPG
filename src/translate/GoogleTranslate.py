@@ -250,19 +250,32 @@ class GoogleTranslate(BaseTranslate):
     def _translate_raw(self, text):
         if not text or not text.strip():
             return text
+
+        from src.services.ProxyManager import ProxyManager
+        proxy_mgr = ProxyManager.get_instance()
+        if proxy_mgr.direct_blocked and not proxy_mgr.enabled:
+            raise ProviderRateLimited("IP direto bloqueado pela Google (HTTP 429) e pool de proxies desativado. Ative proxies ou use VPN.")
+
         for attempt in range(5):
             try:
                 res = self._translate_gtx(text)
                 if res:
                     return res
             except Exception as e:
+                if isinstance(e, ProviderRateLimited) and proxy_mgr.direct_blocked and not proxy_mgr.enabled:
+                    raise
                 logging.debug(f"GTX falhou tentativa {attempt+1}/5 para '{text[:30]}...': {e}")
+
+        if proxy_mgr.direct_blocked and not proxy_mgr.enabled:
+            raise ProviderRateLimited("IP direto bloqueado pela Google (HTTP 429) e pool de proxies desativado. Ative proxies ou use VPN.")
 
         try:
             res = self._translate_with_deep_translator(text)
             if res:
                 return res
         except Exception as e:
+            if isinstance(e, ProviderRateLimited) and proxy_mgr.direct_blocked and not proxy_mgr.enabled:
+                raise
             logging.debug(f"deep_translator falhou para '{text[:30]}...': {e}")
 
         try:
