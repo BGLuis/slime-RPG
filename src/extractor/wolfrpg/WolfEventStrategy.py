@@ -24,10 +24,9 @@ class ShowMessageStrategy(WolfEventStrategy):
         if translated_text is None:
             return
         new_text = str(translated_text)
-        if 'string_args' in item and len(item['string_args']) > 0:
-            item['string_args'][0] = new_text
-        if 'parameters' in item and len(item['parameters']) > 0:
-            item['parameters'][0] = new_text
+        key = 'string_args' if 'string_args' in item else 'parameters'
+        if item.get(key):
+            item[key][0] = new_text
 
 
 class ChoicesStrategy(WolfEventStrategy):
@@ -82,10 +81,9 @@ class SetStringStrategy(WolfEventStrategy):
         if translated_text is None:
             return
         new_text = str(translated_text)
-        if 'string_args' in item and len(item['string_args']) > 0:
-            item['string_args'][0] = new_text
-        if 'parameters' in item and len(item['parameters']) > 0:
-            item['parameters'][0] = new_text
+        key = 'string_args' if 'string_args' in item else 'parameters'
+        if item.get(key):
+            item[key][0] = new_text
 
 
 class CommonEventParamStrategy(WolfEventStrategy):

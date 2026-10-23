@@ -150,14 +150,17 @@ class GoogleTranslate(BaseTranslate):
 
             if proxy_dict:
                 proxy_mgr.report_proxy_success(proxy_dict)
+            else:
+                proxy_mgr.report_direct_success()
 
             return ''.join(part[0] for part in data_json[0] if part and part[0])
         except Exception as e:
             if proxy_dict:
                 proxy_mgr.report_proxy_failure(proxy_dict)
             if _is_rate_limit_exception(e):
-                proxy_mgr.set_direct_blocked(True)
-                if not proxy_mgr.get_proxy_dict():
+                if not proxy_mgr.direct_blocked:
+                    proxy_mgr.set_direct_blocked(True)
+                if proxy_mgr.get_pool_size() == 0:
                     raise ProviderRateLimited("Google rate limit exceeded") from e
             raise
 

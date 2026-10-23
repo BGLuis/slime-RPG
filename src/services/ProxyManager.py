@@ -21,6 +21,10 @@ class ProxyManager:
         "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"
     ]
 
+    DIRECT_COOLDOWN_BASE = 30
+    DIRECT_COOLDOWN_MAX = 300
+    MAX_WAIT_FOR_PROXY = 15.0
+
     TEST_URL = "https://translate.googleapis.com/translate_a/single"
     TEST_PARAMS = {"client": "gtx", "sl": "ja", "tl": "pt", "dt": "t", "q": "テスト"}
 
@@ -28,23 +32,13 @@ class ProxyManager:
         self._working_proxies = deque()
         self._pool_lock = threading.Lock()
         self._is_fetching = False
-        self._direct_blocked = False
+        self._direct_blocked_until = 0.0
+        self._block_streak = 0
         self._custom_proxy = os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
         self._last_fetch_time = 0
         disable_env = os.getenv("DISABLE_PROXY_POOL", "false").lower() in ("true", "1", "yes")
         use_env = os.getenv("USE_PROXY_POOL", "true").lower() in ("true", "1", "yes")
         self._enabled = use_env and not disable_env
-        if self._enabled and os.path.exists("proxies.txt"):
-            try:
-                with open("proxies.txt", "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            self._working_proxies.append(line)
-                    if self._working_proxies:
-                        self._direct_blocked = True
-            except Exception:
-                pass
 
     @classmethod
     def get_instance(cls):
@@ -62,7 +56,8 @@ class ProxyManager:
         if not self._enabled:
             with self._pool_lock:
                 self._working_proxies.clear()
-            self._direct_blocked = False
+            self._direct_blocked_until = 0.0
+            self._block_streak = 0
 
     def get_pool_size(self):
         with self._pool_lock:
@@ -70,19 +65,31 @@ class ProxyManager:
 
     @property
     def direct_blocked(self):
-        return self._direct_blocked
+        return time.monotonic() < self._direct_blocked_until
 
     def set_direct_blocked(self, blocked=True):
-        if not self._enabled:
-            self._direct_blocked = blocked
-            if blocked:
-                logging.warning("⚠️ IP direto bloqueado pela Google (429) e o pool de proxies está DESATIVADO. Utilize VPN ou troque seu IP para continuar.")
+        if not blocked:
+            self._direct_blocked_until = 0.0
+            self._block_streak = 0
             return
 
-        self._direct_blocked = blocked
-        if blocked:
-            logging.warning("⚠️ IP direto bloqueado pela Google (429). Ativando rotação automática de proxies...")
-            self.ensure_proxies(min_count=5)
+        if not self._enabled:
+            self._direct_blocked_until = float("inf")
+            logging.warning("⚠️ IP direto bloqueado pela Google (429) e o pool de proxies está DESATIVADO. Utilize VPN ou troque seu IP para continuar.")
+            return
+
+        # O 429 da Google é temporário: bloqueio com cooldown crescente, depois volta a tentar o IP direto.
+        with self._pool_lock:
+            cooldown = min(self.DIRECT_COOLDOWN_BASE * (2 ** self._block_streak), self.DIRECT_COOLDOWN_MAX)
+            self._block_streak += 1
+            already_blocked = self.direct_blocked
+            self._direct_blocked_until = max(self._direct_blocked_until, time.monotonic() + cooldown)
+        if not already_blocked:
+            logging.warning(f"⚠️ IP direto bloqueado pela Google (429). Usando proxies por {int(cooldown)}s antes de tentar o IP direto de novo...")
+        self.ensure_proxies(min_count=5)
+
+    def report_direct_success(self):
+        self._block_streak = 0
 
     def _load_local_proxies(self):
         proxies = []
@@ -139,7 +146,7 @@ class ProxyManager:
             return []
 
         # Validar em paralelo
-        candidate_list = candidates[:50]
+        candidate_list = candidates[:max(50, len(local_proxies))]
         working = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
             results = executor.map(self._validate_proxy, candidate_list)
@@ -154,12 +161,7 @@ class ProxyManager:
         with self._pool_lock:
             if len(self._working_proxies) >= min_count:
                 return
-            # Recarrega imediatamente do proxies.txt sem precisar de thread
-            local = self._load_local_proxies()
-            for p in local:
-                if p not in self._working_proxies:
-                    self._working_proxies.append(p)
-            if len(self._working_proxies) >= min_count or self._is_fetching:
+            if self._is_fetching:
                 return
             self._is_fetching = True
 
@@ -184,25 +186,24 @@ class ProxyManager:
         if self._custom_proxy:
             return {"http": self._custom_proxy, "https": self._custom_proxy}
 
-        if not self._enabled or not self._direct_blocked:
+        if not self._enabled or not self.direct_blocked:
             return None
 
         # ensure_proxies() adquire _pool_lock, que não é reentrante: chamar fora do lock.
         if self.get_pool_size() < 3:
             self.ensure_proxies(min_count=5)
 
-        if not self._working_proxies:
-            for _ in range(15):
-                time.sleep(0.1)
-                with self._pool_lock:
-                    if self._working_proxies:
-                        break
+        # Sem proxy validado, espera o pool encher ou o cooldown acabar em vez de
+        # martelar o IP direto que a Google acabou de bloquear.
+        deadline = time.monotonic() + self.MAX_WAIT_FOR_PROXY
+        while self.direct_blocked and time.monotonic() < deadline:
+            with self._pool_lock:
+                if self._working_proxies:
+                    break
+            time.sleep(0.25)
 
         with self._pool_lock:
-            if not self._working_proxies:
-                for p in self._load_local_proxies():
-                    self._working_proxies.append(p)
-            if not self._working_proxies:
+            if not self._working_proxies or not self.direct_blocked:
                 return None
             proxy_str = self._working_proxies[0]
             self._working_proxies.rotate(-1)
