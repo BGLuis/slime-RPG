@@ -43,6 +43,10 @@ class WolfTextFilters:
         if cls.is_media_path(cleaned):
             return True
 
+        # Comandos internos de engine/script WOLF (ex.: <<GET_MAPEVENT_ID_FROM_NAME>>)
+        if cleaned.startswith('<<') and '>>' in cleaned:
+            return True
+
         # Se for somente números ou símbolos
         for pattern in cls._CODE_PATTERNS:
             if pattern.match(cleaned):
