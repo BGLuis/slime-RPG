@@ -1063,11 +1063,15 @@ class DXArchive:
         for archivedFile in self.archivedFiles:
             self.extractFile(archivedFile)
 
-    def extractFile(self, archivedFile: ArchivedFile) -> None:
-        if not archivedFile.filePath.parent.exists():
-            archivedFile.filePath.parent.mkdir(parents=True)
-
-        destP = open(archivedFile.filePath, mode="wb")
+    def extractFile(self, archivedFile: ArchivedFile, dest=None) -> None:
+        if dest is None:
+            if not archivedFile.filePath.parent.exists():
+                archivedFile.filePath.parent.mkdir(parents=True)
+            destP = open(archivedFile.filePath, mode="wb")
+            should_close = True
+        else:
+            destP = dest
+            should_close = False
 
         if archivedFile.dataSize != 0:
             outputSize = archivedFile.dataSize
@@ -1210,7 +1214,13 @@ class DXArchive:
 
                         writeSize += moveSize
 
-        destP.close()
+        if should_close:
+            destP.close()
+
+    def extract_file_bytes(self, archivedFile: ArchivedFile) -> bytes:
+        bio = io.BytesIO()
+        self.extractFile(archivedFile, dest=bio)
+        return bio.getvalue()
 
 
     def encode(self, src, dest=None):
@@ -1921,6 +1931,57 @@ class WolfArchive:
     @staticmethod
     def create_archive(input_dir, output_path, key_string=None, use_compression=True, use_huffman=True):
         return create_wolf_archive(output_path, input_dir, key_string=key_string, use_compression=use_compression, use_huffman=use_huffman)
+
+    @classmethod
+    def list_entries_with_hashes(cls, archive_path, virtual_base_dir="", extensions=None, key_string=None):
+        import hashlib
+        archive = DXArchive()
+        p_arch = Path(archive_path)
+        if not p_arch.exists():
+            return {}
+
+        h = hashlib.sha256()
+        with open(p_arch, 'rb') as f:
+            for chunk in iter(lambda: f.read(1 << 20), b''):
+                h.update(chunk)
+        container_hash = h.hexdigest()
+
+        k_str = key_string if key_string is not None else defaultKeyString
+        if isinstance(k_str, str):
+            k_str = bytearray(k_str.encode('utf-8') + b'\x00')
+        elif isinstance(k_str, bytes):
+            k_str = bytearray(k_str)
+
+        try:
+            success = archive.loadArchive(p_arch, Path("."), k_str)
+            if not success:
+                if archive.fp:
+                    archive.fp.close()
+                return {}
+
+            exts = tuple(f".{e.lower().lstrip('.')}" for e in extensions) if extensions else None
+            results = {}
+            for af in archive.archivedFiles:
+                rel_path = af.filePath.as_posix().lstrip('./')
+                if virtual_base_dir:
+                    full_rel = f"{virtual_base_dir}/{rel_path}".strip('/')
+                else:
+                    full_rel = rel_path
+
+                if exts and not full_rel.lower().endswith(exts):
+                    continue
+
+                data = archive.extract_file_bytes(af)
+                digest = hashlib.sha256(data).hexdigest()
+                results[full_rel] = {
+                    'sha256': digest,
+                    'container': os.path.basename(archive_path),
+                    'container_sha256': container_hash,
+                }
+            return results
+        finally:
+            if archive.fp:
+                archive.fp.close()
 
 
 if __name__ == "__main__":
