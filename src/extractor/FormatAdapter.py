@@ -2,9 +2,7 @@ import copy
 import json
 import logging
 import os
-from typing import Any, Dict, Iterable, Optional, Protocol, Tuple, Union, runtime_checkable
-
-from src.extractor.Segment import SegmentContext
+from typing import Any, Dict, Iterable, Optional, Protocol, Tuple, runtime_checkable
 
 
 class JsonDataDict(dict):
@@ -73,25 +71,8 @@ def unregister_format_adapter(extension: str) -> None:
     _FORMAT_ADAPTER_REGISTRY.pop(_normalize_ext(extension), None)
 
 
-def _ensure_builtin_adapters_loaded() -> None:
-    if ".rvdata2" not in _FORMAT_ADAPTER_REGISTRY:
-        try:
-            import src.extractor.rpgmaker.RVDataAdapter  # noqa: F401
-        except Exception:
-            pass
-    if ".mps" not in _FORMAT_ADAPTER_REGISTRY:
-        try:
-            import src.extractor.wolfrpg.WolfBinaryAdapter  # noqa: F401
-        except Exception:
-            pass
-
-
 def get_registered_format_adapter(file_name_or_path: str) -> Optional[Any]:
     lower = str(file_name_or_path).lower()
-    for ext, adapter in sorted(_FORMAT_ADAPTER_REGISTRY.items(), key=lambda kv: len(kv[0]), reverse=True):
-        if lower.endswith(ext):
-            return adapter
-    _ensure_builtin_adapters_loaded()
     for ext, adapter in sorted(_FORMAT_ADAPTER_REGISTRY.items(), key=lambda kv: len(kv[0]), reverse=True):
         if lower.endswith(ext):
             return adapter

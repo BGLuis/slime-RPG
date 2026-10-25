@@ -87,3 +87,82 @@ def test_register_fake_txt_adapter_without_editing_base_extractor(tmp_path):
     finally:
         if original_txt_adapter is not None:
             register_format_adapter(original_txt_adapter)
+
+
+def test_declared_adapter_takes_precedence_over_global_registry():
+    class EngineAAdapter:
+        extensions = (".json",)
+
+        @staticmethod
+        def load_file(p):
+            pass
+
+        @staticmethod
+        def save_file(p, d, **ctx):
+            pass
+
+    class EngineBAdapter:
+        extensions = (".json",)
+
+        @staticmethod
+        def load_file(p):
+            pass
+
+        @staticmethod
+        def save_file(p, d, **ctx):
+            pass
+
+    class ExtractorA(BaseExtractor):
+        format_adapters = (EngineAAdapter,)
+        files_types = ["json"]
+
+        @staticmethod
+        def extract_text(file_name, data):
+            return data
+
+        @staticmethod
+        def update_json(file_name, data, new_data):
+            return new_data
+
+        @staticmethod
+        def fix_text_translate(text, original_text=None):
+            return text
+
+    class ExtractorB(BaseExtractor):
+        format_adapters = (EngineBAdapter,)
+        files_types = ["json"]
+
+        @staticmethod
+        def extract_text(file_name, data):
+            return data
+
+        @staticmethod
+        def update_json(file_name, data, new_data):
+            return new_data
+
+        @staticmethod
+        def fix_text_translate(text, original_text=None):
+            return text
+
+    class FallbackExtractor(BaseExtractor):
+        files_types = ["json"]
+
+        @staticmethod
+        def extract_text(file_name, data):
+            return data
+
+        @staticmethod
+        def update_json(file_name, data, new_data):
+            return new_data
+
+        @staticmethod
+        def fix_text_translate(text, original_text=None):
+            return text
+
+    # O declarado no extrator vence sempre
+    assert ExtractorA.get_format_adapter("test.json") is EngineAAdapter
+    assert ExtractorB.get_format_adapter("test.json") is EngineBAdapter
+
+    # Extrator sem adapter declarado recorre ao global registrado
+    assert FallbackExtractor.get_format_adapter("test.json") is JsonFormatAdapter
+

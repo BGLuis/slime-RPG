@@ -11,20 +11,15 @@ import requests
 from abc import ABC, abstractmethod
 from src.extractor.Segment import (
     Segment,
-    SegmentContext,
     SegmentList,
     copy_preserving_metadata,
     resolve_translation_map,
 )
 from src.extractor.FormatAdapter import (
-    FormatAdapter,
     JsonDataDict,
-    JsonDataList,
     JsonFormatAdapter,
-    EvtextFormatAdapter,
     get_registered_format_adapter,
     register_format_adapter,
-    unregister_format_adapter,
 )
 
 
@@ -89,6 +84,15 @@ class BaseExtractor(ABC):
     folderOutput = FolderProperty('folderOutput', 'output_dir', 'output')
     files_types = []
     format_adapters = ()
+    _suppress_folder_creation = False
+
+    @classmethod
+    def _create_segment_instance(cls):
+        try:
+            BaseExtractor._suppress_folder_creation = True
+            return cls(None)
+        finally:
+            BaseExtractor._suppress_folder_creation = False
 
     @classmethod
     def detect(cls, path):
@@ -104,12 +108,13 @@ class BaseExtractor(ABC):
         self._folderProcess = None
         self._folderOutput = None
 
-        if workspace is None:
-            self.create_directory_if_not_exists(self.folderProcess)
-            self.create_directory_if_not_exists(self.folderInput)
-            self.create_directory_if_not_exists(self.folderOutput)
-        else:
-            self.create_directory_if_not_exists(self.folderProcess)
+        if not self._suppress_folder_creation:
+            if workspace is None:
+                self.create_directory_if_not_exists(self.folderProcess)
+                self.create_directory_if_not_exists(self.folderInput)
+                self.create_directory_if_not_exists(self.folderOutput)
+            else:
+                self.create_directory_if_not_exists(self.folderProcess)
 
         self.translate = translate
         self._threads_status_map = {}
@@ -163,34 +168,22 @@ class BaseExtractor(ABC):
     @classmethod
     def get_format_adapter(cls, file_name_or_path):
         lower = str(file_name_or_path).lower()
-        global_adapter = get_registered_format_adapter(lower)
 
         declared = getattr(cls, 'format_adapters', None) or ()
-        declared_match = None
         if isinstance(declared, dict):
             for ext, adp in declared.items():
                 norm_ext = ext if str(ext).startswith('.') else f".{ext}"
                 if lower.endswith(norm_ext.lower()):
-                    declared_match = adp
-                    break
+                    return adp
         else:
             for adp in declared:
                 exts = getattr(adp, 'extensions', ()) or ()
                 for ext in exts:
                     norm_ext = ext if str(ext).startswith('.') else f".{ext}"
                     if lower.endswith(norm_ext.lower()):
-                        declared_match = adp
-                        break
-                if declared_match is not None:
-                    break
+                        return adp
 
-        if global_adapter is not None and declared_match is not None:
-            # Se um adaptador customizado foi registrado globalmente para a extensão, priorize-o
-            if global_adapter is not declared_match and getattr(global_adapter, '__module__', '') != getattr(declared_match, '__module__', ''):
-                return global_adapter
-            return declared_match
-        if declared_match is not None:
-            return declared_match
+        global_adapter = get_registered_format_adapter(lower)
         if global_adapter is not None:
             return global_adapter
         return JsonFormatAdapter
@@ -254,7 +247,8 @@ class BaseExtractor(ABC):
         if hasattr(target, '_walk_or_apply_segments'):
             segments = target._walk_or_apply_segments(inferred_name, data, mode='extract')
         else:
-            raw_texts = target.extract_text(inferred_name, copy_preserving_metadata(data)) or []
+            inst = target._create_segment_instance() if isinstance(target, type) else target
+            raw_texts = inst.extract_text(inferred_name, copy_preserving_metadata(data)) or []
             segments = [
                 Segment(
                     id=f"{inferred_name}#{idx}",
@@ -324,8 +318,9 @@ class BaseExtractor(ABC):
         if hasattr(target, '_walk_or_apply_segments'):
             return target._walk_or_apply_segments(inferred_name, working_data, mode='apply', translations=trans_map)
 
+        inst = target._create_segment_instance() if isinstance(target, type) else target
         ordered_texts = [trans_map.get(seg.id, seg.source) for seg in segments]
-        return target.update_json(inferred_name, working_data, ordered_texts)
+        return inst.update_json(inferred_name, working_data, ordered_texts)
 
     @classmethod
     def sanitize_octal_data(cls, data):
@@ -566,7 +561,6 @@ class BaseExtractor(ABC):
         Erros determinísticos (como erros de sintaxe, tipos, chaves ou problemas de I/O de arquivo)
         NÃO devem ser retentados pois nunca terão sucesso.
         """
-        import json
         from src.exceptions import (
             ProviderAuthError,
             ProviderRateLimited,
