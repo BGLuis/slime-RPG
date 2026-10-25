@@ -309,3 +309,38 @@ def test_detector_edge_cases_and_rvdata2(tmp_path, isolated_plugin_registries):
     assert det_dct.extractor == "Dict Engine"
     assert det_dct.score == 99
 
+
+def test_failing_plugin_does_not_crash_detector(tmp_path, isolated_plugin_registries):
+    """Garante que uma exceção em detect() de plugin terceiro não derruba a detecção de outros motores."""
+
+    @register_extractor("broken_plugin", display_name="Broken Plugin")
+    class BrokenPluginExtractor(BaseExtractor):
+        files_types = ["brk"]
+
+        @classmethod
+        def detect(cls, path: str):
+            raise PermissionError("Simulated permission denied in third-party plugin")
+
+        def extract_text(self, file_name, data):
+            return data
+
+        def update_json(self, file, data, new_data):
+            return new_data
+
+        @staticmethod
+        def fix_text_translate(text, original_text=None):
+            return text
+
+    # Cria jogo válido de RPG Maker MZ
+    game_dir = tmp_path / "ValidRPG"
+    data_dir = game_dir / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "System.json").write_text("{}", encoding="utf-8")
+
+    # A detecção não deve explodir e deve reconhecer o RPG Maker normalmente
+    detected = detect_game_environment(str(game_dir))
+    assert detected is not None
+    assert detected["extractor"] == "RPG Maker"
+    assert detected.detected_path == str(data_dir)
+
+
