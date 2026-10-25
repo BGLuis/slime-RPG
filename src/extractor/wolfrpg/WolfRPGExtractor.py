@@ -66,6 +66,63 @@ class WolfRPGExtractor(BaseExtractor):
                         raise
 
     @classmethod
+    def detect(cls, path: str):
+        import glob
+        from src.services.GameDetector import DetectionResult
+
+        wolf_data_dir = os.path.join(path, 'Data')
+        if os.path.isdir(wolf_data_dir):
+            common_dat = os.path.join(wolf_data_dir, 'BasicData', 'CommonEvent.dat')
+            map_files = glob.glob(os.path.join(wolf_data_dir, 'MapData', '*.mps'))
+            wolf_archives = glob.glob(os.path.join(wolf_data_dir, '*.wolf'))
+            evtext_files = glob.glob(os.path.join(wolf_data_dir, 'Evtext', '**', '*.txt'), recursive=True)
+            if os.path.isfile(common_dat) or len(map_files) > 0 or len(wolf_archives) > 0 or len(evtext_files) > 0:
+                total_files = (
+                    (1 if os.path.isfile(common_dat) else 0)
+                    + len(map_files)
+                    + len(wolf_archives)
+                    + len(evtext_files)
+                )
+                return DetectionResult(
+                    detected_path=wolf_data_dir,
+                    score=82,
+                    extractor=cls.display_name,
+                    description='WOLF RPG Editor (subpasta Data)',
+                    file_count=total_files,
+                )
+
+        root_wolf_files = glob.glob(os.path.join(path, '*.wolf'))
+        if len(root_wolf_files) > 0:
+            return DetectionResult(
+                detected_path=path,
+                score=80,
+                extractor=cls.display_name,
+                description='WOLF RPG Editor (arquivos .wolf)',
+                file_count=len(root_wolf_files),
+            )
+
+        try:
+            entries = os.listdir(path)
+        except Exception:
+            return None
+
+        wolf_entries = [
+            f for f in entries
+            if f.lower().endswith(('.mps', '.wolf')) or f in ('CommonEvent.dat', 'Game.dat')
+        ]
+        evtext_files = glob.glob(os.path.join(path, 'Evtext', '**', '*.txt'), recursive=True)
+        if len(wolf_entries) > 0 or len(evtext_files) > 0:
+            return DetectionResult(
+                detected_path=path,
+                score=75,
+                extractor=cls.display_name,
+                description='WOLF RPG Editor (pasta atual)',
+                file_count=len(wolf_entries) + len(evtext_files),
+            )
+
+        return None
+
+    @classmethod
     def get_interactive_questions(cls):
         return [
             {

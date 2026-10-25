@@ -48,10 +48,60 @@ def detect_delimiter_from_file(file_path: str) -> str:
         pass
     return ','
 
-@register_extractor("csv", aliases=["CSV"])
+@register_extractor("csv", display_name="CSV", aliases=["CSV"])
 class CSVExtractor(BaseExtractor):
     name = "csv"
     files_types = ['csv']
+    LOC_FOLDER_NAMES = ('languages', 'language', 'lang', 'locales', 'localization', 'translations', 'i18n')
+
+    @classmethod
+    def detect(cls, path: str):
+        from src.services.GameDetector import DetectionResult
+
+        for loc_name in cls.LOC_FOLDER_NAMES:
+            loc_candidate = os.path.join(path, loc_name)
+            if os.path.isdir(loc_candidate):
+                try:
+                    loc_entries = os.listdir(loc_candidate)
+                except Exception:
+                    loc_entries = []
+                csv_files = [f for f in loc_entries if f.lower().endswith('.csv')]
+                lang_csv_files = [f for f in csv_files if identify_language_from_filename(f) is not None]
+                if len(lang_csv_files) > 0 or len(csv_files) > 0:
+                    return DetectionResult(
+                        detected_path=loc_candidate,
+                        score=100,
+                        extractor=cls.display_name,
+                        description=f'Sistema de Localização por CSV (subpasta {loc_name})',
+                        file_count=len(csv_files),
+                    )
+
+        try:
+            entries = os.listdir(path)
+        except Exception:
+            return None
+
+        csv_files = [f for f in entries if f.lower().endswith('.csv')]
+        if not csv_files:
+            return None
+
+        lang_csv_files = [f for f in csv_files if identify_language_from_filename(f) is not None]
+        if len(lang_csv_files) > 0:
+            return DetectionResult(
+                detected_path=path,
+                score=65,
+                extractor=cls.display_name,
+                description='Arquivos CSV de Idioma (pasta atual)',
+                file_count=len(csv_files),
+            )
+
+        return DetectionResult(
+            detected_path=path,
+            score=20,
+            extractor=cls.display_name,
+            description='Arquivos CSV',
+            file_count=len(csv_files),
+        )
 
     def __init__(self, translate, workspace=None):
         super().__init__(translate, workspace=workspace)

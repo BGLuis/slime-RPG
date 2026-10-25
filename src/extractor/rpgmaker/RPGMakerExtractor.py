@@ -192,6 +192,68 @@ class RPGMakerExtractor(BaseExtractor):
     def apply_configuration(self, config):
         pass
 
+    @classmethod
+    def detect(cls, path: str):
+        import os
+        import glob
+        from src.services.GameDetector import DetectionResult
+
+        def _count_rpg_files(folder: str) -> int:
+            json_files = glob.glob(os.path.join(folder, '*.json'))
+            rvdata_files = glob.glob(os.path.join(folder, '*.rvdata2'))
+            has_rpg_json = any(
+                os.path.basename(f) in ('System.json', 'Actors.json', 'CommonEvents.json')
+                or os.path.basename(f).startswith('Map')
+                for f in json_files
+            )
+            has_rpg_rvdata = any(
+                os.path.basename(f) in ('System.rvdata2', 'Actors.rvdata2', 'CommonEvents.rvdata2')
+                or os.path.basename(f).startswith('Map')
+                for f in rvdata_files
+            )
+            if has_rpg_json:
+                return len(json_files)
+            if has_rpg_rvdata:
+                return len(rvdata_files)
+            return 0
+
+        www_data = os.path.join(path, 'www', 'data')
+        if os.path.isdir(www_data):
+            count = _count_rpg_files(www_data)
+            if count > 0:
+                return DetectionResult(
+                    detected_path=www_data,
+                    score=85,
+                    extractor=cls.display_name,
+                    description='RPG Maker MV/MZ (subpasta www/data)',
+                    file_count=count,
+                )
+
+        for sub in ('data', 'Data'):
+            data_dir = os.path.join(path, sub)
+            if os.path.isdir(data_dir):
+                count = _count_rpg_files(data_dir)
+                if count > 0:
+                    return DetectionResult(
+                        detected_path=data_dir,
+                        score=84,
+                        extractor=cls.display_name,
+                        description=f'RPG Maker (subpasta {sub})',
+                        file_count=count,
+                    )
+
+        count = _count_rpg_files(path)
+        if count > 0:
+            return DetectionResult(
+                detected_path=path,
+                score=70,
+                extractor=cls.display_name,
+                description='RPG Maker (pasta atual)',
+                file_count=count,
+            )
+
+        return None
+
     def get_mask_patterns(self, file_name=None, data=None):
         p_format_codes = re.compile(r'\\[A-Za-z]+\s*\[[^\]]*\]', re.IGNORECASE)
         p_condition = _BalancedConditionPattern()

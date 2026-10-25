@@ -90,6 +90,14 @@ class BaseExtractor(ABC):
     files_types = []
     format_adapters = ()
 
+    @classmethod
+    def detect(cls, path):
+        """
+        Detecta se `path` (ou subpastas imediatas) pertence ao layout deste extrator.
+        Retorna `DetectionResult` (ou dict compatível) ou `None` se não reconhecido.
+        """
+        return None
+
     def __init__(self, translate, workspace=None):
         self._workspace = workspace
         self._folderInput = None

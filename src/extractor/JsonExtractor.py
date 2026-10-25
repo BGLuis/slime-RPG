@@ -7,11 +7,68 @@ from src.extractor.FormatAdapter import JsonFormatAdapter
 from src.extractor.rpgmaker.RPGTextFilters import RPGTextFilters
 from src.factory import register_extractor
 
-@register_extractor("json", aliases=["Json", "JSON"])
+@register_extractor("json", display_name="Json", aliases=["Json", "JSON"])
 class JsonExtractor(BaseExtractor):
     name = "json"
     files_types = ['json']
     format_adapters = (JsonFormatAdapter,)
+    LOC_FOLDER_NAMES = ('languages', 'language', 'lang', 'locales', 'localization', 'translations', 'i18n')
+
+    @classmethod
+    def detect(cls, path: str):
+        import glob
+        from src.services.GameDetector import DetectionResult
+        from src.utils.LanguageCodes import normalize_language_code
+
+        for loc_name in cls.LOC_FOLDER_NAMES:
+            loc_candidate = os.path.join(path, loc_name)
+            if os.path.isdir(loc_candidate):
+                try:
+                    loc_entries = os.listdir(loc_candidate)
+                except Exception:
+                    loc_entries = []
+                subdirs = [d for d in loc_entries if os.path.isdir(os.path.join(loc_candidate, d))]
+                lang_subdirs = [d for d in subdirs if normalize_language_code(d) is not None]
+                has_lang_json = 'Languages.json' in loc_entries or 'languages.json' in loc_entries
+                if len(lang_subdirs) > 0 or has_lang_json:
+                    total_json_files = glob.glob(os.path.join(loc_candidate, '**', '*.json'), recursive=True)
+                    return DetectionResult(
+                        detected_path=loc_candidate,
+                        score=95,
+                        extractor=cls.display_name,
+                        description=f'Sistema de Localização Modular / CTE (subpasta {loc_name})',
+                        file_count=len(total_json_files),
+                    )
+
+        try:
+            entries = os.listdir(path)
+        except Exception:
+            return None
+
+        subdirs = [d for d in entries if os.path.isdir(os.path.join(path, d))]
+        lang_subdirs = [d for d in subdirs if normalize_language_code(d) is not None]
+        has_lang_json = 'Languages.json' in entries or 'languages.json' in entries
+        if len(lang_subdirs) > 0 or has_lang_json:
+            total_json_files = glob.glob(os.path.join(path, '**', '*.json'), recursive=True)
+            return DetectionResult(
+                detected_path=path,
+                score=60,
+                extractor=cls.display_name,
+                description='Sistema de Localização Modular / CTE (pasta atual)',
+                file_count=len(total_json_files),
+            )
+
+        json_files = [f for f in entries if f.lower().endswith('.json')]
+        if len(json_files) > 0:
+            return DetectionResult(
+                detected_path=path,
+                score=30,
+                extractor=cls.display_name,
+                description='Arquivos JSON',
+                file_count=len(json_files),
+            )
+
+        return None
 
     DEFAULT_TRANSLATABLE_KEYS = (
         'text', 'message', 'name', 'description', 'title',
