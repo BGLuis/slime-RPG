@@ -1,3 +1,4 @@
+import copy
 import os
 import re
 import src.utils.RubyMarshal as r_marshal
@@ -10,12 +11,18 @@ class RVDataList(list):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._raw_rvdata = None
+        self._raw_rvdata_bytes = None
+        self._rvdata_snapshot = None
+        self._file_name = None
 
 class RVDataDict(dict):
     """Subclasse de dict para anexar os dados binários originais do Ruby"""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._raw_rvdata = None
+        self._raw_rvdata_bytes = None
+        self._rvdata_snapshot = None
+        self._file_name = None
 
 class RVDataAdapter:
     """
@@ -35,11 +42,17 @@ class RVDataAdapter:
     def load_file(file_path):
         """Lê um arquivo .rvdata2 e retorna a estrutura normalizada com _raw_rvdata anexado."""
         with open(file_path, 'rb') as f:
-            raw_data = r_marshal.load(f)
+            raw_bytes = f.read()
+        raw_data = r_marshal.loads(raw_bytes)
 
         file_name = os.path.basename(file_path)
         normalized = RVDataAdapter.to_normalized(file_name, raw_data)
         normalized._raw_rvdata = raw_data
+        normalized._raw_rvdata_bytes = raw_bytes
+        normalized._rvdata_snapshot = copy.deepcopy(
+            dict(normalized) if isinstance(normalized, dict) else list(normalized)
+        )
+        normalized._file_name = file_name
         return normalized
 
     @staticmethod
@@ -61,6 +74,13 @@ class RVDataAdapter:
         dir_name = os.path.dirname(file_path)
         if dir_name and not os.path.exists(dir_name):
             os.makedirs(dir_name, exist_ok=True)
+
+        raw_bytes = getattr(data, '_raw_rvdata_bytes', None)
+        snapshot = getattr(data, '_rvdata_snapshot', None)
+        if raw_bytes is not None and snapshot is not None and data == snapshot:
+            with open(file_path, 'wb') as f:
+                f.write(raw_bytes)
+            return
 
         with open(file_path, 'wb') as f:
             r_marshal.write(f, raw_to_save)

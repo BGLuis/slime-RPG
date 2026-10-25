@@ -1145,12 +1145,14 @@ class WolfBinaryAdapter:
             map_obj = WolfMap.load(file_path)
             normalized = WolfBinaryAdapter._map_to_dict(map_obj)
             normalized._raw_wolf = map_obj
+            normalized._file_name = file_name
             return normalized
 
         elif file_name == 'CommonEvent.dat':
             ce_obj = WolfCommonEvents.load(file_path)
             normalized = WolfBinaryAdapter._commonevents_to_list(ce_obj)
             normalized._raw_wolf = ce_obj
+            normalized._file_name = file_name
             return normalized
 
         elif file_name.endswith('.dat') and file_name != 'Game.dat':
@@ -1175,12 +1177,14 @@ class WolfBinaryAdapter:
             db_obj = WolfDatabase.load(file_path, project_path if (project_path and os.path.exists(project_path)) else None)
             normalized = WolfBinaryAdapter._database_to_dict(db_obj)
             normalized._raw_wolf = db_obj
+            normalized._file_name = file_name
             return normalized
 
         elif file_name == 'Game.dat':
             game_obj = WolfGameDat.load(file_path)
             normalized = WolfBinaryAdapter._gamedat_to_dict(game_obj)
             normalized._raw_wolf = game_obj
+            normalized._file_name = file_name
             return normalized
 
         raise ValueError(f"Extensão ou arquivo WOLF RPG não suportado: {file_name}")

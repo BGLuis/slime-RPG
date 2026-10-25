@@ -9,6 +9,34 @@ import time
 import logging
 import requests
 from abc import ABC, abstractmethod
+from src.extractor.Segment import (
+    Segment,
+    SegmentContext,
+    SegmentList,
+    copy_preserving_metadata,
+    resolve_translation_map,
+)
+
+
+class JsonDataDict(dict):
+    pass
+
+
+class JsonDataList(list):
+    pass
+
+
+class _ClassOrInstanceMethod:
+    def __init__(self, func):
+        self.func = func
+
+    def __get__(self, instance, owner=None):
+        target = owner if instance is None else instance
+
+        def wrapper(*args, **kwargs):
+            return self.func(target, *args, **kwargs)
+
+        return wrapper
 
 
 class FolderProperty(property):
@@ -140,12 +168,33 @@ class BaseExtractor(ABC):
                     content = raw_bytes.decode('utf-8', errors='replace')
                     encoding = 'utf-8'
                 lineterminator = '\r\n' if b'\r\n' in raw_bytes else '\n'
-                return [os.path.basename(file_path), {'encoding': encoding, 'lineterminator': lineterminator, 'lines': content.splitlines(keepends=True)}]
+                txt_data = JsonDataDict({
+                    'encoding': encoding,
+                    'lineterminator': lineterminator,
+                    'lines': content.splitlines(keepends=True),
+                    '_raw_txt_bytes': raw_bytes,
+                })
+                txt_data._file_name = os.path.basename(file_path)
+                return [os.path.basename(file_path), txt_data]
             except Exception:
                 pass
-        with open(file_path, 'r', encoding='utf-8-sig') as f:
-            data = json.load(f)
-            return [os.path.basename(file_path), data]
+        with open(file_path, 'rb') as f:
+            raw_bytes = f.read()
+        text_content = raw_bytes.decode('utf-8-sig')
+        data = json.loads(text_content)
+        if isinstance(data, dict):
+            wrapped = JsonDataDict(data)
+            wrapped._raw_json_bytes = raw_bytes
+            wrapped._json_snapshot = copy.deepcopy(data)
+            wrapped._file_name = os.path.basename(file_path)
+            data = wrapped
+        elif isinstance(data, list):
+            wrapped = JsonDataList(data)
+            wrapped._raw_json_bytes = raw_bytes
+            wrapped._json_snapshot = copy.deepcopy(data)
+            wrapped._file_name = os.path.basename(file_path)
+            data = wrapped
+        return [os.path.basename(file_path), data]
 
     def init_folder(self=None):
         if self is not None and not isinstance(self, type):
@@ -176,6 +225,100 @@ class BaseExtractor(ABC):
     @abstractmethod
     def update_json(file_name, data, new_data):
         pass
+
+    @classmethod
+    def _infer_file_name(cls, data):
+        if hasattr(data, '_file_name') and getattr(data, '_file_name'):
+            return getattr(data, '_file_name')
+        return 'file.json'
+
+    @_ClassOrInstanceMethod
+    def extract_segments(target, file_name_or_data, maybe_data=None, *, file_name=None):
+        cls = target if isinstance(target, type) else target.__class__
+        if maybe_data is not None:
+            inferred_name = str(file_name_or_data)
+            data = maybe_data
+        elif isinstance(file_name_or_data, (str, os.PathLike)) and os.path.exists(str(file_name_or_data)):
+            inferred_name, data = target.extract_files(str(file_name_or_data))
+        else:
+            data = file_name_or_data
+            inferred_name = file_name or cls._infer_file_name(data)
+
+        if hasattr(target, '_walk_or_apply_segments'):
+            segments = target._walk_or_apply_segments(inferred_name, data, mode='extract')
+        else:
+            raw_texts = target.extract_text(inferred_name, copy_preserving_metadata(data)) or []
+            segments = [
+                Segment(
+                    id=f"{inferred_name}#{idx}",
+                    source=str(text),
+                    context={'file': inferred_name, 'index': idx, 'kind': 'dialogue'},
+                )
+                for idx, text in enumerate(raw_texts)
+            ]
+        return SegmentList(segments, source_data=data, file_name=inferred_name)
+
+    @_ClassOrInstanceMethod
+    def apply_segments(target, *args, file_name=None):
+        def _is_segment_seq(obj):
+            if isinstance(obj, SegmentList):
+                return True
+            return isinstance(obj, (list, tuple)) and len(obj) > 0 and isinstance(obj[0], Segment)
+
+        if len(args) == 1 and _is_segment_seq(args[0]):
+            segments = args[0]
+            translations = segments
+            data = getattr(segments, '_source_data', None)
+            inferred_name = file_name or getattr(segments, '_file_name', None)
+        elif len(args) == 2 and _is_segment_seq(args[0]):
+            segments = args[0]
+            translations = args[1]
+            data = getattr(segments, '_source_data', None)
+            inferred_name = file_name or getattr(segments, '_file_name', None)
+        elif len(args) >= 3 and isinstance(args[0], str) and not _is_segment_seq(args[0]):
+            inferred_name = args[0]
+            data = args[1]
+            if len(args) == 3:
+                if _is_segment_seq(args[2]):
+                    segments = args[2]
+                    translations = args[2]
+                else:
+                    segments = target.extract_segments(inferred_name, data)
+                    translations = args[2]
+            else:
+                segments = args[2]
+                translations = args[3]
+        elif len(args) == 2:
+            data = args[0]
+            inferred_name = file_name or getattr(data, '_file_name', None)
+            if _is_segment_seq(args[1]):
+                segments = args[1]
+                translations = args[1]
+                inferred_name = inferred_name or getattr(segments, '_file_name', None)
+            else:
+                segments = target.extract_segments(data, file_name=inferred_name)
+                translations = args[1]
+                inferred_name = inferred_name or getattr(segments, '_file_name', None)
+        elif len(args) == 3:
+            data = args[0]
+            segments = args[1]
+            translations = args[2]
+            inferred_name = file_name or getattr(segments, '_file_name', None) or getattr(data, '_file_name', None)
+        else:
+            raise TypeError("Invalid arguments for apply_segments")
+
+        cls = target if isinstance(target, type) else target.__class__
+        if not inferred_name:
+            inferred_name = cls._infer_file_name(data)
+
+        working_data = copy_preserving_metadata(data)
+        trans_map = resolve_translation_map(list(segments), translations)
+
+        if hasattr(target, '_walk_or_apply_segments'):
+            return target._walk_or_apply_segments(inferred_name, working_data, mode='apply', translations=trans_map)
+
+        ordered_texts = [trans_map.get(seg.id, seg.source) for seg in segments]
+        return target.update_json(inferred_name, working_data, ordered_texts)
 
     @classmethod
     def sanitize_octal_data(cls, data):
@@ -269,6 +412,14 @@ class BaseExtractor(ABC):
             return
 
         try:
+            raw_json_bytes = getattr(json_data, '_raw_json_bytes', None)
+            json_snapshot = getattr(json_data, '_json_snapshot', None)
+            if raw_json_bytes is not None and json_snapshot is not None and json_data == json_snapshot:
+                with open(dest_path, 'wb') as f:
+                    f.write(raw_json_bytes)
+                logging.info(f"✓ Validated and saved: {file_name}")
+                return
+
             if isinstance(json_data, (dict, list)):
                 json_data = cls.sanitize_octal_data(json_data)
 

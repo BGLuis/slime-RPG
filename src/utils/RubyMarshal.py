@@ -349,6 +349,15 @@ def loads(byte_text: bytes, registry=None):
     return load(io.BytesIO(byte_text), registry=registry)
 
 
+def _ruby_string_deepcopy(self, memo):
+    import copy
+    copied = RubyString(self.text, copy.deepcopy(self.attributes, memo))
+    memo[id(self)] = copied
+    return copied
+
+
+RubyString.__deepcopy__ = _ruby_string_deepcopy
+
 # Monkeypatch transparente no rubymarshal para assegurar compatibilidade global
 r_writer.Writer = RubyWriter
 r_writer.write = write

@@ -1,6 +1,8 @@
 import copy
 import logging
-from src.extractor.BaseExtractor import BaseExtractor
+import os
+from src.extractor.BaseExtractor import BaseExtractor, _ClassOrInstanceMethod
+from src.extractor.Segment import Segment, copy_preserving_metadata
 from src.extractor.rpgmaker.RPGTextFilters import RPGTextFilters
 from src.factory import register_extractor
 
@@ -192,8 +194,79 @@ class JsonExtractor(BaseExtractor):
             return None
 
         cleaned_data = BaseExtractor.remove_old_keys(new_data)
-        target = copy.deepcopy(data)
+        target = copy_preserving_metadata(data)
         return JsonExtractor._deep_merge(target, cleaned_data)
+
+    @_ClassOrInstanceMethod
+    def _walk_or_apply_segments(target, file_name, data, mode='extract', translations=None):
+        cls = target if isinstance(target, type) else target.__class__
+        inst = target(None) if isinstance(target, type) else target
+        base_name = os.path.basename(file_name) if file_name else cls._infer_file_name(data)
+        extracted = inst.extract_text(base_name, data)
+        if not extracted:
+            return [] if mode == 'extract' else data
+
+        segments = []
+        translations = translations or {}
+        changed_any = False
+
+        def _escape_ptr(token: str) -> str:
+            return str(token).replace('~', '~0').replace('/', '~1')
+
+        def _walk(node, ptr=""):
+            nonlocal changed_any
+            if isinstance(node, dict):
+                out = {}
+                for k, v in node.items():
+                    child_ptr = f"{ptr}/{_escape_ptr(k)}"
+                    if isinstance(v, (dict, list)):
+                        out[k] = _walk(v, child_ptr)
+                    elif isinstance(v, str):
+                        seg_id = f"{base_name}#{child_ptr}"
+                        if mode == 'extract':
+                            segments.append(Segment(
+                                id=seg_id,
+                                source=v,
+                                context={'file': base_name, 'pointer': child_ptr, 'key': k, 'kind': 'dialogue'},
+                            ))
+                        else:
+                            new_v = translations.get(seg_id, v)
+                            if new_v != v:
+                                changed_any = True
+                            out[k] = new_v
+                    else:
+                        out[k] = v
+                return out
+            elif isinstance(node, list):
+                out = []
+                for idx, item in enumerate(node):
+                    child_ptr = f"{ptr}/{idx}"
+                    if isinstance(item, (dict, list)):
+                        out.append(_walk(item, child_ptr))
+                    elif isinstance(item, str):
+                        seg_id = f"{base_name}#{child_ptr}"
+                        if mode == 'extract':
+                            segments.append(Segment(
+                                id=seg_id,
+                                source=item,
+                                context={'file': base_name, 'pointer': child_ptr, 'index': idx, 'kind': 'dialogue'},
+                            ))
+                        else:
+                            new_v = translations.get(seg_id, item)
+                            if new_v != item:
+                                changed_any = True
+                            out.append(new_v)
+                    else:
+                        out.append(item)
+                return out
+            return node
+
+        updated_tree = _walk(extracted, "")
+        if mode == 'extract':
+            return segments
+        if not changed_any:
+            return data
+        return inst.update_json(base_name, data, updated_tree)
 
     @staticmethod
     def fix_text_translate(text, original_text=None):

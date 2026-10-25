@@ -5,7 +5,8 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional, Union
 
-from src.extractor.BaseExtractor import BaseExtractor
+from src.extractor.BaseExtractor import BaseExtractor, JsonDataDict, _ClassOrInstanceMethod
+from src.extractor.Segment import Segment, copy_preserving_metadata
 from src.factory import register_extractor
 import src.utils.TextsUtils as TextsUtils
 
@@ -163,11 +164,12 @@ class WolfRPGExtractor(BaseExtractor):
                     encoding = 'utf-8'
 
                 lineterminator = '\r\n' if b'\r\n' in raw_bytes else '\n'
-                data = {
+                data = JsonDataDict({
                     'encoding': encoding,
                     'lineterminator': lineterminator,
                     'lines': content.splitlines(keepends=True)
-                }
+                })
+                data._file_name = file_name
                 return [file_name, data]
             except Exception as e:
                 logging.error(f"Erro ao ler arquivo de texto {file_path}: {e}")
@@ -264,9 +266,7 @@ class WolfRPGExtractor(BaseExtractor):
         if not new_data:
             return data
 
-        updated = copy.deepcopy(data)
-        if hasattr(data, '_raw_wolf'):
-            updated._raw_wolf = data._raw_wolf
+        updated = copy_preserving_metadata(data)
 
         base_name = os.path.basename(file_name)
         if base_name.endswith('.mps'):
@@ -295,8 +295,8 @@ class WolfRPGExtractor(BaseExtractor):
                 continue
             event_id = event.get('id')
 
-            for page in event.get('pages', []):
-                page_id = page.get('id')
+            for page_idx, page in enumerate(event.get('pages', [])):
+                page_id = page.get('id', page_idx)
 
                 for cmd_idx, cmd in enumerate(page.get('list', [])):
                     cid = cmd.get('code')
@@ -329,7 +329,11 @@ class WolfRPGExtractor(BaseExtractor):
             if not raw_event:
                 continue
 
-            pages_dict = {p['id']: p for p in raw_event.get('pages', [])}
+            pages_dict = {
+                p.get('id', p_idx): p
+                for p_idx, p in enumerate(raw_event.get('pages', []))
+                if isinstance(p, dict)
+            }
             for page_data in event_data.get('pages', []):
                 page_id = page_data.get('id')
                 raw_page = pages_dict.get(page_id)
@@ -465,7 +469,11 @@ class WolfRPGExtractor(BaseExtractor):
         return results
 
     def insert_text_database(self, data, new_data):
-        type_dict = {t['id']: t for t in data.get('types', [])}
+        type_dict = {
+            t.get('id', t_idx): t
+            for t_idx, t in enumerate(data.get('types', []))
+            if isinstance(t, dict)
+        }
 
         for type_data in new_data:
             t_id = type_data.get('id')
@@ -473,7 +481,11 @@ class WolfRPGExtractor(BaseExtractor):
             if not raw_type:
                 continue
 
-            datum_dict = {d['id']: d for d in raw_type.get('data', [])}
+            datum_dict = {
+                d.get('id', d_idx): d
+                for d_idx, d in enumerate(raw_type.get('data', []))
+                if isinstance(d, dict)
+            }
             for datum_data in type_data.get('data', []):
                 d_id = datum_data.get('id')
                 raw_datum = datum_dict.get(d_id)
@@ -543,6 +555,8 @@ class WolfRPGExtractor(BaseExtractor):
                 idx = int(idx_str)
                 if idx < len(original_lines):
                     orig_line = original_lines[idx]
+                    if str(trans_text).strip() == orig_line.strip():
+                        continue
                     if orig_line.endswith('\r\n'):
                         terminator = '\r\n'
                     elif orig_line.endswith('\n'):
@@ -565,6 +579,240 @@ class WolfRPGExtractor(BaseExtractor):
                     data['lines'][idx] = f"{prefix}{raw_trans}{terminator}"
             except (ValueError, IndexError):
                 continue
+
+    @classmethod
+    def _infer_file_name(cls, data):
+        if hasattr(data, '_file_name') and getattr(data, '_file_name'):
+            return getattr(data, '_file_name')
+        if isinstance(data, dict):
+            if 'events' in data:
+                return 'Map001.mps'
+            if 'types' in data:
+                return 'DataBase.dat'
+            if 'lines' in data:
+                return 'script.txt'
+            if 'title' in data:
+                return 'Game.dat'
+        elif isinstance(data, list):
+            return 'CommonEvent.dat'
+        return 'Map001.mps'
+
+    @staticmethod
+    def _kind_for_code(raw_code):
+        if raw_code == WolfEventCode.SHOW_CHOICES:
+            return 'choice'
+        if raw_code in (
+            WolfEventCode.SET_STRING,
+            WolfEventCode.CALL_COMMON_EVENT,
+            WolfEventCode.CALL_COMMON_BY_NAME,
+        ):
+            return 'script'
+        return 'dialogue'
+
+    @_ClassOrInstanceMethod
+    def _walk_or_apply_segments(target, file_name, data, mode='extract', translations=None):
+        cls = target if isinstance(target, type) else target.__class__
+        inst = target(None) if isinstance(target, type) else target
+        base_name = os.path.basename(file_name) if file_name else cls._infer_file_name(data)
+        if not inst.is_translatable_file(base_name):
+            return [] if mode == 'extract' else data
+
+        segments = []
+        translations = translations or {}
+
+        def _handle_cmd_list(cmd_items, prefix_base, raw_cmd_list):
+            modified_items = []
+            for list_item in cmd_items:
+                cmd_id = list_item['id']
+                val = list_item['text']
+                raw_cmd = raw_cmd_list[cmd_id] if isinstance(raw_cmd_list, list) and cmd_id < len(raw_cmd_list) else {}
+                raw_code = raw_cmd.get('code') if isinstance(raw_cmd, dict) else None
+                kind = cls._kind_for_code(raw_code)
+                cmd_prefix = f"{base_name}#{prefix_base}/cmd:{cmd_id}"
+                changed = False
+
+                if isinstance(val, str):
+                    seg_id = cmd_prefix
+                    if mode == 'extract':
+                        segments.append(Segment(
+                            id=seg_id,
+                            source=val,
+                            context={'file': base_name, 'code': raw_code, 'kind': kind},
+                        ))
+                    else:
+                        new_val = translations.get(seg_id, val)
+                        if new_val != val:
+                            changed = True
+                        list_item['text'] = new_val
+                elif isinstance(val, list):
+                    new_list = []
+                    for sub_idx, sub_val in enumerate(val):
+                        seg_id = f"{cmd_prefix}/{sub_idx}"
+                        if isinstance(sub_val, str):
+                            if mode == 'extract':
+                                segments.append(Segment(
+                                    id=seg_id,
+                                    source=sub_val,
+                                    context={'file': base_name, 'code': raw_code, 'index': sub_idx, 'kind': kind},
+                                ))
+                            else:
+                                new_sub = translations.get(seg_id, sub_val)
+                                if new_sub != sub_val:
+                                    changed = True
+                                new_list.append(new_sub)
+                        else:
+                            new_list.append(sub_val)
+                    if mode == 'apply':
+                        list_item['text'] = new_list
+
+                if mode == 'apply' and changed:
+                    modified_items.append(list_item)
+            return modified_items
+
+        if base_name.endswith('.mps'):
+            extracted = inst.extract_text_map(copy.deepcopy(data))
+            events_dict = {ev['id']: ev for ev in data.get('events', []) if ev} if isinstance(data, dict) else {}
+            if mode == 'extract':
+                for ev in extracted:
+                    ev_id = ev['id']
+                    raw_ev = events_dict.get(ev_id, {})
+                    pages_dict = {
+                        p.get('id', p_idx): p
+                        for p_idx, p in enumerate(raw_ev.get('pages', []))
+                        if isinstance(p, dict)
+                    }
+                    for page in ev['pages']:
+                        p_id = page['id']
+                        raw_page = pages_dict.get(p_id, {})
+                        _handle_cmd_list(page['list'], f"event:{ev_id}/page:{p_id}", raw_page.get('list', []))
+                return segments
+            else:
+                filtered_events = []
+                for ev in extracted:
+                    ev_id = ev['id']
+                    raw_ev = events_dict.get(ev_id, {})
+                    pages_dict = {
+                        p.get('id', p_idx): p
+                        for p_idx, p in enumerate(raw_ev.get('pages', []))
+                        if isinstance(p, dict)
+                    }
+                    filtered_pages = []
+                    for page in ev['pages']:
+                        p_id = page['id']
+                        raw_page = pages_dict.get(p_id, {})
+                        mod_list = _handle_cmd_list(page['list'], f"event:{ev_id}/page:{p_id}", raw_page.get('list', []))
+                        if mod_list:
+                            filtered_pages.append({'id': p_id, 'list': mod_list})
+                    if filtered_pages:
+                        filtered_events.append({'id': ev_id, 'pages': filtered_pages})
+                if filtered_events:
+                    inst.insert_text_map(data, filtered_events)
+                return data
+
+        if base_name == 'CommonEvent.dat':
+            extracted = inst.extract_text_common_events(copy.deepcopy(data))
+            events_dict = {ev['id']: ev for ev in data if ev} if isinstance(data, list) else {}
+            if mode == 'extract':
+                for ev in extracted:
+                    ev_id = ev['id']
+                    raw_ev = events_dict.get(ev_id, {})
+                    _handle_cmd_list(ev['list'], f"common_event:{ev_id}", raw_ev.get('list', []))
+                return segments
+            else:
+                filtered_events = []
+                for ev in extracted:
+                    ev_id = ev['id']
+                    raw_ev = events_dict.get(ev_id, {})
+                    mod_list = _handle_cmd_list(ev['list'], f"common_event:{ev_id}", raw_ev.get('list', []))
+                    if mod_list:
+                        filtered_events.append({'id': ev_id, 'list': mod_list})
+                if filtered_events:
+                    inst.insert_text_common_events(data, filtered_events)
+                return data
+
+        if base_name.endswith('.dat') and base_name != 'Game.dat':
+            extracted = inst.extract_text_database(copy.deepcopy(data))
+            if mode == 'extract':
+                for type_obj in extracted:
+                    t_id = type_obj['id']
+                    for datum_obj in type_obj['data']:
+                        d_id = datum_obj['id']
+                        for s_idx_str, val in datum_obj['strings'].items():
+                            segments.append(Segment(
+                                id=f"{base_name}#type:{t_id}/datum:{d_id}/str:{s_idx_str}",
+                                source=val,
+                                context={
+                                    'file': base_name,
+                                    'type_id': t_id,
+                                    'datum_id': d_id,
+                                    'string_index': int(s_idx_str),
+                                    'kind': 'db',
+                                },
+                            ))
+                return segments
+            else:
+                modified_types = []
+                for type_obj in extracted:
+                    t_id = type_obj['id']
+                    mod_data = []
+                    for datum_obj in type_obj['data']:
+                        d_id = datum_obj['id']
+                        mod_strings = {}
+                        for s_idx_str, val in datum_obj['strings'].items():
+                            seg_id = f"{base_name}#type:{t_id}/datum:{d_id}/str:{s_idx_str}"
+                            new_val = translations.get(seg_id, val)
+                            if new_val != val:
+                                mod_strings[s_idx_str] = new_val
+                        if mod_strings:
+                            mod_data.append({'id': d_id, 'strings': mod_strings})
+                    if mod_data:
+                        modified_types.append({'id': t_id, 'data': mod_data})
+                if modified_types:
+                    inst.insert_text_database(data, modified_types)
+                return data
+
+        if base_name == 'Game.dat':
+            extracted = inst.extract_text_gamedat(data)
+            if mode == 'extract':
+                if extracted and 'title' in extracted:
+                    segments.append(Segment(
+                        id=f"{base_name}#game/title",
+                        source=extracted['title'],
+                        context={'file': base_name, 'field': 'title', 'kind': 'menu'},
+                    ))
+                return segments
+            else:
+                if extracted and 'title' in extracted:
+                    seg_id = f"{base_name}#game/title"
+                    new_title = translations.get(seg_id, extracted['title'])
+                    if new_title != extracted['title']:
+                        inst.insert_text_gamedat(data, {'title': new_title})
+                return data
+
+        if base_name.endswith('.txt'):
+            extracted = inst.extract_text_evtext(data)
+            if mode == 'extract':
+                if extracted and 'lines' in extracted:
+                    for idx_str, val in extracted['lines'].items():
+                        segments.append(Segment(
+                            id=f"{base_name}#line:{idx_str}",
+                            source=val,
+                            context={'file': base_name, 'line': int(idx_str), 'kind': 'dialogue'},
+                        ))
+                return segments
+            else:
+                if extracted and 'lines' in extracted:
+                    mod_lines = {}
+                    for idx_str, val in extracted['lines'].items():
+                        seg_id = f"{base_name}#line:{idx_str}"
+                        new_val = translations.get(seg_id, val)
+                        if new_val != val:
+                            mod_lines[idx_str] = new_val
+                    if mod_lines:
+                        inst.insert_text_evtext(data, {'lines': mod_lines})
+                return data
+
+        return [] if mode == 'extract' else data
 
     # =========================================================================
     # Pós-processamento e Correção de Textos

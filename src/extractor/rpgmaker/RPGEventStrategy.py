@@ -55,10 +55,16 @@ class ShowTextStrategy(EventStrategy):
             
             match = self._title_pattern.search(iten_text)
             if match:
-                item['parameters'][0] = iten_text.replace(iten_text[match.end():].strip(), str(new_text).strip())
+                orig_body = iten_text[match.end():].strip()
+                if str(new_text).strip() == orig_body:
+                    return
+                item['parameters'][0] = iten_text.replace(orig_body, str(new_text).strip())
             elif any(iten_text.startswith(key) for key in self._text_keys):
                 iten_text_parts = iten_text.split(":", 1)
                 if len(iten_text_parts) > 1:
+                    orig_rem = iten_text_parts[1].strip()
+                    if str(new_text) == orig_rem:
+                        return
                     item['parameters'][0] = iten_text_parts[0] + ": " + str(new_text)
             else:
                 item['parameters'][0] = str(new_text)
@@ -104,6 +110,8 @@ class ChoiceStrategy(EventStrategy):
             match = self._choice_condition_pattern.match(orig_clean)
             choice_text = orig_clean[match.end():] if match else orig_clean
             if RPGTextFilters.is_technical_or_code(choice_text):
+                final_list.append(orig)
+            elif str(trans).strip() == choice_text:
                 final_list.append(orig)
             elif match:
                 prefix = match.group(0).rstrip()
@@ -178,6 +186,8 @@ class ScriptStrategy(EventStrategy):
     def _sanitize_script_param(cls, text, quote_char, original_text=None):
         if not isinstance(text, str):
             return text
+        if isinstance(original_text, str) and text == original_text:
+            return original_text
         import json
         s = text.strip()
 
