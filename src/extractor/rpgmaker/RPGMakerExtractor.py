@@ -153,10 +153,15 @@ class _BalancedConditionPattern:
         return ''.join(out)
 
 
+from src.extractor.FormatAdapter import JsonFormatAdapter
+from .RVDataAdapter import RVDataAdapter
+
+
 @register_extractor("rpgmaker", display_name="RPG Maker", aliases=["RPG Maker", "rpg_maker", "rpg-maker"])
 class RPGMakerExtractor(BaseExtractor):
     name = "rpgmaker"
     files_types = ['json', 'rvdata2']
+    format_adapters = (JsonFormatAdapter, RVDataAdapter)
 
     def __init__(self, translate):
         super().__init__(translate)

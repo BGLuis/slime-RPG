@@ -1131,11 +1131,16 @@ class WolfGameDat:
 
 
 
+from src.extractor.FormatAdapter import register_format_adapter
+
+
+@register_format_adapter
 class WolfBinaryAdapter:
     """
     Adaptador bidirecional entre binários do WOLF RPG (.mps, CommonEvent.dat, *.dat, Game.dat)
     e estruturas normalizadas em dicionários/listas compatíveis com a arquitetura de tradução.
     """
+    extensions = ('.mps', '.dat', '.project')
 
     @staticmethod
     def load_file(file_path: str, project_path: Optional[str] = None) -> Union[WolfDataDict, WolfDataList]:
@@ -1190,11 +1195,28 @@ class WolfBinaryAdapter:
         raise ValueError(f"Extensão ou arquivo WOLF RPG não suportado: {file_name}")
 
     @staticmethod
-    def save_file(file_path: str, data: Union[WolfDataDict, WolfDataList], original_raw: Optional[Any] = None):
+    def save_file(file_path: str, data: Union[WolfDataDict, WolfDataList], original_raw: Optional[Any] = None, **ctx):
         file_name = os.path.basename(file_path)
+        rel_file_name = ctx.get('file_name') or file_name
         raw_to_save = original_raw
         if raw_to_save is None and hasattr(data, '_raw_wolf') and data._raw_wolf is not None:
             raw_to_save = data._raw_wolf
+
+        has_dummy_types = (
+            isinstance(raw_to_save, WolfDatabase)
+            and any(t.name.startswith("Type_") for t in raw_to_save.types)
+        )
+        if raw_to_save is None or has_dummy_types:
+            for candidate_folder in (ctx.get('candidate_folders') or []):
+                if not candidate_folder:
+                    continue
+                candidate = os.path.join(candidate_folder, rel_file_name)
+                if os.path.exists(candidate):
+                    loaded = WolfBinaryAdapter.load_file(candidate)
+                    cand_raw = getattr(loaded, '_raw_wolf', None)
+                    if cand_raw is not None:
+                        raw_to_save = cand_raw
+                        break
 
         dir_name = os.path.dirname(file_path)
         if dir_name and not os.path.exists(dir_name):
@@ -1227,6 +1249,7 @@ class WolfBinaryAdapter:
             raw_to_save.save(file_path)
         else:
             raise ValueError(f"Formato não suportado para salvar: {file_name}")
+        logging.info(f"✓ Validated and saved WOLF RPG binary: {rel_file_name}")
 
     # =========================================================================
     # Conversões Normalizadas -> Objetos e vice-versa

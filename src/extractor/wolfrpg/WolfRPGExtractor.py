@@ -6,6 +6,7 @@ import threading
 from typing import Any, Dict, List, Optional, Union
 
 from src.extractor.BaseExtractor import BaseExtractor, JsonDataDict, _ClassOrInstanceMethod
+from src.extractor.FormatAdapter import EvtextFormatAdapter
 from src.extractor.Segment import Segment, copy_preserving_metadata
 from src.factory import register_extractor
 import src.utils.TextsUtils as TextsUtils
@@ -28,6 +29,7 @@ from .WolfArchive import WolfArchive
 class WolfRPGExtractor(BaseExtractor):
     name = "wolfrpg"
     files_types = ['mps', 'dat', 'project', 'txt']
+    format_adapters = (WolfBinaryAdapter, EvtextFormatAdapter)
 
     def __init__(self, translate):
         super().__init__(translate)
@@ -142,94 +144,6 @@ class WolfRPGExtractor(BaseExtractor):
             p_html,
             p_format_vars
         ]
-
-    @classmethod
-    def extract_files(cls, file_path):
-        if not file_path.endswith(tuple(cls.files_types)):
-            return [os.path.basename(file_path), None]
-
-        file_name = os.path.basename(file_path)
-
-        # Arquivos de script de texto (Evtext)
-        if file_path.endswith('.txt'):
-            try:
-                with open(file_path, 'rb') as f:
-                    raw_bytes = f.read()
-
-                encoding = 'cp932'
-                try:
-                    content = raw_bytes.decode('cp932')
-                except UnicodeDecodeError:
-                    content = raw_bytes.decode('utf-8', errors='replace')
-                    encoding = 'utf-8'
-
-                lineterminator = '\r\n' if b'\r\n' in raw_bytes else '\n'
-                data = JsonDataDict({
-                    'encoding': encoding,
-                    'lineterminator': lineterminator,
-                    'lines': content.splitlines(keepends=True)
-                })
-                data._file_name = file_name
-                return [file_name, data]
-            except Exception as e:
-                logging.error(f"Erro ao ler arquivo de texto {file_path}: {e}")
-                raise
-
-        # Arquivos binários do Wolf RPG
-        if file_path.endswith(('.mps', '.dat', '.project')):
-            data = WolfBinaryAdapter.load_file(file_path)
-            return [file_name, data]
-
-        return super().extract_files(file_path)
-
-    @classmethod
-    def import_file(cls, file_name, json_data, folder):
-        dest_path = os.path.join(folder, file_name)
-        if file_name.endswith('.txt') and isinstance(json_data, dict) and 'lines' in json_data:
-            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            encoding = json_data.get('encoding', 'cp932')
-            content = "".join(json_data.get('lines', []))
-            if encoding == 'cp932':
-                try:
-                    raw_bytes = content.encode('cp932')
-                except UnicodeEncodeError:
-                    from src.utils.TextsUtils import normalize_western_chars
-                    norm_content = normalize_western_chars(content)
-                    raw_bytes = norm_content.encode('cp932', errors='replace')
-            else:
-                raw_bytes = content.encode(encoding, errors='replace')
-
-            with open(dest_path, 'wb') as f:
-                f.write(raw_bytes)
-            logging.info(f"✓ Validado e salvo script WOLF RPG Evtext: {file_name}")
-            return
-
-        if file_name.endswith(('.mps', '.dat')):
-            try:
-                original_raw = getattr(json_data, '_raw_wolf', None)
-                has_dummy_types = (
-                    isinstance(original_raw, WolfDatabase)
-                    and any(t.name.startswith("Type_") for t in original_raw.types)
-                )
-                if original_raw is None or has_dummy_types:
-                    for candidate_folder in [cls.folderInput, cls.folderProcess]:
-                        candidate = os.path.join(candidate_folder, file_name)
-                        if os.path.exists(candidate):
-                            loaded = WolfBinaryAdapter.load_file(candidate)
-                            cand_raw = getattr(loaded, '_raw_wolf', None)
-                            if cand_raw is not None:
-                                original_raw = cand_raw
-                                break
-
-                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                WolfBinaryAdapter.save_file(dest_path, json_data, original_raw=original_raw)
-                logging.info(f"✓ Validado e salvo binário WOLF RPG: {file_name}")
-                return
-            except Exception as e:
-                logging.error(f"✗ Falha ao salvar binário WOLF RPG {file_name}: {e}")
-                raise
-
-        super().import_file(file_name, json_data, folder)
 
     def is_translatable_file(self, file_name, file_path=None):
         base_name = os.path.basename(file_name)

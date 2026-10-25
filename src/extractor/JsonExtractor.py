@@ -3,6 +3,7 @@ import logging
 import os
 from src.extractor.BaseExtractor import BaseExtractor, _ClassOrInstanceMethod
 from src.extractor.Segment import Segment, copy_preserving_metadata
+from src.extractor.FormatAdapter import JsonFormatAdapter
 from src.extractor.rpgmaker.RPGTextFilters import RPGTextFilters
 from src.factory import register_extractor
 
@@ -10,6 +11,7 @@ from src.factory import register_extractor
 class JsonExtractor(BaseExtractor):
     name = "json"
     files_types = ['json']
+    format_adapters = (JsonFormatAdapter,)
 
     DEFAULT_TRANSLATABLE_KEYS = (
         'text', 'message', 'name', 'description', 'title',
