@@ -5,7 +5,8 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional, Union
 
-from src.extractor.BaseExtractor import BaseExtractor, JsonDataDict, _ClassOrInstanceMethod
+from src.extractor.BaseExtractor import BaseExtractor, _ClassOrInstanceMethod
+from src.extractor.FormatAdapter import JsonDataDict
 from src.extractor.FormatAdapter import EvtextFormatAdapter
 from src.extractor.Segment import Segment, copy_preserving_metadata
 from src.factory import register_extractor
@@ -507,7 +508,7 @@ class WolfRPGExtractor(BaseExtractor):
         from src.extractor.EventCommandStrategy import _resolve_item_by_id
 
         cls = target if isinstance(target, type) else target.__class__
-        inst = target(None) if isinstance(target, type) else target
+        inst = target._create_segment_instance() if isinstance(target, type) else target
         base_name = os.path.basename(file_name) if file_name else cls._infer_file_name(data)
         if not inst.is_translatable_file(base_name):
             return [] if mode == 'extract' else data

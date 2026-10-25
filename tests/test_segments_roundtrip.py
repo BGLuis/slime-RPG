@@ -183,6 +183,31 @@ def test_rpgmaker_json_roundtrip_and_stable_ids(tmp_path):
     assert all(s.context.kind == "menu" for s in segs_sys)
 
 
+def test_rpgmaker_system_json_actual_translation_applied(tmp_path):
+    """Garante que apply_segments em System.json realmente atualiza campos aninhados."""
+    extractor = RPGMakerExtractor(None)
+    system_data = {
+        "gameTitle": "Slime Odyssey",
+        "currencyUnit": "Gold",
+        "terms": {
+            "basic": ["Level", "Lv", "HP", "HP"],
+            "messages": {"alwaysDash": "Always Dash", "bgmVolume": "BGM Volume"},
+        },
+    }
+    segments = extractor.extract_segments("System.json", system_data)
+    trans_map = {
+        "System.json#system/gameTitle": "Odisseia do Slime",
+        "System.json#system/terms/messages/alwaysDash": "Sempre Correr",
+    }
+    applied = extractor.apply_segments("System.json", system_data, trans_map)
+    assert applied["gameTitle"] == "Odisseia do Slime"
+    assert applied["terms"]["messages"]["alwaysDash"] == "Sempre Correr"
+    # Campos inalterados permanecem intactos
+    assert applied["currencyUnit"] == "Gold"
+    assert applied["terms"]["messages"]["bgmVolume"] == "BGM Volume"
+
+
+
 def test_rpgmaker_rvdata2_roundtrip_and_stable_ids(tmp_path):
     in_dir = tmp_path / "in_rvdata2"
     out_dir = tmp_path / "out_rvdata2"
@@ -235,6 +260,50 @@ def test_rpgmaker_rvdata2_roundtrip_and_stable_ids(tmp_path):
 
     segs_actors_rv, _ = _assert_segment_contracts(extractor, actors_path, out_dir)
     assert all(s.context.kind == "db" for s in segs_actors_rv)
+
+
+def test_rpgmaker_rvdata2_non_identity_translation(tmp_path):
+    """Garante que traduções reais em rvdata2 exercitam o serializador RubyMarshal e persistem no disco."""
+    in_dir = tmp_path / "in_rv_trans"
+    out_dir = tmp_path / "out_rv_trans"
+    in_dir.mkdir()
+    out_dir.mkdir()
+
+    cmd1 = RubyObject("RPG::EventCommand")
+    cmd1.attributes = {"@code": 401, "@indent": 0, "@parameters": ["Texto Original em Japonês"]}
+    cmd_end = RubyObject("RPG::EventCommand")
+    cmd_end.attributes = {"@code": 0, "@indent": 0, "@parameters": []}
+
+    page = RubyObject("RPG::Event::Page")
+    page.attributes = {"@list": [cmd1, cmd_end]}
+
+    event = RubyObject("RPG::Event")
+    event.attributes = {"@id": 1, "@name": "EV001", "@pages": [page]}
+
+    rv_map = RubyObject("RPG::Map")
+    rv_map.attributes = {"@display_name": "Vila", "@data": None, "@events": {1: event}}
+
+    map_path = in_dir / "Map001.rvdata2"
+    with open(map_path, "wb") as f:
+        r_writer.write(f, rv_map)
+
+    extractor = RPGMakerExtractor(None)
+    fname, loaded = extractor.extract_files(str(map_path))
+    segs = extractor.extract_segments(fname, loaded)
+    assert len(segs) >= 1
+    target_seg_id = [s.id for s in segs if s.source == "Texto Original em Japonês"][0]
+
+    applied = extractor.apply_segments(fname, loaded, {target_seg_id: "Texto Traduzido para PT-BR!"})
+    extractor.import_file(fname, applied, str(out_dir))
+
+    # Recarrega do disco para verificar a serialização pelo RubyMarshal
+    saved_path = out_dir / fname
+    assert saved_path.exists()
+    _, reloaded = extractor.extract_files(str(saved_path))
+    reloaded_segs = extractor.extract_segments(fname, reloaded)
+    reloaded_texts = {s.id: s.source for s in reloaded_segs}
+    assert reloaded_texts[target_seg_id] == "Texto Traduzido para PT-BR!"
+
 
 
 def test_wolf_rpg_roundtrip_and_stable_ids(tmp_path):
@@ -523,4 +592,40 @@ def test_sparse_and_non_contiguous_ids_roundtrip():
     assert segs_wdb[0].context.kind == "db"
     updated_wdb = wolf.apply_segments("DataBase.dat", wolf_db, {segs_wdb[0].id: "Cura 50 HP"})
     assert updated_wdb["types"][0]["data"][0]["string_values"][1] == "Cura 50 HP"
+
+
+def test_class_call_does_not_create_directories(tmp_path, monkeypatch):
+    """Garante que invocar extract_segments ou apply_segments na classe não cria pastas no CWD."""
+    monkeypatch.chdir(tmp_path)
+    assert not (tmp_path / "input").exists()
+    assert not (tmp_path / "process").exists()
+    assert not (tmp_path / "output").exists()
+
+    # RPG Maker na classe
+    segs_rpg = RPGMakerExtractor.extract_segments("Actors.json", [{"id": 1, "name": "Harold"}])
+    assert len(segs_rpg) == 1
+    assert not (tmp_path / "input").exists()
+    assert not (tmp_path / "process").exists()
+    assert not (tmp_path / "output").exists()
+
+    applied_rpg = RPGMakerExtractor.apply_segments("Actors.json", [{"id": 1, "name": "Harold"}], {segs_rpg[0].id: "Herói"})
+    assert applied_rpg[0]["name"] == "Herói"
+    assert not (tmp_path / "input").exists()
+    assert not (tmp_path / "process").exists()
+    assert not (tmp_path / "output").exists()
+
+    # WOLF RPG na classe
+    segs_wolf = WolfRPGExtractor.extract_segments("DataBase.dat", {"types": [{"id": 0, "name": "Items", "data": [{"id": 0, "name": "Potion", "string_values": ["Potion", "Heals 50 HP"]}]}]})
+    assert len(segs_wolf) == 1
+    assert not (tmp_path / "input").exists()
+    assert not (tmp_path / "process").exists()
+    assert not (tmp_path / "output").exists()
+
+    # CSV e JSON na classe
+    CSVExtractor.extract_segments("table.csv", {"header": ["Name"], "rows": [["Test"]]})
+    JsonExtractor.extract_segments("test.json", {"key": "val"})
+    assert not (tmp_path / "input").exists()
+    assert not (tmp_path / "process").exists()
+    assert not (tmp_path / "output").exists()
+
 

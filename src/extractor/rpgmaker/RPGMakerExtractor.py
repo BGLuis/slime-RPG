@@ -469,7 +469,7 @@ class RPGMakerExtractor(BaseExtractor):
         from src.extractor.EventCommandStrategy import _resolve_item_by_id
 
         cls = target if isinstance(target, type) else target.__class__
-        inst = target(None) if isinstance(target, type) else target
+        inst = target._create_segment_instance() if isinstance(target, type) else target
         base_name = os.path.basename(file_name) if file_name else cls._infer_file_name(data)
         if not inst.is_translatable_file(base_name):
             return [] if mode == 'extract' else data

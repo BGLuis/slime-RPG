@@ -421,7 +421,7 @@ class CSVExtractor(BaseExtractor):
     @_ClassOrInstanceMethod
     def _walk_or_apply_segments(target, file_name, data, mode='extract', translations=None):
         cls = target if isinstance(target, type) else target.__class__
-        inst = target(None) if isinstance(target, type) else target
+        inst = target._create_segment_instance() if isinstance(target, type) else target
         base_name = os.path.basename(file_name) if file_name else cls._infer_file_name(data)
         extracted = inst.extract_text(base_name, data) or {}
         key_re = re.compile(r'^row_(\d+)_col_(.+)$')
