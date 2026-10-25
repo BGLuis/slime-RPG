@@ -1,12 +1,8 @@
 import re
+from src.extractor.EventCommandStrategy import EventCommandStrategy
 from .WolfTextFilters import WolfTextFilters
 
-class WolfEventStrategy:
-    def extract(self, item, context=None):
-        return None
-
-    def insert(self, item, translated_text, context=None):
-        pass
+WolfEventStrategy = EventCommandStrategy
 
 
 class ShowMessageStrategy(WolfEventStrategy):
@@ -31,6 +27,8 @@ class ShowMessageStrategy(WolfEventStrategy):
 
 class ChoicesStrategy(WolfEventStrategy):
     """Estratégia para comandos de escolha (CID 102)"""
+    kind = "choice"
+
     def extract(self, item, context=None):
         string_args = item.get('string_args', item.get('parameters', []))
         if not string_args:
@@ -68,6 +66,8 @@ class ChoicesStrategy(WolfEventStrategy):
 
 class SetStringStrategy(WolfEventStrategy):
     """Estratégia para comandos de atribuição de variáveis de texto (CID 122)"""
+    kind = "script"
+
     def extract(self, item, context=None):
         string_args = item.get('string_args', item.get('parameters', []))
         if not string_args:
@@ -91,6 +91,8 @@ class CommonEventParamStrategy(WolfEventStrategy):
 
     No CID 300 o primeiro string_arg é o nome do evento chamado: traduzi-lo quebra a chamada.
     """
+    kind = "script"
+
     def __init__(self, skip_first=False):
         self.skip_first = skip_first
 

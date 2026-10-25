@@ -226,186 +226,32 @@ class RPGMakerExtractor(BaseExtractor):
             strategy.insert(item, list_item['text'])
 
     def _yield_commands(self, data, file_type):
-        if not isinstance(data, (dict, list)):
-            return
-
-        if file_type == 'Map':
-            if not isinstance(data, dict):
-                return
-            events = data.get('events')
-            if isinstance(events, list):
-                for event in events:
-                    if not event or not isinstance(event, dict): continue
-                    pages = event.get('pages')
-                    if not isinstance(pages, list): continue
-                    for page_idx, page in enumerate(pages):
-                        if not isinstance(page, dict): continue
-                        cmd_list = page.get('list')
-                        if not isinstance(cmd_list, list): continue
-                        for cmd_idx, cmd in enumerate(cmd_list):
-                            if isinstance(cmd, dict):
-                                yield (event.get('id'), page_idx, cmd_idx, cmd)
-            elif isinstance(events, dict):
-                for event_id, event in events.items():
-                    if not event or not isinstance(event, dict): continue
-                    pages = event.get('pages')
-                    if not isinstance(pages, list): continue
-                    for page_idx, page in enumerate(pages):
-                        if not isinstance(page, dict): continue
-                        cmd_list = page.get('list')
-                        if not isinstance(cmd_list, list): continue
-                        for cmd_idx, cmd in enumerate(cmd_list):
-                            if isinstance(cmd, dict):
-                                yield (event.get('id', event_id), page_idx, cmd_idx, cmd)
-        elif file_type == 'CommonEvents':
-            if not isinstance(data, list):
-                return
-            for event in data:
-                if not event or not isinstance(event, dict): continue
-                cmd_list = event.get('list')
-                if not isinstance(cmd_list, list): continue
-                for cmd_idx, cmd in enumerate(cmd_list):
-                    if isinstance(cmd, dict):
-                        yield (event.get('id'), None, cmd_idx, cmd)
-        elif file_type == 'Troops':
-            if not isinstance(data, list):
-                return
-            for troop in data:
-                if not troop or not isinstance(troop, dict): continue
-                pages = troop.get('pages')
-                if not isinstance(pages, list): continue
-                for page_idx, page in enumerate(pages):
-                    if not isinstance(page, dict): continue
-                    cmd_list = page.get('list')
-                    if not isinstance(cmd_list, list): continue
-                    for cmd_idx, cmd in enumerate(cmd_list):
-                        if isinstance(cmd, dict):
-                            yield (troop.get('id'), page_idx, cmd_idx, cmd)
+        from src.extractor.EventCommandStrategy import walk_event_commands
+        return walk_event_commands(data, file_type)
 
     def extract_text_map(self, data):
-        results = []
-        events_map = {}
-        for event_id, page_idx, cmd_idx, cmd in self._yield_commands(data, 'Map'):
-            text_obj = self.extract_text_codes_item(cmd, cmd_idx)
-            if text_obj['text']:
-                if event_id not in events_map:
-                    events_map[event_id] = {"id": event_id, "pages": []}
-                    results.append(events_map[event_id])
-                
-                # Find or create page
-                page_obj = next((p for p in events_map[event_id]['pages'] if p['id'] == page_idx), None)
-                if not page_obj:
-                    page_obj = {"id": page_idx, "list": []}
-                    events_map[event_id]['pages'].append(page_obj)
-                
-                page_obj['list'].append(text_obj)
-        return results
-
-    @staticmethod
-    def _resolve_by_id(collection, target_id):
-        if isinstance(collection, dict):
-            if target_id in collection and isinstance(collection[target_id], dict):
-                return collection[target_id]
-            for val in collection.values():
-                if isinstance(val, dict) and val.get('id') == target_id:
-                    return val
-            return None
-        if isinstance(collection, list):
-            if any(isinstance(el, dict) and 'id' in el for el in collection):
-                for el in collection:
-                    if isinstance(el, dict) and el.get('id') == target_id:
-                        return el
-            if isinstance(target_id, int) and 0 <= target_id < len(collection):
-                candidate = collection[target_id]
-                if isinstance(candidate, dict):
-                    return candidate
-        return None
+        from src.extractor.EventCommandStrategy import extract_commands_tree
+        return extract_commands_tree(data, 'Map', self.extract_text_codes_item)
 
     def insert_text_map(self, data, translated_data):
-        if not isinstance(data, dict):
-            return
-        events = data.get('events')
-        if not isinstance(events, (list, dict)):
-            return
-        for event_data in translated_data:
-            raw_ev = self._resolve_by_id(events, event_data['id'])
-            if not isinstance(raw_ev, dict):
-                continue
-            for page_data in event_data['pages']:
-                raw_page = self._resolve_by_id(raw_ev.get('pages', []), page_data['id'])
-                if not isinstance(raw_page, dict):
-                    continue
-                for list_item in page_data['list']:
-                    cmd_id = list_item['id']
-                    try:
-                        cmd = raw_page['list'][cmd_id]
-                        self.insert_text_map_item(cmd, list_item)
-                    except (IndexError, KeyError, TypeError):
-                        continue
+        from src.extractor.EventCommandStrategy import insert_commands_tree
+        insert_commands_tree(data, translated_data, 'Map', self.insert_text_map_item)
 
     def extract_text_common_events(self, data):
-        results = []
-        events_map = {}
-        for event_id, _, cmd_idx, cmd in self._yield_commands(data, 'CommonEvents'):
-            text_obj = self.extract_text_codes_item(cmd, cmd_idx)
-            if text_obj['text']:
-                if event_id not in events_map:
-                    events_map[event_id] = {"id": event_id, "list": []}
-                    results.append(events_map[event_id])
-                events_map[event_id]['list'].append(text_obj)
-        return results
+        from src.extractor.EventCommandStrategy import extract_commands_tree
+        return extract_commands_tree(data, 'CommonEvents', self.extract_text_codes_item)
 
     def insert_text_common_events(self, data, translated_data):
-        if not isinstance(data, (list, dict)):
-            return
-        for event_data in translated_data:
-            raw_ev = self._resolve_by_id(data, event_data['id'])
-            if not isinstance(raw_ev, dict):
-                continue
-            for list_item in event_data['list']:
-                cmd_id = list_item['id']
-                try:
-                    cmd = raw_ev['list'][cmd_id]
-                    self.insert_text_map_item(cmd, list_item)
-                except (IndexError, KeyError, TypeError):
-                    continue
+        from src.extractor.EventCommandStrategy import insert_commands_tree
+        insert_commands_tree(data, translated_data, 'CommonEvents', self.insert_text_map_item)
 
     def extract_text_troops(self, data):
-        results = []
-        troops_map = {}
-        for troop_id, page_idx, cmd_idx, cmd in self._yield_commands(data, 'Troops'):
-            text_obj = self.extract_text_codes_item(cmd, cmd_idx)
-            if text_obj['text']:
-                if troop_id not in troops_map:
-                    troops_map[troop_id] = {"id": troop_id, "pages": []}
-                    results.append(troops_map[troop_id])
-                
-                page_obj = next((p for p in troops_map[troop_id]['pages'] if p['id'] == page_idx), None)
-                if not page_obj:
-                    page_obj = {"id": page_idx, "list": []}
-                    troops_map[troop_id]['pages'].append(page_obj)
-                
-                page_obj['list'].append(text_obj)
-        return results
+        from src.extractor.EventCommandStrategy import extract_commands_tree
+        return extract_commands_tree(data, 'Troops', self.extract_text_codes_item)
 
     def insert_text_troops(self, data, translated_data):
-        if not isinstance(data, (list, dict)):
-            return
-        for troop_data in translated_data:
-            raw_tr = self._resolve_by_id(data, troop_data['id'])
-            if not isinstance(raw_tr, dict):
-                continue
-            for page_data in troop_data['pages']:
-                raw_page = self._resolve_by_id(raw_tr.get('pages', []), page_data['id'])
-                if not isinstance(raw_page, dict):
-                    continue
-                for list_item in page_data['list']:
-                    cmd_id = list_item['id']
-                    try:
-                        cmd = raw_page['list'][cmd_id]
-                        self.insert_text_map_item(cmd, list_item)
-                    except (IndexError, KeyError, TypeError):
-                        continue
+        from src.extractor.EventCommandStrategy import insert_commands_tree
+        insert_commands_tree(data, translated_data, 'Troops', self.insert_text_map_item)
 
     _attributes_find = [r'name', r'note', r'profile', r'description', r'nickname', r'message\d{1}']
     _attributes_system_find = ['armorTypes', 'equipTypes', 'gameTitle', 'currencyUnit', 'skillTypes', 'terms', 'elements', 'weaponTypes']
@@ -437,9 +283,10 @@ class RPGMakerExtractor(BaseExtractor):
     def insert_text_object(self, data, translated_data):
         if not isinstance(data, (list, dict)):
             return
+        from src.extractor.EventCommandStrategy import _resolve_item_by_id
         for texts in translated_data:
             item_id = texts['id']
-            target_item = self._resolve_by_id(data, item_id)
+            target_item = _resolve_item_by_id(data, item_id)
             if not isinstance(target_item, dict):
                 continue
             if 'note' in texts and isinstance(texts['note'], dict):
@@ -557,6 +404,7 @@ class RPGMakerExtractor(BaseExtractor):
         import copy
         import os
         from src.extractor.Segment import Segment
+        from src.extractor.EventCommandStrategy import _resolve_item_by_id
 
         cls = target if isinstance(target, type) else target.__class__
         inst = target(None) if isinstance(target, type) else target
@@ -568,10 +416,10 @@ class RPGMakerExtractor(BaseExtractor):
         translations = translations or {}
 
         def _lookup_cmd_in_owner_page(collection, owner_id, page_id, cmd_id):
-            raw_owner = cls._resolve_by_id(collection, owner_id)
+            raw_owner = _resolve_item_by_id(collection, owner_id)
             if not isinstance(raw_owner, dict):
                 return {}
-            raw_page = cls._resolve_by_id(raw_owner.get('pages', []), page_id)
+            raw_page = _resolve_item_by_id(raw_owner.get('pages', []), page_id)
             if not isinstance(raw_page, dict):
                 return {}
             cmd_list = raw_page.get('list', [])
@@ -580,7 +428,7 @@ class RPGMakerExtractor(BaseExtractor):
             return {}
 
         def _lookup_cmd_in_owner(collection, owner_id, cmd_id):
-            raw_owner = cls._resolve_by_id(collection, owner_id)
+            raw_owner = _resolve_item_by_id(collection, owner_id)
             if not isinstance(raw_owner, dict):
                 return {}
             cmd_list = raw_owner.get('list', [])
@@ -595,7 +443,9 @@ class RPGMakerExtractor(BaseExtractor):
                 val = list_item['text']
                 raw_cmd = cmd_lookup_fn(cmd_id)
                 raw_code = raw_cmd.get('code') if isinstance(raw_cmd, dict) else None
-                kind = cls._kind_for_code(raw_code)
+                code_enum = RPGEventCode.from_code(raw_code)
+                strategy = inst._strategies.get(code_enum)
+                kind = getattr(strategy, 'kind', None) or cls._kind_for_code(raw_code)
                 cmd_prefix = f"{base_name}#{prefix_base}/cmd:{cmd_id}"
                 changed = False
 

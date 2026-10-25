@@ -197,118 +197,40 @@ class WolfRPGExtractor(BaseExtractor):
         return updated
 
     # =========================================================================
-    # Mapas (.mps)
-    # =========================================================================
+    def _extract_cmd_item(self, cmd, index):
+        cid = cmd.get('code')
+        strategy = self._strategies.get(cid)
+        if strategy:
+            text = strategy.extract(cmd)
+            if text:
+                return {"id": index, "text": text}
+        return {"id": index, "text": []}
+
+    def _insert_cmd_item(self, cmd, list_item):
+        cid = cmd.get('code')
+        strategy = self._strategies.get(cid)
+        if strategy:
+            strategy.insert(cmd, list_item.get('text'))
 
     def extract_text_map(self, data):
-        results = []
-        events_map = {}
-
-        for event in data.get('events', []):
-            if not event:
-                continue
-            event_id = event.get('id')
-
-            for page_idx, page in enumerate(event.get('pages', [])):
-                page_id = page.get('id', page_idx)
-
-                for cmd_idx, cmd in enumerate(page.get('list', [])):
-                    cid = cmd.get('code')
-                    strategy = self._strategies.get(cid)
-                    if strategy:
-                        text = strategy.extract(cmd)
-                        if text:
-                            if event_id not in events_map:
-                                events_map[event_id] = {"id": event_id, "pages": []}
-                                results.append(events_map[event_id])
-
-                            page_obj = next(
-                                (p for p in events_map[event_id]['pages'] if p['id'] == page_id),
-                                None
-                            )
-                            if not page_obj:
-                                page_obj = {"id": page_id, "list": []}
-                                events_map[event_id]['pages'].append(page_obj)
-
-                            page_obj['list'].append({"id": cmd_idx, "text": text})
-
-        return results
+        from src.extractor.EventCommandStrategy import extract_commands_tree
+        return extract_commands_tree(data, 'Map', self._extract_cmd_item)
 
     def insert_text_map(self, data, new_data):
-        events_dict = {ev['id']: ev for ev in data.get('events', []) if ev}
-
-        for event_data in new_data:
-            event_id = event_data.get('id')
-            raw_event = events_dict.get(event_id)
-            if not raw_event:
-                continue
-
-            pages_dict = {
-                p.get('id', p_idx): p
-                for p_idx, p in enumerate(raw_event.get('pages', []))
-                if isinstance(p, dict)
-            }
-            for page_data in event_data.get('pages', []):
-                page_id = page_data.get('id')
-                raw_page = pages_dict.get(page_id)
-                if not raw_page:
-                    continue
-
-                cmd_list = raw_page.get('list', [])
-                for item in page_data.get('list', []):
-                    cmd_idx = item.get('id')
-                    if cmd_idx < len(cmd_list):
-                        cmd = cmd_list[cmd_idx]
-                        cid = cmd.get('code')
-                        strategy = self._strategies.get(cid)
-                        if strategy:
-                            strategy.insert(cmd, item.get('text'))
+        from src.extractor.EventCommandStrategy import insert_commands_tree
+        insert_commands_tree(data, new_data, 'Map', self._insert_cmd_item)
 
     # =========================================================================
     # Eventos Comuns (CommonEvent.dat)
     # =========================================================================
 
     def extract_text_common_events(self, data):
-        results = []
-        events_map = {}
-
-        for event in data:
-            if not event:
-                continue
-            event_id = event.get('id')
-
-            for cmd_idx, cmd in enumerate(event.get('list', [])):
-                cid = cmd.get('code')
-                strategy = self._strategies.get(cid)
-                if strategy:
-                    text = strategy.extract(cmd)
-                    if text:
-                        if event_id not in events_map:
-                            events_map[event_id] = {"id": event_id, "list": []}
-                            results.append(events_map[event_id])
-
-                        events_map[event_id]['list'].append({"id": cmd_idx, "text": text})
-
-        return results
+        from src.extractor.EventCommandStrategy import extract_commands_tree
+        return extract_commands_tree(data, 'CommonEvents', self._extract_cmd_item)
 
     def insert_text_common_events(self, data, new_data):
-        events_dict = {ev['id']: ev for ev in data if ev}
-
-        for event_data in new_data:
-            event_id = event_data.get('id')
-            raw_event = events_dict.get(event_id)
-            if not raw_event:
-                continue
-
-            cmd_list = raw_event.get('list', [])
-            for item in event_data.get('list', []):
-                cmd_idx = item.get('id')
-                if cmd_idx < len(cmd_list):
-                    cmd = cmd_list[cmd_idx]
-                    cid = cmd.get('code')
-                    strategy = self._strategies.get(cid)
-                    if strategy:
-                        strategy.insert(cmd, item.get('text'))
+        from src.extractor.EventCommandStrategy import insert_commands_tree
+        insert_commands_tree(data, new_data, 'CommonEvents', self._insert_cmd_item)
 
     # =========================================================================
     # Banco de Dados (*.dat / *.project)
@@ -525,6 +447,8 @@ class WolfRPGExtractor(BaseExtractor):
 
     @_ClassOrInstanceMethod
     def _walk_or_apply_segments(target, file_name, data, mode='extract', translations=None):
+        from src.extractor.EventCommandStrategy import _resolve_item_by_id
+
         cls = target if isinstance(target, type) else target.__class__
         inst = target(None) if isinstance(target, type) else target
         base_name = os.path.basename(file_name) if file_name else cls._infer_file_name(data)
@@ -541,7 +465,8 @@ class WolfRPGExtractor(BaseExtractor):
                 val = list_item['text']
                 raw_cmd = raw_cmd_list[cmd_id] if isinstance(raw_cmd_list, list) and cmd_id < len(raw_cmd_list) else {}
                 raw_code = raw_cmd.get('code') if isinstance(raw_cmd, dict) else None
-                kind = cls._kind_for_code(raw_code)
+                strategy = inst._strategies.get(raw_code)
+                kind = getattr(strategy, 'kind', None) or cls._kind_for_code(raw_code)
                 cmd_prefix = f"{base_name}#{prefix_base}/cmd:{cmd_id}"
                 changed = False
 
@@ -585,35 +510,27 @@ class WolfRPGExtractor(BaseExtractor):
 
         if base_name.endswith('.mps'):
             extracted = inst.extract_text_map(copy.deepcopy(data))
-            events_dict = {ev['id']: ev for ev in data.get('events', []) if ev} if isinstance(data, dict) else {}
+            events_col = data.get('events', []) if isinstance(data, dict) else []
             if mode == 'extract':
                 for ev in extracted:
                     ev_id = ev['id']
-                    raw_ev = events_dict.get(ev_id, {})
-                    pages_dict = {
-                        p.get('id', p_idx): p
-                        for p_idx, p in enumerate(raw_ev.get('pages', []))
-                        if isinstance(p, dict)
-                    }
+                    raw_ev = _resolve_item_by_id(events_col, ev_id) or {}
+                    raw_pages = raw_ev.get('pages', [])
                     for page in ev['pages']:
                         p_id = page['id']
-                        raw_page = pages_dict.get(p_id, {})
+                        raw_page = _resolve_item_by_id(raw_pages, p_id) or {}
                         _handle_cmd_list(page['list'], f"event:{ev_id}/page:{p_id}", raw_page.get('list', []))
                 return segments
             else:
                 filtered_events = []
                 for ev in extracted:
                     ev_id = ev['id']
-                    raw_ev = events_dict.get(ev_id, {})
-                    pages_dict = {
-                        p.get('id', p_idx): p
-                        for p_idx, p in enumerate(raw_ev.get('pages', []))
-                        if isinstance(p, dict)
-                    }
+                    raw_ev = _resolve_item_by_id(events_col, ev_id) or {}
+                    raw_pages = raw_ev.get('pages', [])
                     filtered_pages = []
                     for page in ev['pages']:
                         p_id = page['id']
-                        raw_page = pages_dict.get(p_id, {})
+                        raw_page = _resolve_item_by_id(raw_pages, p_id) or {}
                         mod_list = _handle_cmd_list(page['list'], f"event:{ev_id}/page:{p_id}", raw_page.get('list', []))
                         if mod_list:
                             filtered_pages.append({'id': p_id, 'list': mod_list})
@@ -625,18 +542,17 @@ class WolfRPGExtractor(BaseExtractor):
 
         if base_name == 'CommonEvent.dat':
             extracted = inst.extract_text_common_events(copy.deepcopy(data))
-            events_dict = {ev['id']: ev for ev in data if ev} if isinstance(data, list) else {}
             if mode == 'extract':
                 for ev in extracted:
                     ev_id = ev['id']
-                    raw_ev = events_dict.get(ev_id, {})
+                    raw_ev = _resolve_item_by_id(data, ev_id) or {}
                     _handle_cmd_list(ev['list'], f"common_event:{ev_id}", raw_ev.get('list', []))
                 return segments
             else:
                 filtered_events = []
                 for ev in extracted:
                     ev_id = ev['id']
-                    raw_ev = events_dict.get(ev_id, {})
+                    raw_ev = _resolve_item_by_id(data, ev_id) or {}
                     mod_list = _handle_cmd_list(ev['list'], f"common_event:{ev_id}", raw_ev.get('list', []))
                     if mod_list:
                         filtered_events.append({'id': ev_id, 'list': mod_list})
