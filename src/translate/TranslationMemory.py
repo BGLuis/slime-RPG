@@ -431,6 +431,11 @@ class TranslationMemory:
     def lock_term(self, source_text, translated_text):
         self.store(source_text, translated_text, status='locked')
 
+    def flush(self):
+        """Força o commit de quaisquer transações/escritas na conexão compartilhada."""
+        with self._lock:
+            self._conn.commit()
+
     def fuzzy_candidates(self, text, limit=5):
         """Sugestões por similaridade textual (FTS5), nunca aplicadas automaticamente."""
         rows = self._get_read_connection().execute(

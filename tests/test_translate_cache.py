@@ -18,7 +18,6 @@ def test_deepcopy_shares_cache_but_isolates_retry_state(isolated_cache_dir):
     per_file_copy = copy.deepcopy(original)
 
     assert per_file_copy.cache is original.cache
-    assert per_file_copy.cache_lock is original.cache_lock
 
     per_file_copy.char_limit = 1000
     assert original.char_limit != 1000

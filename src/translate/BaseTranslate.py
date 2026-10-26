@@ -36,7 +36,7 @@ class BaseTranslate(ABC):
     # todos os arquivos/threads de uma mesma execução (evita o produto
     # arquivos-em-paralelo x lotes-em-paralelo virar dezenas de requisições de uma vez).
     _request_semaphores = {}
-    _request_semaphore_lock = threading.Lock()
+    _request_semaphore_mutex = threading.Lock()
 
     @classmethod
     def _get_concurrency_limit(cls):
@@ -44,7 +44,7 @@ class BaseTranslate(ABC):
 
     @classmethod
     def _get_request_semaphore(cls):
-        with BaseTranslate._request_semaphore_lock:
+        with BaseTranslate._request_semaphore_mutex:
             key = cls.__name__
             sem = BaseTranslate._request_semaphores.get(key)
             if sem is None:
@@ -69,23 +69,15 @@ class BaseTranslate(ABC):
         new_obj = self.__class__.__new__(self.__class__)
         memo[id(self)] = new_obj
         for key, value in self.__dict__.items():
-            if key in ('cache', 'cache_lock', '_session_translations', '_failed_keys', '_engine'):
+            if key in ('cache', '_session_translations', '_failed_keys', '_engine'):
                 setattr(new_obj, key, value)
             else:
                 setattr(new_obj, key, copy.deepcopy(value, memo))
         return new_obj
 
     @classmethod
-    def from_default(cls):
-        return cls()
-
-    @classmethod
     def from_languages(cls, lang_source, lang_target):
         return cls(lang_source=lang_source, lang_target=lang_target)
-
-    @classmethod
-    def from_all(cls):
-        return cls(BaseTranslate.delimiter, BaseTranslate.char_limit, BaseTranslate.lang_source, BaseTranslate.lang_target)
 
     def reduce_limite(self):
         if self.char_limit > self.__class__.CHAR_LIMIT_MIN:
@@ -97,9 +89,6 @@ class BaseTranslate(ABC):
 
     def set_game_synopsis(self, synopsis):
         self.game_synopsis = synopsis.strip() if synopsis else None
-
-    def get_game_synopsis(self):
-        return self.game_synopsis
 
     def change_language(self, lang_source, lang_target):
         self.lang_source = lang_source
@@ -124,17 +113,11 @@ class BaseTranslate(ABC):
             self.cache_path, self.lang_source, self.lang_target,
             engine=self.__class__.agent, game=getattr(self, 'game_name', None),
         )
-        # `cache_lock` é mantido só por compatibilidade (e pelo teste que verifica
-        # que o deepcopy por-arquivo o compartilha por identidade). O
-        # TranslationMemory agora é dono de todo o seu locking: escritas serializam
-        # no seu `_lock` interno e leituras usam conexões thread-local sem lock.
-        self.cache_lock = threading.Lock()
 
     def save_cache(self):
-        # TranslationMemory já commita a cada store(); mantido só para não quebrar
-        # quem chama translate.save_cache() esperando um flush explícito no final.
-        with self.cache._lock:
-            self.cache._conn.commit()
+        # TranslationMemory já commita a cada store(); mantido para flush explícito no final.
+        if hasattr(self.cache, 'flush') and callable(self.cache.flush):
+            self.cache.flush()
 
     @classmethod
     def requires_synopsis(cls):
@@ -391,11 +374,7 @@ class BaseTranslate(ABC):
     def translator(self, texts, progress_callback=None):
         import src.utils.TextsUtils as TextsUtils
         treated_text = TextsUtils.dictToList(texts)
-        if hasattr(self, 'preprocess_text') and callable(getattr(self, 'preprocess_text')):
-            self.preprocess_text(treated_text)
         translate_text = self.translate_batch(treated_text, progress_callback)
-        if hasattr(self, 'postprocess_text') and callable(getattr(self, 'postprocess_text')):
-            self.postprocess_text(translate_text)
         TextsUtils.interactive_item(texts, translate_text)
         return texts
 
