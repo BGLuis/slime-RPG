@@ -61,9 +61,10 @@ class CacheLookupStep(PipelineStep):
         # Um único lookup em lote (TranslationMemory.lookup_many) em vez de 2
         # queries por string sob um lock global. Dublês de teste que usam um dict
         # puro caem no fallback item-a-item.
+        switch_eng = getattr(context.translate_instance, 'switch_engine', False) or getattr(cache, 'switch_engine', False)
         if hasattr(cache, 'lookup_many'):
             translatable = [s for s in all_strings if isinstance(s, str) and s.strip()]
-            hits = cache.lookup_many(translatable) if translatable else {}
+            hits = cache.lookup_many(translatable, switch_engine=switch_eng) if translatable else {}
             for i, s in enumerate(all_strings):
                 if not isinstance(s, str) or not s.strip():
                     context.cached_positions[i] = s

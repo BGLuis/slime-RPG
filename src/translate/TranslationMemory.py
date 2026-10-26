@@ -121,6 +121,7 @@ class TranslationMemory:
         prefer_engine=None,
         scope='global',
         reuse_other_engines=True,
+        switch_engine=False,
     ):
         self.db_path = db_path
         self.src_lang = src_lang
@@ -133,6 +134,7 @@ class TranslationMemory:
         )
         self.scope = scope
         self.reuse_other_engines = reuse_other_engines
+        self.switch_engine = switch_engine
         self._conn, self._lock = self._get_shared_connection(db_path)
 
     def __deepcopy__(self, memo):
@@ -265,19 +267,23 @@ class TranslationMemory:
     # é 999; versões novas usam 32766). 900 deixa folga para os 2 params fixos.
     _LOOKUP_MANY_CHUNK = 900
 
-    def lookup(self, text, prefer_engine=None, scope=None, reuse_other_engines=None):
+    def lookup(self, text, prefer_engine=None, scope=None, reuse_other_engines=None, switch_engine=None):
         eff_prefer = (
             self.ENGINE_MIGRATION_MAP.get(prefer_engine.lower(), prefer_engine.lower())
             if prefer_engine is not None else self.prefer_engine
         )
         eff_scope = scope if scope is not None else self.scope
         eff_reuse = reuse_other_engines if reuse_other_engines is not None else self.reuse_other_engines
+        eff_switch = switch_engine if switch_engine is not None else getattr(self, 'switch_engine', False)
 
         h = source_hash(text)
         params = [self.src_lang, self.tgt_lang, h]
         clauses = ["src_lang=?", "tgt_lang=?", "source_hash=?"]
 
-        if not eff_reuse and eff_prefer:
+        if eff_switch and eff_prefer:
+            clauses.append("(status IN ('locked', 'reviewed') OR engine=?)")
+            params.append(eff_prefer)
+        elif not eff_reuse and eff_prefer:
             clauses.append("engine=?")
             params.append(eff_prefer)
 
@@ -306,6 +312,8 @@ class TranslationMemory:
         try:
             candidates = self.fuzzy_candidates(text, limit=5)
             for cand in candidates:
+                if eff_switch and cand.get('status') not in ('locked', 'reviewed'):
+                    continue
                 if normalize_source(cand['source']) == norm:
                     return cand['target']
         except Exception:
@@ -313,7 +321,7 @@ class TranslationMemory:
 
         return None
 
-    def lookup_many(self, texts, prefer_engine=None, scope=None, reuse_other_engines=None):
+    def lookup_many(self, texts, prefer_engine=None, scope=None, reuse_other_engines=None, switch_engine=None):
         """Equivalente em lote de `lookup()`.
 
         Retorna {texto_original: target} apenas para os textos encontrados. Respeita
@@ -327,6 +335,7 @@ class TranslationMemory:
         )
         eff_scope = scope if scope is not None else self.scope
         eff_reuse = reuse_other_engines if reuse_other_engines is not None else self.reuse_other_engines
+        eff_switch = switch_engine if switch_engine is not None else getattr(self, 'switch_engine', False)
 
         wanted = {}  # source_hash -> primeiro texto original visto
         for t in texts:
@@ -342,7 +351,10 @@ class TranslationMemory:
 
         extra_where = []
         extra_where_params = []
-        if not eff_reuse and eff_prefer:
+        if eff_switch and eff_prefer:
+            extra_where.append("(status IN ('locked', 'reviewed') OR engine=?)")
+            extra_where_params.append(eff_prefer)
+        elif not eff_reuse and eff_prefer:
             extra_where.append("engine=?")
             extra_where_params.append(eff_prefer)
         if eff_scope == 'game' and self.game:
@@ -392,6 +404,8 @@ class TranslationMemory:
             try:
                 candidates = self.fuzzy_candidates(t, limit=5)
                 for cand in candidates:
+                    if eff_switch and cand.get('status') not in ('locked', 'reviewed'):
+                        continue
                     if normalize_source(cand['source']) == norm:
                         result[t] = cand['target']
                         break

@@ -478,3 +478,30 @@ def test_game_segment_multi(tmp_path):
     conn.close()
     assert len(rows) == 3
     assert {r[0] for r in rows} == {'GameA', 'GameB', 'GameC'}
+
+
+def test_switch_engine_ignores_machine(tmp_path):
+    db_file = str(tmp_path / 'switch_eng.db')
+    TranslationMemory._reset_pools()
+    tm_google = TranslationMemory(db_file, 'en', 'pt', engine='google')
+    tm_google.store('Hello', 'Ola Google', status='machine')
+
+    TranslationMemory._reset_pools()
+    tm_deepl = TranslationMemory(db_file, 'en', 'pt', engine='deepl', switch_engine=True)
+    assert tm_deepl.lookup('Hello') is None
+    assert tm_deepl.lookup_many(['Hello']) == {}
+
+
+def test_switch_engine_preserves_reviewed(tmp_path):
+    db_file = str(tmp_path / 'switch_eng_rev.db')
+    TranslationMemory._reset_pools()
+    tm_google = TranslationMemory(db_file, 'en', 'pt', engine='google')
+    tm_google.store('Save', 'Salvar Revisado', status='reviewed')
+    tm_google.store('Quit', 'Sair Bloqueado', status='locked')
+
+    TranslationMemory._reset_pools()
+    tm_deepl = TranslationMemory(db_file, 'en', 'pt', engine='deepl', switch_engine=True)
+    assert tm_deepl.lookup('Save') == 'Salvar Revisado'
+    assert tm_deepl.lookup('Quit') == 'Sair Bloqueado'
+    res = tm_deepl.lookup_many(['Save', 'Quit'])
+    assert res == {'Save': 'Salvar Revisado', 'Quit': 'Sair Bloqueado'}

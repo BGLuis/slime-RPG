@@ -209,11 +209,13 @@ class TranslationEngine:
 
         cache_hits: Dict[str, str] = {}
         if self.memory and hasattr(self.memory, 'lookup_many'):
+            switch_eng = getattr(self.provider, 'switch_engine', False) or getattr(self.memory, 'switch_engine', False)
             cache_hits = self.memory.lookup_many(
                 all_sources,
                 prefer_engine=self.prefer_engine,
                 scope=self.scope,
                 reuse_other_engines=self.reuse_other_engines,
+                switch_engine=switch_eng,
             )
 
         unique_uncached = list(dict.fromkeys(s for s in all_sources if s not in cache_hits))
