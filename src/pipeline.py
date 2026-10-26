@@ -154,6 +154,33 @@ class TranslationStep(PipelineStep):
                 'status': 'process', 
                 'msg': "Processing file via Pipeline"
             })
+
+        is_offline = (
+            getattr(context, 'memory_only', False)
+            or getattr(context, 'offline', False)
+            or getattr(context.extractor, 'memory_only', False)
+            or getattr(context.extractor, 'offline', False)
+            or getattr(context.translate_instance, 'memory_only', False)
+            or getattr(context.translate_instance, 'offline', False)
+        )
+        if is_offline:
+            applied = len(getattr(context, 'cached_positions', {}))
+            skipped = len(getattr(context, 'pending_originals', []))
+            if hasattr(context, 'masked_pending') and context.masked_pending:
+                context.translated_pending = list(context.masked_pending)
+            elif hasattr(context, 'pending_originals') and context.pending_originals:
+                context.translated_pending = list(context.pending_originals)
+            else:
+                context.translated_pending = []
+            if context.extractor:
+                context.extractor.add_threads_status({
+                    'file': context.file_path_str,
+                    'status': 'process',
+                    'applied': applied,
+                    'skipped': skipped,
+                    'msg': f"Modo offline: {applied} aplicados, {skipped} ignorados"
+                })
+            return context
         
         if context.translate_instance:
             if hasattr(context, 'masked_pending') and context.masked_pending:

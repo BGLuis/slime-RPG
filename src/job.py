@@ -24,6 +24,14 @@ class JobConfig:
     input_dir: Optional[str] = None
     output_dir: Optional[str] = None
     is_interactive: bool = False
+    memory_only: bool = False
+    offline: bool = False
+
+    def __post_init__(self):
+        if self.offline:
+            self.memory_only = True
+        elif self.memory_only:
+            self.offline = True
 
     def validate(self):
         if self.mode not in ('content', 'filenames'):
@@ -120,6 +128,13 @@ class TranslationJob:
                     self.extractor.add_observer(self._forward_extractor_event)
         else:
             self.fn_translator = FileNameTranslator(self.translator)
+
+        if getattr(self.config, 'memory_only', False):
+            setattr(self.translator, 'memory_only', True)
+            setattr(self.translator, 'offline', True)
+            if self.extractor:
+                setattr(self.extractor, 'memory_only', True)
+                setattr(self.extractor, 'offline', True)
 
     def add_observer(self, callback):
         self.observers.append(callback)
