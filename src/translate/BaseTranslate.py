@@ -7,6 +7,8 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.translate.TranslationMemory import TranslationMemory
+from src.translate.Provider import Capabilities, TranslationProvider
+from src.extractor.Segment import Segment
 from src.utils.paths import get_app_dir, get_memory_db_path
 from src.exceptions import (
     TranslationError,
@@ -19,6 +21,8 @@ from src.exceptions import (
 
 class BaseTranslate(ABC):
     agent = 'BaseTranslate'
+    id = 'base'
+    capabilities = Capabilities(max_request_chars=5000, max_items=None, native_batch=False)
     delimiter = '\n<span> </span>\n'
     char_limit = 5000
     CHAR_LIMIT_MIN = 1000
@@ -35,26 +39,19 @@ class BaseTranslate(ABC):
     _request_semaphore_lock = threading.Lock()
 
     @classmethod
+    def _get_concurrency_limit(cls):
+        return cls.MAX_REQUESTS_SIMULTANEOUSLY
+
+    @classmethod
     def _get_request_semaphore(cls):
         with BaseTranslate._request_semaphore_lock:
-            sem = BaseTranslate._request_semaphores.get(cls.__name__)
+            key = cls.__name__
+            sem = BaseTranslate._request_semaphores.get(key)
             if sem is None:
-                base_limit = cls.MAX_REQUESTS_SIMULTANEOUSLY
-                if cls.__name__ == 'GoogleTranslate':
-                    try:
-                        from src.services.ProxyManager import ProxyManager
-                        pm = ProxyManager.get_instance()
-                        if pm.enabled and pm.direct_blocked:
-                            pool_size = pm.get_pool_size()
-                            if pool_size > 0:
-                                req_per_proxy = int(os.environ.get('REQUESTS_PER_PROXY', '1'))
-                                base_limit = max(cls.MAX_REQUESTS_SIMULTANEOUSLY, min(16, pool_size * req_per_proxy))
-                    except Exception:
-                        pass
-
+                base_limit = cls._get_concurrency_limit()
                 limit = int(os.environ.get('TRANSLATE_MAX_CONCURRENT_REQUESTS', base_limit))
                 sem = threading.Semaphore(max(1, limit))
-                BaseTranslate._request_semaphores[cls.__name__] = sem
+                BaseTranslate._request_semaphores[key] = sem
             return sem
 
     def __init__(self, delimiter=None, char_limit=None, lang_source=None, lang_target=None):
@@ -378,6 +375,21 @@ class BaseTranslate(ABC):
 
         return translated_texts
 
-    @abstractmethod
+    def translate(self, segments: list[Segment], ctx=None) -> list[str]:
+        if not segments:
+            return []
+        texts = [s.source if hasattr(s, 'source') else str(s) for s in segments]
+        res = self._translate_single_batch(texts)
+        return res if res is not None else texts
+
     def translator(self, texts, progress_callback=None):
-        pass
+        import src.utils.TextsUtils as TextsUtils
+        treated_text = TextsUtils.dictToList(texts)
+        if hasattr(self, 'preprocess_text') and callable(getattr(self, 'preprocess_text')):
+            self.preprocess_text(treated_text)
+        translate_text = self.translate_batch(treated_text, progress_callback)
+        if hasattr(self, 'postprocess_text') and callable(getattr(self, 'postprocess_text')):
+            self.postprocess_text(translate_text)
+        TextsUtils.interactive_item(texts, translate_text)
+        return texts
+

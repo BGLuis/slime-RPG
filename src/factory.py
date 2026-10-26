@@ -98,6 +98,7 @@ def register_translator(name, hidden=False, aliases=None, display_name=None, **k
         if not hidden:
             _TRANSLATORS[name] = cls
             cls.agent = name
+            cls.id = name
             cls.plugin_id = name
             disp = display_name or kwargs.get('display_name', name)
             cls.display_name = disp

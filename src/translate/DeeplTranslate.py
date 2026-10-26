@@ -2,6 +2,7 @@ import os
 import logging
 import requests
 from src.translate.BaseTranslate import BaseTranslate
+from src.translate.Provider import Capabilities
 import src.utils.TextsUtils as TextsUtils
 from src.factory import register_translator
 from src.exceptions import (
@@ -13,6 +14,15 @@ from src.exceptions import (
 @register_translator("deepl", aliases=["deeplTranslator", "deepl_translator"])
 class DeeplTranslate(BaseTranslate):
     agent = 'deepl'
+    id = 'deepl'
+    capabilities = Capabilities(
+        max_request_chars=10000,
+        max_items=50,
+        native_batch=True,
+        tag_handling="xml",
+        glossary=True,
+        context=False,
+    )
     MAX_REQUESTS_SIMULTANEOUSLY = 5
     char_limit = 10000
 
@@ -117,8 +127,3 @@ class DeeplTranslate(BaseTranslate):
             raise ValueError(f"Divergência no número de itens traduzidos pelo DeepL: esperados {len(texts)}, recebidos {len(translations)}")
         return translations
 
-    def translator(self, texts, progress_callback=None):
-        treated_text = TextsUtils.dictToList(texts)
-        translate_text = self.translate_batch(treated_text, progress_callback)
-        TextsUtils.interactive_item(texts, translate_text)
-        return texts

@@ -50,16 +50,22 @@ _UPSERT_SQL = f"""INSERT INTO segment
        (src_lang, tgt_lang, source, target, source_hash, engine, game, context, status, created_at, updated_at)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
    ON CONFLICT(src_lang, tgt_lang, source_hash, engine) DO UPDATE SET
-       target=excluded.target, status=excluded.status, updated_at=excluded.updated_at
+       target=excluded.target, status=excluded.status, updated_at=excluded.updated_at,
+       game=COALESCE(excluded.game, segment.game),
+       context=COALESCE(excluded.context, segment.context)
        WHERE {_status_rank_expr('excluded.status')} <= {_status_rank_expr('segment.status')}"""
 
 
 def normalize_source(text):
-    return ' '.join(text.split())
+    if not isinstance(text, str):
+        return text
+    return '\n'.join(' '.join(line.split()) for line in text.split('\n'))
 
 
 def source_hash(text):
-    return hashlib.sha1(normalize_source(text).encode('utf-8')).hexdigest()
+    if not isinstance(text, str):
+        text = str(text)
+    return hashlib.sha1(text.encode('utf-8')).hexdigest()
 
 
 class TranslationMemory:
@@ -96,12 +102,28 @@ class TranslationMemory:
     # Conexões de leitura, uma por (thread, db_path). Nunca usadas para escrita.
     _read_local = threading.local()
 
-    def __init__(self, db_path, src_lang, tgt_lang, engine, game=None):
+    def __init__(
+        self,
+        db_path,
+        src_lang,
+        tgt_lang,
+        engine,
+        game=None,
+        prefer_engine=None,
+        scope='global',
+        reuse_other_engines=True,
+    ):
         self.db_path = db_path
         self.src_lang = src_lang
         self.tgt_lang = tgt_lang
         self.engine = self.ENGINE_MIGRATION_MAP.get(engine.lower(), engine.lower() if engine else engine) if engine else engine
         self.game = game
+        self.prefer_engine = (
+            self.ENGINE_MIGRATION_MAP.get(prefer_engine.lower(), prefer_engine.lower())
+            if prefer_engine else self.engine
+        )
+        self.scope = scope
+        self.reuse_other_engines = reuse_other_engines
         self._conn, self._lock = self._get_shared_connection(db_path)
 
     @classmethod
@@ -230,24 +252,69 @@ class TranslationMemory:
     # é 999; versões novas usam 32766). 900 deixa folga para os 2 params fixos.
     _LOOKUP_MANY_CHUNK = 900
 
-    def lookup(self, text):
-        h = source_hash(text)
-        row = self._get_read_connection().execute(
-            f"""SELECT target FROM segment
-                WHERE src_lang=? AND tgt_lang=? AND source_hash=?
-                ORDER BY {_STATUS_RANK} LIMIT 1""",
-            (self.src_lang, self.tgt_lang, h),
-        ).fetchone()
-        return row[0] if row else None
+    def lookup(self, text, prefer_engine=None, scope=None, reuse_other_engines=None):
+        eff_prefer = (
+            self.ENGINE_MIGRATION_MAP.get(prefer_engine.lower(), prefer_engine.lower())
+            if prefer_engine is not None else self.prefer_engine
+        )
+        eff_scope = scope if scope is not None else self.scope
+        eff_reuse = reuse_other_engines if reuse_other_engines is not None else self.reuse_other_engines
 
-    def lookup_many(self, texts):
+        h = source_hash(text)
+        params = [self.src_lang, self.tgt_lang, h]
+        clauses = ["src_lang=?", "tgt_lang=?", "source_hash=?"]
+
+        if not eff_reuse and eff_prefer:
+            clauses.append("engine=?")
+            params.append(eff_prefer)
+
+        if eff_scope == 'game' and self.game:
+            clauses.append("(game=? OR game IS NULL)")
+            params.append(self.game)
+
+        order_clauses = [_STATUS_RANK]
+        if eff_prefer:
+            order_clauses.append("CASE WHEN engine=? THEN 0 ELSE 1 END")
+            params.append(eff_prefer)
+        if self.game:
+            order_clauses.append("CASE WHEN game=? THEN 0 ELSE 1 END")
+            params.append(self.game)
+        order_clauses.append("updated_at DESC")
+
+        sql = f"""SELECT target FROM segment
+                  WHERE {' AND '.join(clauses)}
+                  ORDER BY {', '.join(order_clauses)} LIMIT 1"""
+
+        row = self._get_read_connection().execute(sql, tuple(params)).fetchone()
+        if row:
+            return row[0]
+
+        norm = normalize_source(text)
+        try:
+            candidates = self.fuzzy_candidates(text, limit=5)
+            for cand in candidates:
+                if normalize_source(cand['source']) == norm:
+                    return cand['target']
+        except Exception:
+            pass
+
+        return None
+
+    def lookup_many(self, texts, prefer_engine=None, scope=None, reuse_other_engines=None):
         """Equivalente em lote de `lookup()`.
 
-        Retorna {texto_original: target} apenas para os textos encontrados. Usa o
-        mesmo casamento engine-agnóstico por `source_hash` (whitespace colapsado)
-        e a mesma preferência de status (`locked` > `reviewed` > `machine`).
+        Retorna {texto_original: target} apenas para os textos encontrados. Respeita
+        a política de engine (`prefer_engine`), escopo de jogo (`scope`), status (`locked` >
+        `reviewed` > `machine`) e fallback secundário para whitespace normalizado.
         Ignora entradas não-string ou em branco.
         """
+        eff_prefer = (
+            self.ENGINE_MIGRATION_MAP.get(prefer_engine.lower(), prefer_engine.lower())
+            if prefer_engine is not None else self.prefer_engine
+        )
+        eff_scope = scope if scope is not None else self.scope
+        eff_reuse = reuse_other_engines if reuse_other_engines is not None else self.reuse_other_engines
+
         wanted = {}  # source_hash -> primeiro texto original visto
         for t in texts:
             if isinstance(t, str) and t.strip():
@@ -259,34 +326,75 @@ class TranslationMemory:
         hashes = list(wanted)
         hash_to_target = {}
         chunk = self._LOOKUP_MANY_CHUNK
+
+        extra_where = []
+        extra_where_params = []
+        if not eff_reuse and eff_prefer:
+            extra_where.append("engine=?")
+            extra_where_params.append(eff_prefer)
+        if eff_scope == 'game' and self.game:
+            extra_where.append("(game=? OR game IS NULL)")
+            extra_where_params.append(self.game)
+
+        order_clauses = ["source_hash", _STATUS_RANK]
+        order_params = []
+        if eff_prefer:
+            order_clauses.append("CASE WHEN engine=? THEN 0 ELSE 1 END")
+            order_params.append(eff_prefer)
+        if self.game:
+            order_clauses.append("CASE WHEN game=? THEN 0 ELSE 1 END")
+            order_params.append(self.game)
+        order_clauses.append("updated_at DESC")
+
         for i in range(0, len(hashes), chunk):
             part = hashes[i:i + chunk]
             placeholders = ','.join('?' * len(part))
+            where_sql = f"src_lang=? AND tgt_lang=? AND source_hash IN ({placeholders})"
+            if extra_where:
+                where_sql += " AND " + " AND ".join(extra_where)
+            query_params = [self.src_lang, self.tgt_lang, *part, *extra_where_params, *order_params]
+
             rows = conn.execute(
-                f"""SELECT source_hash, target, {_STATUS_RANK} AS rank FROM segment
-                    WHERE src_lang=? AND tgt_lang=? AND source_hash IN ({placeholders})
-                    ORDER BY source_hash, rank""",
-                (self.src_lang, self.tgt_lang, *part),
+                f"""SELECT source_hash, target FROM segment
+                    WHERE {where_sql}
+                    ORDER BY {', '.join(order_clauses)}""",
+                tuple(query_params),
             ).fetchall()
-            for h, target, _rank in rows:
-                if h not in hash_to_target:  # 1ª linha por hash == melhor status
+            for h, target in rows:
+                if h not in hash_to_target:
                     hash_to_target[h] = target
 
         result = {}
+        missing_texts = []
         for t in texts:
             if isinstance(t, str) and t.strip():
                 h = source_hash(t)
                 if h in hash_to_target:
                     result[t] = hash_to_target[h]
+                else:
+                    missing_texts.append(t)
+
+        for t in missing_texts:
+            norm = normalize_source(t)
+            try:
+                candidates = self.fuzzy_candidates(t, limit=5)
+                for cand in candidates:
+                    if normalize_source(cand['source']) == norm:
+                        result[t] = cand['target']
+                        break
+            except Exception:
+                pass
+
         return result
 
-    def _segment_row(self, source, translated, status, context, now):
+    def _segment_row(self, source, translated, status, context, now, game=None):
+        eff_game = game if game is not None else self.game
         return (
             self.src_lang, self.tgt_lang, source, translated, source_hash(source),
-            self.engine, self.game, context, status, now, now,
+            self.engine, eff_game, context, status, now, now,
         )
 
-    def store(self, text, translated, status='machine', context=None, allow_identity=False):
+    def store(self, text, translated, status='machine', context=None, allow_identity=False, game=None):
         if not allow_identity and status == 'machine' and self.src_lang != self.tgt_lang:
             if isinstance(text, str) and isinstance(translated, str) and text.strip() == translated.strip():
                 return
@@ -294,11 +402,11 @@ class TranslationMemory:
         with self._lock:
             self._conn.execute(
                 _UPSERT_SQL,
-                self._segment_row(text, translated, status, context, now),
+                self._segment_row(text, translated, status, context, now, game=game),
             )
             self._conn.commit()
 
-    def store_many(self, pairs, status='machine', context=None, allow_identity=False):
+    def store_many(self, pairs, status='machine', context=None, allow_identity=False, game=None):
         """Grava vários (source, translated) numa única transação / um commit.
 
         Mesma semântica de upsert do `store()` (não rebaixa uma tradução de status
@@ -309,7 +417,7 @@ class TranslationMemory:
         """
         now = time.strftime('%Y-%m-%dT%H:%M:%S')
         rows = [
-            self._segment_row(s, t, status, context, now)
+            self._segment_row(s, t, status, context, now, game=game)
             for s, t in pairs
             if isinstance(s, str) and s.strip() and t is not None
             and (allow_identity or not (status == 'machine' and self.src_lang != self.tgt_lang and s.strip() == t.strip()))

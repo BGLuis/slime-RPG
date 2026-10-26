@@ -1,4 +1,5 @@
 from src.translate.BaseTranslate import BaseTranslate
+from src.translate.Provider import Capabilities
 from dotenv import load_dotenv
 import os
 import ollama
@@ -14,6 +15,15 @@ load_dotenv()
 @register_translator("ollama", aliases=["ollamaTranslator", "ollama_translator"])
 class OllamaTranslate(BaseTranslate):
     agent = 'ollama'
+    id = 'ollama'
+    capabilities = Capabilities(
+        max_request_chars=10000,
+        max_items=1,
+        native_batch=False,
+        tag_handling=None,
+        glossary=False,
+        context=True,
+    )
     MAX_REQUESTS_SIMULTANEOUSLY = 10
     char_limit = 10000
     context_function = "Reply with only the translated text, without any additional comments, explanations, or notes."
@@ -116,10 +126,3 @@ class OllamaTranslate(BaseTranslate):
 
         return results
 
-    def translator(self, texts, progress_callback=None):
-        treated_text = TextsUtils.dictToList(texts)
-        self.preprocess_text(treated_text)
-        translate_text = self.translate_batch(treated_text, progress_callback)
-        self.postprocess_text(translate_text)
-        TextsUtils.interactive_item(texts, translate_text)
-        return texts
