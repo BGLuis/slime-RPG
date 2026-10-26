@@ -154,10 +154,7 @@ def resolve_translation_map(segments: List[Segment], translations: Any) -> Dict[
     if callable(translations):
         result = {}
         for seg in segments:
-            try:
-                val = translations(seg.source)
-            except (TypeError, AttributeError):
-                val = translations(seg)
+            val = translations(seg.source)
             if isinstance(val, Segment):
                 val = val.source
             result[seg.id] = str(val) if val is not None else seg.source
