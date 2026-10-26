@@ -48,6 +48,10 @@ class TranslationEngine:
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
+        self.memory_only = (
+            getattr(provider, 'memory_only', False)
+            or getattr(provider, 'offline', False)
+        )
 
         if max_concurrent_requests is not None:
             self.max_concurrent_requests = max_concurrent_requests
@@ -223,20 +227,25 @@ class TranslationEngine:
         translated_map = dict(cache_hits)
 
         if batches:
-            max_workers = min(self.max_concurrent_requests, len(batches))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_batch = {
-                    executor.submit(self._execute_single_batch, b, ctx): b
-                    for b in batches
-                }
-                for fut in as_completed(future_to_batch):
-                    b = future_to_batch[fut]
-                    try:
-                        res = fut.result()
-                    except Exception:
-                        res = [s.source for s in b]
-                    for s, trans in zip(b, res):
-                        translated_map[s.source] = trans
+            if self.memory_only:
+                for b in batches:
+                    for s in b:
+                        translated_map[s.source] = s.source
+            else:
+                max_workers = min(self.max_concurrent_requests, len(batches))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_batch = {
+                        executor.submit(self._execute_single_batch, b, ctx): b
+                        for b in batches
+                    }
+                    for fut in as_completed(future_to_batch):
+                        b = future_to_batch[fut]
+                        try:
+                            res = fut.result()
+                        except Exception:
+                            res = [s.source for s in b]
+                        for s, trans in zip(b, res):
+                            translated_map[s.source] = trans
 
             if self.memory and hasattr(self.memory, 'store_many'):
                 storable = [

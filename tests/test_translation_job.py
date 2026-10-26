@@ -297,3 +297,120 @@ def test_paths_memory_db_and_settings_db(monkeypatch, tmp_path):
 
     assert get_memory_db_path() == str(custom_mem)
     assert get_settings_db_path() == str(custom_set)
+
+
+def test_memory_only_no_network(tmp_path):
+    import json
+    from src.extractor.JsonExtractor import JsonExtractor
+
+    input_dir = tmp_path / "game_offline"
+    input_dir.mkdir()
+    (input_dir / "test.json").write_text(json.dumps({"dialogue": "Uncached string"}), encoding="utf-8")
+
+    class StrictNoNetworkTranslator:
+        agent = "StrictNoNet"
+        name = "StrictNoNet"
+        lang_source = "en"
+        lang_target = "pt"
+
+        def __init__(self):
+            self.network_called = False
+            self.cache = {}
+
+        def translate_batch(self, batch, callback=None):
+            self.network_called = True
+            raise AssertionError("Network call attempted in memory-only mode!")
+
+        def translator(self, text, callback=None):
+            self.network_called = True
+            raise AssertionError("Network call attempted in memory-only mode!")
+
+        def change_language(self, s, t):
+            self.lang_source = s
+            self.lang_target = t
+
+        def save_cache(self):
+            pass
+
+    translator = StrictNoNetworkTranslator()
+    cfg = JobConfig(
+        extractor_name="json",
+        translator_name="Google",
+        lang_source="en",
+        lang_target="pt",
+        input_dir=str(input_dir),
+        memory_only=True,
+        backup=False,
+        verify=False,
+    )
+    with Workspace(str(input_dir)) as ws:
+        extractor = JsonExtractor(translator, workspace=ws)
+        job = TranslationJob(cfg, workspace=ws, extractor=extractor, translator=translator)
+        success = job.run(is_interactive=False)
+        assert success is True
+        assert translator.network_called is False
+
+
+def test_memory_only_application(tmp_path):
+    import json
+    from src.extractor.JsonExtractor import JsonExtractor
+    from src.translate.TranslationMemory import TranslationMemory
+
+    input_dir = tmp_path / "game_offline_app"
+    input_dir.mkdir()
+    (input_dir / "test.json").write_text(
+        json.dumps({"dialogue": "Hello", "message": "Farewell"}),
+        encoding="utf-8"
+    )
+
+    db_path = str(tmp_path / "offline_memory.db")
+    TranslationMemory._reset_pools()
+    tm = TranslationMemory(db_path, "en", "pt", engine="StrictNet")
+    tm.store("Hello", "Olá")
+
+    class StrictNetTranslator:
+        agent = "StrictNet"
+        name = "StrictNet"
+        lang_source = "en"
+        lang_target = "pt"
+
+        def __init__(self, cache):
+            self.cache = cache
+            self.network_called = False
+
+        def translate_batch(self, batch, callback=None):
+            self.network_called = True
+            raise AssertionError("Network call attempted in memory-only mode!")
+
+        def translator(self, text, callback=None):
+            self.network_called = True
+            raise AssertionError("Network call attempted in memory-only mode!")
+
+        def change_language(self, s, t):
+            self.lang_source = s
+            self.lang_target = t
+
+        def save_cache(self):
+            pass
+
+    translator = StrictNetTranslator(tm)
+    cfg = JobConfig(
+        extractor_name="json",
+        translator_name="Google",
+        lang_source="en",
+        lang_target="pt",
+        input_dir=str(input_dir),
+        memory_only=True,
+        backup=False,
+        verify=False,
+    )
+    with Workspace(str(input_dir)) as ws:
+        extractor = JsonExtractor(translator, workspace=ws)
+        job = TranslationJob(cfg, workspace=ws, extractor=extractor, translator=translator)
+        success = job.run(is_interactive=False)
+        assert success is True
+        assert translator.network_called is False
+
+        result_data = json.loads((input_dir / "test.json").read_text(encoding="utf-8"))
+        assert result_data["dialogue"] == "Olá"
+        assert result_data["message"] == "Farewell"

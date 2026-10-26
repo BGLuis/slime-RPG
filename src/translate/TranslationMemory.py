@@ -135,6 +135,10 @@ class TranslationMemory:
         self.reuse_other_engines = reuse_other_engines
         self._conn, self._lock = self._get_shared_connection(db_path)
 
+    def __deepcopy__(self, memo):
+        memo[id(self)] = self
+        return self
+
     @classmethod
     def migrate_engine_names(cls, conn):
         """
