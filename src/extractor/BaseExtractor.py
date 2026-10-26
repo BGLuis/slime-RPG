@@ -9,6 +9,31 @@ import time
 import logging
 import requests
 from abc import ABC, abstractmethod
+from src.extractor.Segment import (
+    Segment,
+    SegmentList,
+    copy_preserving_metadata,
+    resolve_translation_map,
+)
+from src.extractor.FormatAdapter import (
+    JsonDataDict,
+    JsonFormatAdapter,
+    get_registered_format_adapter,
+    register_format_adapter,
+)
+
+
+class _ClassOrInstanceMethod:
+    def __init__(self, func):
+        self.func = func
+
+    def __get__(self, instance, owner=None):
+        target = owner if instance is None else instance
+
+        def wrapper(*args, **kwargs):
+            return self.func(target, *args, **kwargs)
+
+        return wrapper
 
 
 class FolderProperty(property):
@@ -58,6 +83,24 @@ class BaseExtractor(ABC):
     folderInput = FolderProperty('folderInput', 'input_dir', 'input')
     folderOutput = FolderProperty('folderOutput', 'output_dir', 'output')
     files_types = []
+    format_adapters = ()
+    _suppress_folder_creation = False
+
+    @classmethod
+    def _create_segment_instance(cls):
+        try:
+            BaseExtractor._suppress_folder_creation = True
+            return cls(None)
+        finally:
+            BaseExtractor._suppress_folder_creation = False
+
+    @classmethod
+    def detect(cls, path):
+        """
+        Detecta se `path` (ou subpastas imediatas) pertence ao layout deste extrator.
+        Retorna `DetectionResult` (ou dict compatível) ou `None` se não reconhecido.
+        """
+        return None
 
     def __init__(self, translate, workspace=None):
         self._workspace = workspace
@@ -65,12 +108,13 @@ class BaseExtractor(ABC):
         self._folderProcess = None
         self._folderOutput = None
 
-        if workspace is None:
-            self.create_directory_if_not_exists(self.folderProcess)
-            self.create_directory_if_not_exists(self.folderInput)
-            self.create_directory_if_not_exists(self.folderOutput)
-        else:
-            self.create_directory_if_not_exists(self.folderProcess)
+        if not self._suppress_folder_creation:
+            if workspace is None:
+                self.create_directory_if_not_exists(self.folderProcess)
+                self.create_directory_if_not_exists(self.folderInput)
+                self.create_directory_if_not_exists(self.folderOutput)
+            else:
+                self.create_directory_if_not_exists(self.folderProcess)
 
         self.translate = translate
         self._threads_status_map = {}
@@ -118,34 +162,39 @@ class BaseExtractor(ABC):
                 os.remove(file)
 
     @classmethod
+    def register_format_adapter(cls, adapter, extensions=None):
+        return register_format_adapter(adapter, extensions=extensions)
+
+    @classmethod
+    def get_format_adapter(cls, file_name_or_path):
+        lower = str(file_name_or_path).lower()
+
+        declared = getattr(cls, 'format_adapters', None) or ()
+        if isinstance(declared, dict):
+            for ext, adp in declared.items():
+                norm_ext = ext if str(ext).startswith('.') else f".{ext}"
+                if lower.endswith(norm_ext.lower()):
+                    return adp
+        else:
+            for adp in declared:
+                exts = getattr(adp, 'extensions', ()) or ()
+                for ext in exts:
+                    norm_ext = ext if str(ext).startswith('.') else f".{ext}"
+                    if lower.endswith(norm_ext.lower()):
+                        return adp
+
+        global_adapter = get_registered_format_adapter(lower)
+        if global_adapter is not None:
+            return global_adapter
+        return JsonFormatAdapter
+
+    @classmethod
     def extract_files(cls, file_path):
         if not file_path.endswith(tuple(cls.files_types)):
             return [os.path.basename(file_path), None]
-        if file_path.endswith('.rvdata2'):
-            from src.extractor.rpgmaker.RVDataAdapter import RVDataAdapter
-            data = RVDataAdapter.load_file(file_path)
-            return [os.path.basename(file_path), data]
-        if file_path.endswith(('.mps', '.dat', '.project')):
-            from src.extractor.wolfrpg.WolfBinaryAdapter import WolfBinaryAdapter
-            data = WolfBinaryAdapter.load_file(file_path)
-            return [os.path.basename(file_path), data]
-        if file_path.endswith('.txt'):
-            try:
-                with open(file_path, 'rb') as f:
-                    raw_bytes = f.read()
-                encoding = 'cp932'
-                try:
-                    content = raw_bytes.decode('cp932')
-                except UnicodeDecodeError:
-                    content = raw_bytes.decode('utf-8', errors='replace')
-                    encoding = 'utf-8'
-                lineterminator = '\r\n' if b'\r\n' in raw_bytes else '\n'
-                return [os.path.basename(file_path), {'encoding': encoding, 'lineterminator': lineterminator, 'lines': content.splitlines(keepends=True)}]
-            except Exception:
-                pass
-        with open(file_path, 'r', encoding='utf-8-sig') as f:
-            data = json.load(f)
-            return [os.path.basename(file_path), data]
+        adapter = cls.get_format_adapter(file_path)
+        data = adapter.load_file(file_path)
+        return [os.path.basename(file_path), data]
 
     def init_folder(self=None):
         if self is not None and not isinstance(self, type):
@@ -176,6 +225,102 @@ class BaseExtractor(ABC):
     @abstractmethod
     def update_json(file_name, data, new_data):
         pass
+
+    @classmethod
+    def _infer_file_name(cls, data):
+        if hasattr(data, '_file_name') and getattr(data, '_file_name'):
+            return getattr(data, '_file_name')
+        return 'file.json'
+
+    @_ClassOrInstanceMethod
+    def extract_segments(target, file_name_or_data, maybe_data=None, *, file_name=None):
+        cls = target if isinstance(target, type) else target.__class__
+        if maybe_data is not None:
+            inferred_name = str(file_name_or_data)
+            data = maybe_data
+        elif isinstance(file_name_or_data, (str, os.PathLike)) and os.path.exists(str(file_name_or_data)):
+            inferred_name, data = target.extract_files(str(file_name_or_data))
+        else:
+            data = file_name_or_data
+            inferred_name = file_name or cls._infer_file_name(data)
+
+        if hasattr(target, '_walk_or_apply_segments'):
+            segments = target._walk_or_apply_segments(inferred_name, data, mode='extract')
+        else:
+            inst = target._create_segment_instance() if isinstance(target, type) else target
+            raw_texts = inst.extract_text(inferred_name, copy_preserving_metadata(data)) or []
+            segments = [
+                Segment(
+                    id=f"{inferred_name}#{idx}",
+                    source=str(text),
+                    context={'file': inferred_name, 'index': idx, 'kind': 'dialogue'},
+                )
+                for idx, text in enumerate(raw_texts)
+            ]
+        return SegmentList(segments, source_data=data, file_name=inferred_name)
+
+    @_ClassOrInstanceMethod
+    def apply_segments(target, *args, file_name=None):
+        def _is_segment_seq(obj):
+            if isinstance(obj, SegmentList):
+                return True
+            return isinstance(obj, (list, tuple)) and len(obj) > 0 and isinstance(obj[0], Segment)
+
+        if len(args) == 1 and _is_segment_seq(args[0]):
+            segments = args[0]
+            translations = segments
+            data = getattr(segments, '_source_data', None)
+            inferred_name = file_name or getattr(segments, '_file_name', None)
+        elif len(args) == 2 and _is_segment_seq(args[0]):
+            segments = args[0]
+            translations = args[1]
+            data = getattr(segments, '_source_data', None)
+            inferred_name = file_name or getattr(segments, '_file_name', None)
+        elif len(args) >= 3 and isinstance(args[0], str) and not _is_segment_seq(args[0]):
+            inferred_name = args[0]
+            data = args[1]
+            if len(args) == 3:
+                if _is_segment_seq(args[2]):
+                    segments = args[2]
+                    translations = args[2]
+                else:
+                    segments = target.extract_segments(inferred_name, data)
+                    translations = args[2]
+            else:
+                segments = args[2]
+                translations = args[3]
+        elif len(args) == 2:
+            data = args[0]
+            inferred_name = file_name or getattr(data, '_file_name', None)
+            if _is_segment_seq(args[1]):
+                segments = args[1]
+                translations = args[1]
+                inferred_name = inferred_name or getattr(segments, '_file_name', None)
+            else:
+                segments = target.extract_segments(data, file_name=inferred_name)
+                translations = args[1]
+                inferred_name = inferred_name or getattr(segments, '_file_name', None)
+        elif len(args) == 3:
+            data = args[0]
+            segments = args[1]
+            translations = args[2]
+            inferred_name = file_name or getattr(segments, '_file_name', None) or getattr(data, '_file_name', None)
+        else:
+            raise TypeError("Invalid arguments for apply_segments")
+
+        cls = target if isinstance(target, type) else target.__class__
+        if not inferred_name:
+            inferred_name = cls._infer_file_name(data)
+
+        working_data = copy_preserving_metadata(data)
+        trans_map = resolve_translation_map(list(segments), translations)
+
+        if hasattr(target, '_walk_or_apply_segments'):
+            return target._walk_or_apply_segments(inferred_name, working_data, mode='apply', translations=trans_map)
+
+        inst = target._create_segment_instance() if isinstance(target, type) else target
+        ordered_texts = [trans_map.get(seg.id, seg.source) for seg in segments]
+        return inst.update_json(inferred_name, working_data, ordered_texts)
 
     @classmethod
     def sanitize_octal_data(cls, data):
@@ -215,78 +360,15 @@ class BaseExtractor(ABC):
     def import_file(cls, file_name, json_data, folder):
         dest_path = os.path.join(folder, file_name)
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        if file_name.endswith('.rvdata2'):
-            try:
-                from src.extractor.rpgmaker.RVDataAdapter import RVDataAdapter
-                original_raw = getattr(json_data, '_raw_rvdata', None)
-                if original_raw is None:
-                    for candidate_folder in [cls.folderInput, cls.folderProcess]:
-                        candidate = os.path.join(candidate_folder, file_name)
-                        if os.path.exists(candidate):
-                            import src.utils.RubyMarshal as r_marshal
-                            with open(candidate, 'rb') as f:
-                                original_raw = r_marshal.load(f)
-                            break
-                RVDataAdapter.save_file(dest_path, json_data, original_raw=original_raw)
-                logging.info(f"✓ Validated and saved RVData2: {file_name}")
-                return
-            except Exception as e:
-                logging.error(f"✗ Failed to save RVData2 {file_name}: {e}")
-                raise
-
-        if file_name.endswith(('.mps', '.dat', '.project')):
-            try:
-                from src.extractor.wolfrpg.WolfBinaryAdapter import WolfBinaryAdapter
-                original_raw = getattr(json_data, '_raw_wolf', None)
-                if original_raw is None:
-                    for candidate_folder in [cls.folderInput, cls.folderProcess]:
-                        candidate = os.path.join(candidate_folder, file_name)
-                        if os.path.exists(candidate):
-                            loaded = WolfBinaryAdapter.load_file(candidate)
-                            original_raw = getattr(loaded, '_raw_wolf', None)
-                            break
-                WolfBinaryAdapter.save_file(dest_path, json_data, original_raw=original_raw)
-                logging.info(f"✓ Validated and saved WOLF RPG binary: {file_name}")
-                return
-            except Exception as e:
-                logging.error(f"✗ Failed to save WOLF RPG binary {file_name}: {e}")
-                raise
-
-        if file_name.endswith('.txt') and isinstance(json_data, dict) and 'lines' in json_data:
-            encoding = json_data.get('encoding', 'utf-8')
-            content = "".join(json_data.get('lines', []))
-            if encoding == 'cp932':
-                try:
-                    raw_bytes = content.encode('cp932')
-                except UnicodeEncodeError:
-                    from src.utils.TextsUtils import normalize_western_chars
-                    raw_bytes = normalize_western_chars(content).encode('cp932', errors='replace')
-            else:
-                raw_bytes = content.encode(encoding, errors='replace')
-            with open(dest_path, 'wb') as f:
-                f.write(raw_bytes)
-            logging.info(f"✓ Validated and saved text: {file_name}")
-            return
-
-        try:
-            if isinstance(json_data, (dict, list)):
-                json_data = cls.sanitize_octal_data(json_data)
-
-            # Validar se json_data é serializável antes de escrever
-            json_string = json.dumps(json_data, ensure_ascii=False, separators=(',', ':'))
-
-            # Se validação passou, escrever arquivo diretamente sem releitura
-            with open(dest_path, 'w', encoding='utf-8') as f:
-                f.write(json_string)
-
-            logging.info(f"✓ Validated and saved: {file_name}")
-        except (TypeError, ValueError) as e:
-            logging.error(f"✗ JSON validation failed for {file_name}: {e}")
-            logging.error(f"  Data type: {type(json_data)}")
-            raise Exception(f"Failed to create valid JSON for {file_name}: {e}")
-        except Exception as e:
-            logging.error(f"✗ Failed to write file {file_name}: {e}")
-            raise
+        adapter = cls.get_format_adapter(file_name)
+        adapter.save_file(
+            dest_path,
+            json_data,
+            file_name=file_name,
+            folder=folder,
+            extractor_cls=cls,
+            candidate_folders=[cls.folderInput, cls.folderProcess],
+        )
 
     @staticmethod
     @abstractmethod
@@ -479,7 +561,6 @@ class BaseExtractor(ABC):
         Erros determinísticos (como erros de sintaxe, tipos, chaves ou problemas de I/O de arquivo)
         NÃO devem ser retentados pois nunca terão sucesso.
         """
-        import json
         from src.exceptions import (
             ProviderAuthError,
             ProviderRateLimited,

@@ -1,6 +1,6 @@
 import re
 import logging
-from src.extractor.BaseExtractor import BaseExtractor
+from src.extractor.BaseExtractor import BaseExtractor, _ClassOrInstanceMethod
 import src.utils.TextsUtils as TextsUtils
 from .RPGEventCodes import RPGEventCode
 from .RPGTextFilters import RPGTextFilters
@@ -153,10 +153,15 @@ class _BalancedConditionPattern:
         return ''.join(out)
 
 
+from src.extractor.FormatAdapter import JsonFormatAdapter
+from .RVDataAdapter import RVDataAdapter
+
+
 @register_extractor("rpgmaker", display_name="RPG Maker", aliases=["RPG Maker", "rpg_maker", "rpg-maker"])
 class RPGMakerExtractor(BaseExtractor):
     name = "rpgmaker"
     files_types = ['json', 'rvdata2']
+    format_adapters = (JsonFormatAdapter, RVDataAdapter)
 
     def __init__(self, translate):
         super().__init__(translate)
@@ -186,6 +191,68 @@ class RPGMakerExtractor(BaseExtractor):
 
     def apply_configuration(self, config):
         pass
+
+    @classmethod
+    def detect(cls, path: str):
+        import os
+        import glob
+        from src.services.GameDetector import DetectionResult
+
+        def _count_rpg_files(folder: str) -> int:
+            json_files = glob.glob(os.path.join(folder, '*.json'))
+            rvdata_files = glob.glob(os.path.join(folder, '*.rvdata2'))
+            has_rpg_json = any(
+                os.path.basename(f) in ('System.json', 'Actors.json', 'CommonEvents.json')
+                or os.path.basename(f).startswith('Map')
+                for f in json_files
+            )
+            has_rpg_rvdata = any(
+                os.path.basename(f) in ('System.rvdata2', 'Actors.rvdata2', 'CommonEvents.rvdata2')
+                or os.path.basename(f).startswith('Map')
+                for f in rvdata_files
+            )
+            if has_rpg_json:
+                return len(json_files)
+            if has_rpg_rvdata:
+                return len(rvdata_files)
+            return 0
+
+        www_data = os.path.join(path, 'www', 'data')
+        if os.path.isdir(www_data):
+            count = _count_rpg_files(www_data)
+            if count > 0:
+                return DetectionResult(
+                    detected_path=www_data,
+                    score=85,
+                    extractor=cls.display_name,
+                    description='RPG Maker MV/MZ (subpasta www/data)',
+                    file_count=count,
+                )
+
+        for sub in ('data', 'Data'):
+            data_dir = os.path.join(path, sub)
+            if os.path.isdir(data_dir):
+                count = _count_rpg_files(data_dir)
+                if count > 0:
+                    return DetectionResult(
+                        detected_path=data_dir,
+                        score=84,
+                        extractor=cls.display_name,
+                        description=f'RPG Maker (subpasta {sub})',
+                        file_count=count,
+                    )
+
+        count = _count_rpg_files(path)
+        if count > 0:
+            return DetectionResult(
+                detected_path=path,
+                score=70,
+                extractor=cls.display_name,
+                description='RPG Maker (pasta atual)',
+                file_count=count,
+            )
+
+        return None
 
     def get_mask_patterns(self, file_name=None, data=None):
         p_format_codes = re.compile(r'\\[A-Za-z]+\s*\[[^\]]*\]', re.IGNORECASE)
@@ -221,156 +288,32 @@ class RPGMakerExtractor(BaseExtractor):
             strategy.insert(item, list_item['text'])
 
     def _yield_commands(self, data, file_type):
-        if not isinstance(data, (dict, list)):
-            return
-
-        if file_type == 'Map':
-            if not isinstance(data, dict):
-                return
-            events = data.get('events')
-            if isinstance(events, list):
-                for event in events:
-                    if not event or not isinstance(event, dict): continue
-                    pages = event.get('pages')
-                    if not isinstance(pages, list): continue
-                    for page_idx, page in enumerate(pages):
-                        if not isinstance(page, dict): continue
-                        cmd_list = page.get('list')
-                        if not isinstance(cmd_list, list): continue
-                        for cmd_idx, cmd in enumerate(cmd_list):
-                            if isinstance(cmd, dict):
-                                yield (event.get('id'), page_idx, cmd_idx, cmd)
-            elif isinstance(events, dict):
-                for event_id, event in events.items():
-                    if not event or not isinstance(event, dict): continue
-                    pages = event.get('pages')
-                    if not isinstance(pages, list): continue
-                    for page_idx, page in enumerate(pages):
-                        if not isinstance(page, dict): continue
-                        cmd_list = page.get('list')
-                        if not isinstance(cmd_list, list): continue
-                        for cmd_idx, cmd in enumerate(cmd_list):
-                            if isinstance(cmd, dict):
-                                yield (event.get('id', event_id), page_idx, cmd_idx, cmd)
-        elif file_type == 'CommonEvents':
-            if not isinstance(data, list):
-                return
-            for event in data:
-                if not event or not isinstance(event, dict): continue
-                cmd_list = event.get('list')
-                if not isinstance(cmd_list, list): continue
-                for cmd_idx, cmd in enumerate(cmd_list):
-                    if isinstance(cmd, dict):
-                        yield (event.get('id'), None, cmd_idx, cmd)
-        elif file_type == 'Troops':
-            if not isinstance(data, list):
-                return
-            for troop in data:
-                if not troop or not isinstance(troop, dict): continue
-                pages = troop.get('pages')
-                if not isinstance(pages, list): continue
-                for page_idx, page in enumerate(pages):
-                    if not isinstance(page, dict): continue
-                    cmd_list = page.get('list')
-                    if not isinstance(cmd_list, list): continue
-                    for cmd_idx, cmd in enumerate(cmd_list):
-                        if isinstance(cmd, dict):
-                            yield (troop.get('id'), page_idx, cmd_idx, cmd)
+        from src.extractor.EventCommandStrategy import walk_event_commands
+        return walk_event_commands(data, file_type)
 
     def extract_text_map(self, data):
-        results = []
-        events_map = {}
-        for event_id, page_idx, cmd_idx, cmd in self._yield_commands(data, 'Map'):
-            text_obj = self.extract_text_codes_item(cmd, cmd_idx)
-            if text_obj['text']:
-                if event_id not in events_map:
-                    events_map[event_id] = {"id": event_id, "pages": []}
-                    results.append(events_map[event_id])
-                
-                # Find or create page
-                page_obj = next((p for p in events_map[event_id]['pages'] if p['id'] == page_idx), None)
-                if not page_obj:
-                    page_obj = {"id": page_idx, "list": []}
-                    events_map[event_id]['pages'].append(page_obj)
-                
-                page_obj['list'].append(text_obj)
-        return results
+        from src.extractor.EventCommandStrategy import extract_commands_tree
+        return extract_commands_tree(data, 'Map', self.extract_text_codes_item)
 
     def insert_text_map(self, data, translated_data):
-        if not isinstance(data, dict):
-            return
-        events = data.get('events')
-        if not isinstance(events, (list, dict)):
-            return
-        for event_data in translated_data:
-            event_id = event_data['id']
-            for page_data in event_data['pages']:
-                page_id = page_data['id']
-                for list_item in page_data['list']:
-                    cmd_id = list_item['id']
-                    try:
-                        cmd = events[event_id]['pages'][page_id]['list'][cmd_id]
-                        self.insert_text_map_item(cmd, list_item)
-                    except (IndexError, KeyError, TypeError):
-                        continue
+        from src.extractor.EventCommandStrategy import insert_commands_tree
+        insert_commands_tree(data, translated_data, 'Map', self.insert_text_map_item)
 
     def extract_text_common_events(self, data):
-        results = []
-        events_map = {}
-        for event_id, _, cmd_idx, cmd in self._yield_commands(data, 'CommonEvents'):
-            text_obj = self.extract_text_codes_item(cmd, cmd_idx)
-            if text_obj['text']:
-                if event_id not in events_map:
-                    events_map[event_id] = {"id": event_id, "list": []}
-                    results.append(events_map[event_id])
-                events_map[event_id]['list'].append(text_obj)
-        return results
+        from src.extractor.EventCommandStrategy import extract_commands_tree
+        return extract_commands_tree(data, 'CommonEvents', self.extract_text_codes_item)
 
     def insert_text_common_events(self, data, translated_data):
-        if not isinstance(data, (list, dict)):
-            return
-        for event_data in translated_data:
-            event_id = event_data['id']
-            for list_item in event_data['list']:
-                cmd_id = list_item['id']
-                try:
-                    cmd = data[event_id]['list'][cmd_id]
-                    self.insert_text_map_item(cmd, list_item)
-                except (IndexError, KeyError, TypeError):
-                    continue
+        from src.extractor.EventCommandStrategy import insert_commands_tree
+        insert_commands_tree(data, translated_data, 'CommonEvents', self.insert_text_map_item)
 
     def extract_text_troops(self, data):
-        results = []
-        troops_map = {}
-        for troop_id, page_idx, cmd_idx, cmd in self._yield_commands(data, 'Troops'):
-            text_obj = self.extract_text_codes_item(cmd, cmd_idx)
-            if text_obj['text']:
-                if troop_id not in troops_map:
-                    troops_map[troop_id] = {"id": troop_id, "pages": []}
-                    results.append(troops_map[troop_id])
-                
-                page_obj = next((p for p in troops_map[troop_id]['pages'] if p['id'] == page_idx), None)
-                if not page_obj:
-                    page_obj = {"id": page_idx, "list": []}
-                    troops_map[troop_id]['pages'].append(page_obj)
-                
-                page_obj['list'].append(text_obj)
-        return results
+        from src.extractor.EventCommandStrategy import extract_commands_tree
+        return extract_commands_tree(data, 'Troops', self.extract_text_codes_item)
 
     def insert_text_troops(self, data, translated_data):
-        if not isinstance(data, (list, dict)):
-            return
-        for troop_data in translated_data:
-            troop_id = troop_data['id']
-            for page_data in troop_data['pages']:
-                page_id = page_data['id']
-                for list_item in page_data['list']:
-                    cmd_id = list_item['id']
-                    try:
-                        cmd = data[troop_id]['pages'][page_id]['list'][cmd_id]
-                        self.insert_text_map_item(cmd, list_item)
-                    except (IndexError, KeyError, TypeError):
-                        continue
+        from src.extractor.EventCommandStrategy import insert_commands_tree
+        insert_commands_tree(data, translated_data, 'Troops', self.insert_text_map_item)
 
     _attributes_find = [r'name', r'note', r'profile', r'description', r'nickname', r'message\d{1}']
     _attributes_system_find = ['armorTypes', 'equipTypes', 'gameTitle', 'currencyUnit', 'skillTypes', 'terms', 'elements', 'weaponTypes']
@@ -402,12 +345,10 @@ class RPGMakerExtractor(BaseExtractor):
     def insert_text_object(self, data, translated_data):
         if not isinstance(data, (list, dict)):
             return
+        from src.extractor.EventCommandStrategy import _resolve_item_by_id
         for texts in translated_data:
             item_id = texts['id']
-            try:
-                target_item = data[item_id]
-            except (IndexError, KeyError, TypeError):
-                continue
+            target_item = _resolve_item_by_id(data, item_id)
             if not isinstance(target_item, dict):
                 continue
             if 'note' in texts and isinstance(texts['note'], dict):
@@ -420,12 +361,13 @@ class RPGMakerExtractor(BaseExtractor):
             target_item.update(texts)
 
     def extract_text_System(self, data):
+        import copy
         text = {}
         if not isinstance(data, dict):
             return text
         for key, value in data.items():
             if key in self._attributes_system_find:
-                text[key] = value
+                text[key] = copy.deepcopy(value)
         return text
 
     def insert_text_System(self, data, translated_data):
@@ -482,6 +424,381 @@ class RPGMakerExtractor(BaseExtractor):
                 item['insert'](new_json, new_data)
                 return new_json
         return new_json
+
+    @classmethod
+    def _infer_file_name(cls, data):
+        if hasattr(data, '_file_name') and getattr(data, '_file_name'):
+            return getattr(data, '_file_name')
+        if isinstance(data, dict):
+            if 'events' in data:
+                return 'Map001.json'
+            if any(k in data for k in ('gameTitle', 'terms', 'armorTypes', 'equipTypes')):
+                return 'System.json'
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    if 'pages' in item:
+                        return 'Troops.json'
+                    if 'list' in item:
+                        return 'CommonEvents.json'
+                    return 'Actors.json'
+        return 'Map001.json'
+
+    @staticmethod
+    def _kind_for_code(raw_code):
+        code = RPGEventCode.from_code(raw_code)
+        if code in (RPGEventCode.SHOW_CHOICES, RPGEventCode.CHOICE_BRANCH):
+            return 'choice'
+        if code in (
+            RPGEventCode.SCRIPT,
+            RPGEventCode.SCRIPT_MORE,
+            RPGEventCode.CONTROL_VARIABLES,
+            RPGEventCode.PLUGIN_COMMAND_MV,
+            RPGEventCode.PLUGIN_COMMAND_MZ,
+            RPGEventCode.SET_MOVEMENT_ROUTE,
+            RPGEventCode.ROUTE_STEP,
+        ):
+            return 'script'
+        return 'dialogue'
+
+    @_ClassOrInstanceMethod
+    def _walk_or_apply_segments(target, file_name, data, mode='extract', translations=None):
+        import copy
+        import os
+        from src.extractor.Segment import Segment
+        from src.extractor.EventCommandStrategy import _resolve_item_by_id
+
+        cls = target if isinstance(target, type) else target.__class__
+        inst = target._create_segment_instance() if isinstance(target, type) else target
+        base_name = os.path.basename(file_name) if file_name else cls._infer_file_name(data)
+        if not inst.is_translatable_file(base_name):
+            return [] if mode == 'extract' else data
+
+        segments = []
+        translations = translations or {}
+
+        def _lookup_cmd_in_owner_page(collection, owner_id, page_id, cmd_id):
+            raw_owner = _resolve_item_by_id(collection, owner_id)
+            if not isinstance(raw_owner, dict):
+                return {}
+            raw_page = _resolve_item_by_id(raw_owner.get('pages', []), page_id)
+            if not isinstance(raw_page, dict):
+                return {}
+            cmd_list = raw_page.get('list', [])
+            if isinstance(cmd_list, list) and isinstance(cmd_id, int) and 0 <= cmd_id < len(cmd_list):
+                return cmd_list[cmd_id]
+            return {}
+
+        def _lookup_cmd_in_owner(collection, owner_id, cmd_id):
+            raw_owner = _resolve_item_by_id(collection, owner_id)
+            if not isinstance(raw_owner, dict):
+                return {}
+            cmd_list = raw_owner.get('list', [])
+            if isinstance(cmd_list, list) and isinstance(cmd_id, int) and 0 <= cmd_id < len(cmd_list):
+                return cmd_list[cmd_id]
+            return {}
+
+        def _handle_cmd_List(cmd_items, prefix_base, cmd_lookup_fn):
+            modified_items = []
+            for list_item in cmd_items:
+                cmd_id = list_item['id']
+                val = list_item['text']
+                raw_cmd = cmd_lookup_fn(cmd_id)
+                raw_code = raw_cmd.get('code') if isinstance(raw_cmd, dict) else None
+                code_enum = RPGEventCode.from_code(raw_code)
+                strategy = inst._strategies.get(code_enum)
+                kind = getattr(strategy, 'kind', None) or cls._kind_for_code(raw_code)
+                cmd_prefix = f"{base_name}#{prefix_base}/cmd:{cmd_id}"
+                changed = False
+
+                if isinstance(val, str):
+                    seg_id = cmd_prefix
+                    if mode == 'extract':
+                        segments.append(Segment(
+                            id=seg_id,
+                            source=val,
+                            context={'file': base_name, 'code': raw_code, 'kind': kind},
+                        ))
+                    else:
+                        new_val = translations.get(seg_id, val)
+                        if new_val != val:
+                            changed = True
+                        list_item['text'] = new_val
+                elif isinstance(val, list):
+                    new_list = []
+                    for sub_idx, sub_val in enumerate(val):
+                        seg_id = f"{cmd_prefix}/{sub_idx}"
+                        if isinstance(sub_val, str):
+                            if mode == 'extract':
+                                segments.append(Segment(
+                                    id=seg_id,
+                                    source=sub_val,
+                                    context={'file': base_name, 'code': raw_code, 'index': sub_idx, 'kind': kind},
+                                ))
+                            else:
+                                new_sub = translations.get(seg_id, sub_val)
+                                if new_sub != sub_val:
+                                    changed = True
+                                new_list.append(new_sub)
+                        else:
+                            new_list.append(sub_val)
+                    if mode == 'apply':
+                        list_item['text'] = new_list
+                elif isinstance(val, dict):
+                    new_dict = {}
+                    for k, sub_val in val.items():
+                        seg_id = f"{cmd_prefix}/{k}"
+                        if isinstance(sub_val, str):
+                            if mode == 'extract':
+                                segments.append(Segment(
+                                    id=seg_id,
+                                    source=sub_val,
+                                    context={'file': base_name, 'code': raw_code, 'key': k, 'kind': kind},
+                                ))
+                            else:
+                                new_sub = translations.get(seg_id, sub_val)
+                                if new_sub != sub_val:
+                                    changed = True
+                                new_dict[k] = new_sub
+                        else:
+                            new_dict[k] = sub_val
+                    if mode == 'apply':
+                        list_item['text'] = new_dict
+
+                if mode == 'apply' and changed:
+                    modified_items.append(list_item)
+            return modified_items
+
+        if re.search(r'Map\d{3,}', base_name):
+            extracted = inst.extract_text_map(copy.deepcopy(data))
+            events_col = data.get('events') if isinstance(data, dict) else []
+            if mode == 'extract':
+                for ev in extracted:
+                    ev_id = ev['id']
+                    for page in ev['pages']:
+                        p_id = page['id']
+                        _handle_cmd_List(
+                            page['list'],
+                            f"event:{ev_id}/page:{p_id}",
+                            lambda cid, eid=ev_id, pid=p_id: _lookup_cmd_in_owner_page(events_col, eid, pid, cid),
+                        )
+                return segments
+            else:
+                filtered_events = []
+                for ev in extracted:
+                    ev_id = ev['id']
+                    filtered_pages = []
+                    for page in ev['pages']:
+                        p_id = page['id']
+                        mod_list = _handle_cmd_List(
+                            page['list'],
+                            f"event:{ev_id}/page:{p_id}",
+                            lambda cid, eid=ev_id, pid=p_id: _lookup_cmd_in_owner_page(events_col, eid, pid, cid),
+                        )
+                        if mod_list:
+                            filtered_pages.append({'id': p_id, 'list': mod_list})
+                    if filtered_pages:
+                        filtered_events.append({'id': ev_id, 'pages': filtered_pages})
+                if filtered_events:
+                    inst.insert_text_map(data, filtered_events)
+                return data
+
+        if re.search(r'CommonEvents', base_name):
+            extracted = inst.extract_text_common_events(copy.deepcopy(data))
+            if mode == 'extract':
+                for ev in extracted:
+                    ev_id = ev['id']
+                    _handle_cmd_List(
+                        ev['list'],
+                        f"common_event:{ev_id}",
+                        lambda cid, eid=ev_id: _lookup_cmd_in_owner(data, eid, cid),
+                    )
+                return segments
+            else:
+                filtered_events = []
+                for ev in extracted:
+                    ev_id = ev['id']
+                    mod_list = _handle_cmd_List(
+                        ev['list'],
+                        f"common_event:{ev_id}",
+                        lambda cid, eid=ev_id: _lookup_cmd_in_owner(data, eid, cid),
+                    )
+                    if mod_list:
+                        filtered_events.append({'id': ev_id, 'list': mod_list})
+                if filtered_events:
+                    inst.insert_text_common_events(data, filtered_events)
+                return data
+
+        if re.search(r'Troops', base_name):
+            extracted = inst.extract_text_troops(copy.deepcopy(data))
+            if mode == 'extract':
+                for tr in extracted:
+                    tr_id = tr['id']
+                    for page in tr['pages']:
+                        p_id = page['id']
+                        _handle_cmd_List(
+                            page['list'],
+                            f"troop:{tr_id}/page:{p_id}",
+                            lambda cid, tid=tr_id, pid=p_id: _lookup_cmd_in_owner_page(data, tid, pid, cid),
+                        )
+                return segments
+            else:
+                filtered_troops = []
+                for tr in extracted:
+                    tr_id = tr['id']
+                    filtered_pages = []
+                    for page in tr['pages']:
+                        p_id = page['id']
+                        mod_list = _handle_cmd_List(
+                            page['list'],
+                            f"troop:{tr_id}/page:{p_id}",
+                            lambda cid, tid=tr_id, pid=p_id: _lookup_cmd_in_owner_page(data, tid, pid, cid),
+                        )
+                        if mod_list:
+                            filtered_pages.append({'id': p_id, 'list': mod_list})
+                    if filtered_pages:
+                        filtered_troops.append({'id': tr_id, 'pages': filtered_pages})
+                if filtered_troops:
+                    inst.insert_text_troops(data, filtered_troops)
+                return data
+
+        if re.search(r'System', base_name):
+            extracted = inst.extract_text_System(data)
+            if mode == 'extract':
+                for key, value in extracted.items():
+                    if isinstance(value, str) and value and not RPGTextFilters.is_technical_or_code(value):
+                        segments.append(Segment(
+                            id=f"{base_name}#system/{key}",
+                            source=value,
+                            context={'file': base_name, 'field': key, 'kind': 'menu'},
+                        ))
+                    elif isinstance(value, list):
+                        for i, item in enumerate(value):
+                            if isinstance(item, str) and item and not RPGTextFilters.is_technical_or_code(item):
+                                segments.append(Segment(
+                                    id=f"{base_name}#system/{key}/{i}",
+                                    source=item,
+                                    context={'file': base_name, 'field': key, 'index': i, 'kind': 'menu'},
+                                ))
+                    elif isinstance(value, dict):
+                        for sub_k, sub_v in value.items():
+                            if isinstance(sub_v, list):
+                                for i, item in enumerate(sub_v):
+                                    if isinstance(item, str) and item and not RPGTextFilters.is_technical_or_code(item):
+                                        segments.append(Segment(
+                                            id=f"{base_name}#system/{key}/{sub_k}/{i}",
+                                            source=item,
+                                            context={'file': base_name, 'field': f"{key}.{sub_k}", 'index': i, 'kind': 'menu'},
+                                        ))
+                            elif isinstance(sub_v, dict):
+                                for msg_k, msg_v in sub_v.items():
+                                    if isinstance(msg_v, str) and msg_v and not RPGTextFilters.is_technical_or_code(msg_v):
+                                        segments.append(Segment(
+                                            id=f"{base_name}#system/{key}/{sub_k}/{msg_k}",
+                                            source=msg_v,
+                                            context={'file': base_name, 'field': f"{key}.{sub_k}.{msg_k}", 'kind': 'menu'},
+                                        ))
+                            elif isinstance(sub_v, str) and sub_v and not RPGTextFilters.is_technical_or_code(sub_v):
+                                segments.append(Segment(
+                                    id=f"{base_name}#system/{key}/{sub_k}",
+                                    source=sub_v,
+                                    context={'file': base_name, 'field': f"{key}.{sub_k}", 'kind': 'menu'},
+                                ))
+                return segments
+            else:
+                changed_any = False
+                for key, value in extracted.items():
+                    if isinstance(value, str) and value and not RPGTextFilters.is_technical_or_code(value):
+                        seg_id = f"{base_name}#system/{key}"
+                        new_v = translations.get(seg_id, value)
+                        if new_v != value:
+                            extracted[key] = new_v
+                            changed_any = True
+                    elif isinstance(value, list):
+                        for i, item in enumerate(value):
+                            if isinstance(item, str) and item and not RPGTextFilters.is_technical_or_code(item):
+                                seg_id = f"{base_name}#system/{key}/{i}"
+                                new_v = translations.get(seg_id, item)
+                                if new_v != item:
+                                    value[i] = new_v
+                                    changed_any = True
+                    elif isinstance(value, dict):
+                        for sub_k, sub_v in value.items():
+                            if isinstance(sub_v, list):
+                                for i, item in enumerate(sub_v):
+                                    if isinstance(item, str) and item and not RPGTextFilters.is_technical_or_code(item):
+                                        seg_id = f"{base_name}#system/{key}/{sub_k}/{i}"
+                                        new_v = translations.get(seg_id, item)
+                                        if new_v != item:
+                                            sub_v[i] = new_v
+                                            changed_any = True
+                            elif isinstance(sub_v, dict):
+                                for msg_k, msg_v in sub_v.items():
+                                    if isinstance(msg_v, str) and msg_v and not RPGTextFilters.is_technical_or_code(msg_v):
+                                        seg_id = f"{base_name}#system/{key}/{sub_k}/{msg_k}"
+                                        new_v = translations.get(seg_id, msg_v)
+                                        if new_v != msg_v:
+                                            sub_v[msg_k] = new_v
+                                            changed_any = True
+                            elif isinstance(sub_v, str) and sub_v and not RPGTextFilters.is_technical_or_code(sub_v):
+                                seg_id = f"{base_name}#system/{key}/{sub_k}"
+                                new_v = translations.get(seg_id, sub_v)
+                                if new_v != sub_v:
+                                     value[sub_k] = new_v
+                                     changed_any = True
+                if changed_any:
+                    inst.insert_text_System(data, extracted)
+                return data
+
+        # Database object files (Actors, Items, Weapons, Armors, Skills, States, Enemies, Classes, MapInfos)
+        extracted = inst.extract_text_object(copy.deepcopy(data))
+        if mode == 'extract':
+            for obj in extracted:
+                item_id = obj.get('id')
+                for k, v in obj.items():
+                    if k == 'id':
+                        continue
+                    if k == 'note' and isinstance(v, dict):
+                        for tag, content in v.items():
+                            segments.append(Segment(
+                                id=f"{base_name}#item:{item_id}/note:{tag}",
+                                source=content,
+                                context={'file': base_name, 'item_id': item_id, 'note_tag': tag, 'kind': 'db'},
+                            ))
+                    elif isinstance(v, str):
+                        segments.append(Segment(
+                            id=f"{base_name}#item:{item_id}/field:{k}",
+                            source=v,
+                            context={'file': base_name, 'item_id': item_id, 'field': k, 'kind': 'db'},
+                        ))
+            return segments
+        else:
+            modified_objs = []
+            for obj in extracted:
+                item_id = obj.get('id')
+                mod_obj = {'id': item_id}
+                for k, v in obj.items():
+                    if k == 'id':
+                        continue
+                    if k == 'note' and isinstance(v, dict):
+                        mod_notes = {}
+                        for tag, content in v.items():
+                            seg_id = f"{base_name}#item:{item_id}/note:{tag}"
+                            new_c = translations.get(seg_id, content)
+                            if new_c != content:
+                                mod_notes[tag] = new_c
+                        if mod_notes:
+                            mod_obj['note'] = mod_notes
+                    elif isinstance(v, str):
+                        seg_id = f"{base_name}#item:{item_id}/field:{k}"
+                        new_v = translations.get(seg_id, v)
+                        if new_v != v:
+                            mod_obj[k] = new_v
+                if len(mod_obj) > 1:
+                    modified_objs.append(mod_obj)
+            if modified_objs:
+                inst.insert_text_object(data, modified_objs)
+            return data
 
     @staticmethod
     def fix_text_translate(texts, original_texts=None):

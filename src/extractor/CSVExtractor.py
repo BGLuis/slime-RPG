@@ -1,9 +1,11 @@
 import csv
 import codecs
+import copy
 import os
 import re
 import logging
-from src.extractor.BaseExtractor import BaseExtractor
+from src.extractor.BaseExtractor import BaseExtractor, _ClassOrInstanceMethod
+from src.extractor.Segment import Segment, copy_preserving_metadata
 from src.factory import register_extractor
 from src.utils.LanguageCodes import (
     identify_language_from_filename,
@@ -12,6 +14,11 @@ from src.utils.LanguageCodes import (
     get_english_name,
     is_language_column
 )
+
+
+class CSVDataList(list):
+    pass
+
 
 def detect_delimiter_from_file(file_path: str) -> str:
     """Detecta automaticamente o delimitador do arquivo CSV (, ; \t |)."""
@@ -41,10 +48,60 @@ def detect_delimiter_from_file(file_path: str) -> str:
         pass
     return ','
 
-@register_extractor("csv", aliases=["CSV"])
+@register_extractor("csv", display_name="CSV", aliases=["CSV"])
 class CSVExtractor(BaseExtractor):
     name = "csv"
     files_types = ['csv']
+    LOC_FOLDER_NAMES = ('languages', 'language', 'lang', 'locales', 'localization', 'translations', 'i18n')
+
+    @classmethod
+    def detect(cls, path: str):
+        from src.services.GameDetector import DetectionResult
+
+        for loc_name in cls.LOC_FOLDER_NAMES:
+            loc_candidate = os.path.join(path, loc_name)
+            if os.path.isdir(loc_candidate):
+                try:
+                    loc_entries = os.listdir(loc_candidate)
+                except Exception:
+                    loc_entries = []
+                csv_files = [f for f in loc_entries if f.lower().endswith('.csv')]
+                lang_csv_files = [f for f in csv_files if identify_language_from_filename(f) is not None]
+                if len(lang_csv_files) > 0 or len(csv_files) > 0:
+                    return DetectionResult(
+                        detected_path=loc_candidate,
+                        score=100,
+                        extractor=cls.display_name,
+                        description=f'Sistema de Localização por CSV (subpasta {loc_name})',
+                        file_count=len(csv_files),
+                    )
+
+        try:
+            entries = os.listdir(path)
+        except Exception:
+            return None
+
+        csv_files = [f for f in entries if f.lower().endswith('.csv')]
+        if not csv_files:
+            return None
+
+        lang_csv_files = [f for f in csv_files if identify_language_from_filename(f) is not None]
+        if len(lang_csv_files) > 0:
+            return DetectionResult(
+                detected_path=path,
+                score=65,
+                extractor=cls.display_name,
+                description='Arquivos CSV de Idioma (pasta atual)',
+                file_count=len(csv_files),
+            )
+
+        return DetectionResult(
+            detected_path=path,
+            score=20,
+            extractor=cls.display_name,
+            description='Arquivos CSV',
+            file_count=len(csv_files),
+        )
 
     def __init__(self, translate, workspace=None):
         super().__init__(translate, workspace=workspace)
@@ -163,6 +220,7 @@ class CSVExtractor(BaseExtractor):
 
         has_bom = False
         lineterminator = '\n'
+        raw_bytes = None
         try:
             with open(file_path, 'rb') as f_bin:
                 raw_bytes = f_bin.read()
@@ -188,7 +246,16 @@ class CSVExtractor(BaseExtractor):
         try:
             with open(file_path, 'r', encoding='utf-8-sig', newline='', errors='replace') as f:
                 reader = csv.DictReader(f, delimiter=delimiter)
-                data = list(reader)
+                rows = list(reader)
+                data = CSVDataList(rows)
+                data._file_name = base_name
+                data._csv_meta = {
+                    'delimiter': delimiter,
+                    'has_bom': has_bom,
+                    'lineterminator': lineterminator,
+                    'raw_bytes': raw_bytes,
+                    'snapshot': copy.deepcopy(rows),
+                }
                 return [base_name, data]
         except Exception as e:
             logging.error(f"Erro ao ler CSV {file_path}: {e}")
@@ -318,7 +385,11 @@ class CSVExtractor(BaseExtractor):
             target_col = mode_info.get('target_col')
             text_cols = mode_info.get('text_cols', self.columns_to_translate)
 
-        updated_data = []
+        updated_data = CSVDataList()
+        if hasattr(data, '_csv_meta'):
+            updated_data._csv_meta = getattr(data, '_csv_meta')
+        if hasattr(data, '_file_name'):
+            updated_data._file_name = getattr(data, '_file_name')
 
         if mode == 'columns':
             for row_idx, row in enumerate(data):
@@ -341,9 +412,62 @@ class CSVExtractor(BaseExtractor):
 
         return updated_data
 
+    @classmethod
+    def _infer_file_name(cls, data):
+        if hasattr(data, '_file_name') and getattr(data, '_file_name'):
+            return getattr(data, '_file_name')
+        return 'file.csv'
+
+    @_ClassOrInstanceMethod
+    def _walk_or_apply_segments(target, file_name, data, mode='extract', translations=None):
+        cls = target if isinstance(target, type) else target.__class__
+        inst = target._create_segment_instance() if isinstance(target, type) else target
+        base_name = os.path.basename(file_name) if file_name else cls._infer_file_name(data)
+        extracted = inst.extract_text(base_name, data) or {}
+        key_re = re.compile(r'^row_(\d+)_col_(.+)$')
+
+        if mode == 'extract':
+            segments = []
+            for key, val in extracted.items():
+                m = key_re.match(key)
+                if m:
+                    r_idx = int(m.group(1))
+                    col = m.group(2)
+                    seg_id = f"{base_name}#row:{r_idx}/col:{col}"
+                    ctx = {'file': base_name, 'row': r_idx, 'column': col, 'kind': 'dialogue'}
+                else:
+                    seg_id = f"{base_name}#{key}"
+                    ctx = {'file': base_name, 'key': key, 'kind': 'dialogue'}
+                segments.append(Segment(id=seg_id, source=val, context=ctx))
+            return segments
+
+        translations = translations or {}
+        new_data = {}
+        changed = False
+        for key, val in extracted.items():
+            m = key_re.match(key)
+            if m:
+                r_idx = int(m.group(1))
+                col = m.group(2)
+                seg_id = f"{base_name}#row:{r_idx}/col:{col}"
+            else:
+                seg_id = f"{base_name}#{key}"
+            new_val = translations.get(seg_id, val)
+            if new_val != val:
+                changed = True
+                new_data[key] = new_val
+            else:
+                new_data[key] = val
+
+        if not changed:
+            return copy_preserving_metadata(data)
+        return inst.update_json(base_name, data, new_data)
+
     def import_file(self_or_cls, file_name, data, folder):
         if not data:
             return
+
+        csv_meta = getattr(data, '_csv_meta', None) or {}
 
         if isinstance(self_or_cls, CSVExtractor):
             target_name = self_or_cls.get_target_filename(file_name)
@@ -353,6 +477,7 @@ class CSVExtractor(BaseExtractor):
                 self_or_cls._detected_delimiters.get(rel_key) or
                 self_or_cls._detected_delimiters.get(file_name) or
                 self_or_cls._detected_delimiters.get(base_key) or
+                csv_meta.get('delimiter') or
                 self_or_cls.csv_delimiter
             )
             has_bom = (
@@ -361,26 +486,41 @@ class CSVExtractor(BaseExtractor):
                 else (
                     self_or_cls._file_boms.get(file_name)
                     if file_name in self_or_cls._file_boms
-                    else self_or_cls._file_boms.get(base_key, False)
+                    else (
+                        self_or_cls._file_boms.get(base_key)
+                        if base_key in self_or_cls._file_boms
+                        else csv_meta.get('has_bom', False)
+                    )
                 )
             )
             lineterminator = (
                 self_or_cls._file_lineterminators.get(rel_key) or
                 self_or_cls._file_lineterminators.get(file_name) or
                 self_or_cls._file_lineterminators.get(base_key) or
+                csv_meta.get('lineterminator') or
                 '\n'
             )
         else:
             target_name = file_name
             delims = getattr(self_or_cls, '_detected_delimiters', {})
-            delimiter = delims.get(file_name, ',') if isinstance(delims, dict) else ','
+            delimiter = (delims.get(file_name) if isinstance(delims, dict) else None) or csv_meta.get('delimiter', ',')
             boms = getattr(self_or_cls, '_file_boms', {})
-            has_bom = boms.get(file_name, False) if isinstance(boms, dict) else False
+            has_bom = (boms.get(file_name) if isinstance(boms, dict) and file_name in boms else None)
+            if has_bom is None:
+                has_bom = csv_meta.get('has_bom', False)
             lineterms = getattr(self_or_cls, '_file_lineterminators', {})
-            lineterminator = lineterms.get(file_name, '\n') if isinstance(lineterms, dict) else '\n'
+            lineterminator = (lineterms.get(file_name) if isinstance(lineterms, dict) else None) or csv_meta.get('lineterminator', '\n')
 
         file_path = os.path.join(folder, target_name)
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+        raw_bytes = csv_meta.get('raw_bytes')
+        snapshot = csv_meta.get('snapshot')
+        if raw_bytes is not None and snapshot is not None and target_name == file_name and list(data) == snapshot:
+            with open(file_path, 'wb') as f_bin:
+                f_bin.write(raw_bytes)
+            logging.info(f"✓ Salvo CSV: {target_name} com delimitador '{delimiter}' (BOM={has_bom})")
+            return
 
         try:
             if isinstance(data, list) and len(data) > 0:

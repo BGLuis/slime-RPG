@@ -349,6 +349,19 @@ def loads(byte_text: bytes, registry=None):
     return load(io.BytesIO(byte_text), registry=registry)
 
 
+# No rubymarshal==1.2.10, RubyString implementa __getattr__ delegando para self.text.
+# Durante copy.deepcopy(RubyString(...)), a instancia recem-alocada tenta acessar atributos
+# antes de 'text' existir, provocando RecursionError no __getattr__.
+# Este método define __deepcopy__ explicitamente para evitar a recursao infinita.
+def _ruby_string_deepcopy(self, memo):
+    import copy
+    copied = RubyString(self.text, copy.deepcopy(self.attributes, memo))
+    memo[id(self)] = copied
+    return copied
+
+
+RubyString.__deepcopy__ = _ruby_string_deepcopy
+
 # Monkeypatch transparente no rubymarshal para assegurar compatibilidade global
 r_writer.Writer = RubyWriter
 r_writer.write = write

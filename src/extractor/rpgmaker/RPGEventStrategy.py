@@ -1,13 +1,9 @@
 import re
+from src.extractor.EventCommandStrategy import EventCommandStrategy
 from .RPGEventCodes import RPGEventCode
 from .RPGTextFilters import RPGTextFilters
 
-class EventStrategy:
-    def extract(self, item, context=None):
-        return None
-
-    def insert(self, item, translated_text, context=None):
-        pass
+EventStrategy = EventCommandStrategy
 
 class ShowTextStrategy(EventStrategy):
     _text_keys = ["icon:", "secret:", "title:", "name:", "text:", "message:", "text1:", "text2:", "secretText:", "id:"]
@@ -55,10 +51,16 @@ class ShowTextStrategy(EventStrategy):
             
             match = self._title_pattern.search(iten_text)
             if match:
-                item['parameters'][0] = iten_text.replace(iten_text[match.end():].strip(), str(new_text).strip())
+                orig_body = iten_text[match.end():].strip()
+                if str(new_text).strip() == orig_body:
+                    return
+                item['parameters'][0] = iten_text.replace(orig_body, str(new_text).strip())
             elif any(iten_text.startswith(key) for key in self._text_keys):
                 iten_text_parts = iten_text.split(":", 1)
                 if len(iten_text_parts) > 1:
+                    orig_rem = iten_text_parts[1].strip()
+                    if str(new_text) == orig_rem:
+                        return
                     item['parameters'][0] = iten_text_parts[0] + ": " + str(new_text)
             else:
                 item['parameters'][0] = str(new_text)
@@ -74,6 +76,7 @@ class ShowTextStrategy(EventStrategy):
                     break
 
 class ChoiceStrategy(EventStrategy):
+    kind = "choice"
     _choice_condition_pattern = re.compile(r'^(?:if|show_if|hide_if|en|pt|ja|es|fr)\s*\(.*\)\s*', re.IGNORECASE)
 
     def extract(self, item, context=None):
@@ -105,6 +108,8 @@ class ChoiceStrategy(EventStrategy):
             choice_text = orig_clean[match.end():] if match else orig_clean
             if RPGTextFilters.is_technical_or_code(choice_text):
                 final_list.append(orig)
+            elif str(trans).strip() == choice_text:
+                final_list.append(orig)
             elif match:
                 prefix = match.group(0).rstrip()
                 final_list.append(prefix + str(trans).strip())
@@ -113,6 +118,8 @@ class ChoiceStrategy(EventStrategy):
         item['parameters'][0] = final_list
 
 class ChoiceBranchStrategy(EventStrategy):
+    kind = "choice"
+
     def extract(self, item, context=None):
         params = item.get('parameters', [])
         if len(params) > 1:
@@ -129,6 +136,7 @@ class ChoiceBranchStrategy(EventStrategy):
                 item['parameters'][1] = str(text)
 
 class ScriptStrategy(EventStrategy):
+    kind = "script"
     _quote_pattern = re.compile(r"'.*?'|\".*?\"")
     _subject_pattern = re.compile(r'\d_t=\d{2,}_subject=')
     _om_pattern = re.compile(
@@ -178,6 +186,8 @@ class ScriptStrategy(EventStrategy):
     def _sanitize_script_param(cls, text, quote_char, original_text=None):
         if not isinstance(text, str):
             return text
+        if isinstance(original_text, str) and text == original_text:
+            return original_text
         import json
         s = text.strip()
 
@@ -286,6 +296,7 @@ class MovementRouteStrategy(EventStrategy):
     parameters = [targetId, routeObject] onde routeObject['list'] contém passos de rota.
     Passo com código 45 é script (ex: TickerManager.show).
     """
+    kind = "script"
     def extract(self, item, context=None):
         params = item.get('parameters', [])
         if len(params) < 2 or not isinstance(params[1], dict):
@@ -320,6 +331,8 @@ class RouteStepStrategy(EventStrategy):
     """Estratégia para comando 505 (ROUTE_STEP).
     parameters = [stepObject] onde stepObject['code'] == 45 é script.
     """
+    kind = "script"
+
     def extract(self, item, context=None):
         params = item.get('parameters', [])
         if not params or not isinstance(params[0], dict):
@@ -347,6 +360,7 @@ class RouteStepStrategy(EventStrategy):
                 step['parameters'][0] = ScriptStrategy.insert_script_string(step_params[0], text_iter)
 
 class PluginStrategyMZ(EventStrategy):
+    kind = "script"
     TECHNICAL_KEYS = {
         'switchTypeEX', 'switchIdEX', 'targetIdEX', 'variableIdEX',
         'loop', 'smooth', 'volume', 'reload', 'autoplay', 'finishSwitch',
@@ -393,6 +407,7 @@ class PluginStrategyMZ(EventStrategy):
             params['text'] = text
 
 class PluginStrategyMV(EventStrategy):
+    kind = "script"
     _prefixes = ["D_TEXT", "addLog", r"InformationWindow \d+ Text:", "mes ="]
     _compiled_prefixes = [re.compile(prefix) for prefix in _prefixes]
 
@@ -432,6 +447,7 @@ class ControlVariablesStrategy(EventStrategy):
     3. Na inserção, aspas tipográficas (smart quotes “ ” ‘ ’) são estritamente convertidas para aspas ASCII
        para nunca quebrar o eval() do JavaScript com 'SyntaxError: Invalid or unexpected token'.
     """
+    kind = "script"
     _DIFFICULTY_ENUM_PATTERN = re.compile(
         r'^[\'"]?\s*(?:easy|normal|hard|very\s*hard|expert|nightmare|hell|beginner|insane|lunatic)\s*[\'"]?;?$',
         re.IGNORECASE

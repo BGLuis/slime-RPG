@@ -1,8 +1,11 @@
+import copy
+import logging
 import os
 import re
 import src.utils.RubyMarshal as r_marshal
 import rubymarshal.reader as r_reader
 import rubymarshal.writer as r_writer
+from src.extractor.FormatAdapter import register_format_adapter
 from src.utils.RubyMarshal import RubyObject, RubyString
 
 class RVDataList(list):
@@ -10,18 +13,27 @@ class RVDataList(list):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._raw_rvdata = None
+        self._raw_rvdata_bytes = None
+        self._rvdata_snapshot = None
+        self._file_name = None
 
 class RVDataDict(dict):
     """Subclasse de dict para anexar os dados binários originais do Ruby"""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._raw_rvdata = None
+        self._raw_rvdata_bytes = None
+        self._rvdata_snapshot = None
+        self._file_name = None
 
+
+@register_format_adapter
 class RVDataAdapter:
     """
     Adaptador bidirecional entre arquivos .rvdata2 (Ruby Marshal RGSS3)
     e dicionários/listas normalizados compatíveis com a arquitetura RPG Maker (MV/MZ).
     """
+    extensions = ('.rvdata2',)
 
     @staticmethod
     def _str_val(val):
@@ -35,35 +47,61 @@ class RVDataAdapter:
     def load_file(file_path):
         """Lê um arquivo .rvdata2 e retorna a estrutura normalizada com _raw_rvdata anexado."""
         with open(file_path, 'rb') as f:
-            raw_data = r_marshal.load(f)
+            raw_bytes = f.read()
+        raw_data = r_marshal.loads(raw_bytes)
 
         file_name = os.path.basename(file_path)
         normalized = RVDataAdapter.to_normalized(file_name, raw_data)
         normalized._raw_rvdata = raw_data
+        normalized._raw_rvdata_bytes = raw_bytes
+        normalized._rvdata_snapshot = copy.deepcopy(
+            dict(normalized) if isinstance(normalized, dict) else list(normalized)
+        )
+        normalized._file_name = file_name
         return normalized
 
     @staticmethod
-    def save_file(file_path, data, original_raw=None):
+    def save_file(file_path, data, original_raw=None, **ctx):
         """
         Re-injeta os dados traduzidos na árvore de objetos Ruby original
         e serializa de volta para .rvdata2.
         """
+        file_name = ctx.get('file_name') or os.path.basename(file_path)
         raw_to_save = original_raw
         if raw_to_save is None and hasattr(data, '_raw_rvdata') and data._raw_rvdata is not None:
             raw_to_save = data._raw_rvdata
 
         if raw_to_save is None:
+            for candidate_folder in (ctx.get('candidate_folders') or []):
+                if not candidate_folder:
+                    continue
+                candidate = os.path.join(candidate_folder, file_name)
+                if os.path.exists(candidate):
+                    with open(candidate, 'rb') as f:
+                        raw_to_save = r_marshal.load(f)
+                    break
+
+        if raw_to_save is None:
             raise ValueError(f'Não foi possível encontrar os dados Ruby originais para salvar {file_path}')
 
-        file_name = os.path.basename(file_path)
-        RVDataAdapter.apply_normalized(file_name, raw_to_save, data)
+        base_name = os.path.basename(file_path)
+        RVDataAdapter.apply_normalized(base_name, raw_to_save, data)
 
         dir_name = os.path.dirname(file_path)
         if dir_name and not os.path.exists(dir_name):
             os.makedirs(dir_name, exist_ok=True)
 
+        raw_bytes = getattr(data, '_raw_rvdata_bytes', None)
+        snapshot = getattr(data, '_rvdata_snapshot', None)
+        if raw_bytes is not None and snapshot is not None and data == snapshot:
+            with open(file_path, 'wb') as f:
+                f.write(raw_bytes)
+            logging.info(f"✓ Validated and saved RVData2: {file_name}")
+            return
+
         with open(file_path, 'wb') as f:
             r_marshal.write(f, raw_to_save)
+        logging.info(f"✓ Validated and saved RVData2: {file_name}")
 
     # =========================================================================
     # Conversão RVData2 -> Estrutura Normalizada (Compatível com MV/MZ)

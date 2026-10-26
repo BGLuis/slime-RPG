@@ -1,13 +1,74 @@
 import copy
 import logging
-from src.extractor.BaseExtractor import BaseExtractor
+import os
+from src.extractor.BaseExtractor import BaseExtractor, _ClassOrInstanceMethod
+from src.extractor.Segment import Segment, copy_preserving_metadata
+from src.extractor.FormatAdapter import JsonFormatAdapter
 from src.extractor.rpgmaker.RPGTextFilters import RPGTextFilters
 from src.factory import register_extractor
 
-@register_extractor("json", aliases=["Json", "JSON"])
+@register_extractor("json", display_name="Json", aliases=["Json", "JSON"])
 class JsonExtractor(BaseExtractor):
     name = "json"
     files_types = ['json']
+    format_adapters = (JsonFormatAdapter,)
+    LOC_FOLDER_NAMES = ('languages', 'language', 'lang', 'locales', 'localization', 'translations', 'i18n')
+
+    @classmethod
+    def detect(cls, path: str):
+        import glob
+        from src.services.GameDetector import DetectionResult
+        from src.utils.LanguageCodes import normalize_language_code
+
+        for loc_name in cls.LOC_FOLDER_NAMES:
+            loc_candidate = os.path.join(path, loc_name)
+            if os.path.isdir(loc_candidate):
+                try:
+                    loc_entries = os.listdir(loc_candidate)
+                except Exception:
+                    loc_entries = []
+                subdirs = [d for d in loc_entries if os.path.isdir(os.path.join(loc_candidate, d))]
+                lang_subdirs = [d for d in subdirs if normalize_language_code(d) is not None]
+                has_lang_json = 'Languages.json' in loc_entries or 'languages.json' in loc_entries
+                if len(lang_subdirs) > 0 or has_lang_json:
+                    total_json_files = glob.glob(os.path.join(loc_candidate, '**', '*.json'), recursive=True)
+                    return DetectionResult(
+                        detected_path=loc_candidate,
+                        score=95,
+                        extractor=cls.display_name,
+                        description=f'Sistema de Localização Modular / CTE (subpasta {loc_name})',
+                        file_count=len(total_json_files),
+                    )
+
+        try:
+            entries = os.listdir(path)
+        except Exception:
+            return None
+
+        subdirs = [d for d in entries if os.path.isdir(os.path.join(path, d))]
+        lang_subdirs = [d for d in subdirs if normalize_language_code(d) is not None]
+        has_lang_json = 'Languages.json' in entries or 'languages.json' in entries
+        if len(lang_subdirs) > 0 or has_lang_json:
+            total_json_files = glob.glob(os.path.join(path, '**', '*.json'), recursive=True)
+            return DetectionResult(
+                detected_path=path,
+                score=60,
+                extractor=cls.display_name,
+                description='Sistema de Localização Modular / CTE (pasta atual)',
+                file_count=len(total_json_files),
+            )
+
+        json_files = [f for f in entries if f.lower().endswith('.json')]
+        if len(json_files) > 0:
+            return DetectionResult(
+                detected_path=path,
+                score=30,
+                extractor=cls.display_name,
+                description='Arquivos JSON',
+                file_count=len(json_files),
+            )
+
+        return None
 
     DEFAULT_TRANSLATABLE_KEYS = (
         'text', 'message', 'name', 'description', 'title',
@@ -192,8 +253,79 @@ class JsonExtractor(BaseExtractor):
             return None
 
         cleaned_data = BaseExtractor.remove_old_keys(new_data)
-        target = copy.deepcopy(data)
+        target = copy_preserving_metadata(data)
         return JsonExtractor._deep_merge(target, cleaned_data)
+
+    @_ClassOrInstanceMethod
+    def _walk_or_apply_segments(target, file_name, data, mode='extract', translations=None):
+        cls = target if isinstance(target, type) else target.__class__
+        inst = target._create_segment_instance() if isinstance(target, type) else target
+        base_name = os.path.basename(file_name) if file_name else cls._infer_file_name(data)
+        extracted = inst.extract_text(base_name, data)
+        if not extracted:
+            return [] if mode == 'extract' else data
+
+        segments = []
+        translations = translations or {}
+        changed_any = False
+
+        def _escape_ptr(token: str) -> str:
+            return str(token).replace('~', '~0').replace('/', '~1')
+
+        def _walk(node, ptr=""):
+            nonlocal changed_any
+            if isinstance(node, dict):
+                out = {}
+                for k, v in node.items():
+                    child_ptr = f"{ptr}/{_escape_ptr(k)}"
+                    if isinstance(v, (dict, list)):
+                        out[k] = _walk(v, child_ptr)
+                    elif isinstance(v, str):
+                        seg_id = f"{base_name}#{child_ptr}"
+                        if mode == 'extract':
+                            segments.append(Segment(
+                                id=seg_id,
+                                source=v,
+                                context={'file': base_name, 'pointer': child_ptr, 'key': k, 'kind': 'dialogue'},
+                            ))
+                        else:
+                            new_v = translations.get(seg_id, v)
+                            if new_v != v:
+                                changed_any = True
+                            out[k] = new_v
+                    else:
+                        out[k] = v
+                return out
+            elif isinstance(node, list):
+                out = []
+                for idx, item in enumerate(node):
+                    child_ptr = f"{ptr}/{idx}"
+                    if isinstance(item, (dict, list)):
+                        out.append(_walk(item, child_ptr))
+                    elif isinstance(item, str):
+                        seg_id = f"{base_name}#{child_ptr}"
+                        if mode == 'extract':
+                            segments.append(Segment(
+                                id=seg_id,
+                                source=item,
+                                context={'file': base_name, 'pointer': child_ptr, 'index': idx, 'kind': 'dialogue'},
+                            ))
+                        else:
+                            new_v = translations.get(seg_id, item)
+                            if new_v != item:
+                                changed_any = True
+                            out.append(new_v)
+                    else:
+                        out.append(item)
+                return out
+            return node
+
+        updated_tree = _walk(extracted, "")
+        if mode == 'extract':
+            return segments
+        if not changed_any:
+            return data
+        return inst.update_json(base_name, data, updated_tree)
 
     @staticmethod
     def fix_text_translate(text, original_text=None):
