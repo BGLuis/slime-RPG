@@ -218,6 +218,8 @@ Atalhos/abreviações de terminal disponíveis:
                         help='No modo filenames, manter o arquivo original e criar uma cópia traduzida')
     parser.add_argument('--memory-only', '--offline', dest='memory_only', action='store_true',
                         help='Reaplicar traduções exclusivamente da memória de tradução, sem chamadas de rede')
+    parser.add_argument('--switch-engine', action='store_true',
+                        help='Trocar motor de tradução preservando apenas segmentos revisados e bloqueados')
 
     parser.add_argument('--adopt', metavar='PASTA_TRADUZIDA',
                         help='Registra o metadado de um jogo já traduzido (requer --original e -e)')
@@ -503,7 +505,8 @@ def run_filename_translation_workflow(args, translators):
         keep_original=keep_original,
         input_dir=input_dir,
         output_dir=args.output,
-        memory_only=getattr(args, 'memory_only', False)
+        memory_only=getattr(args, 'memory_only', False),
+        switch_engine=getattr(args, 'switch_engine', False)
     )
     ws = Workspace(input_dir, output_dir=args.output)
     job = TranslationJob(job_config, workspace=ws)
@@ -652,7 +655,8 @@ def run_workflow(args):
         input_dir=input_dir,
         output_dir=args.output,
         is_interactive=is_interactive,
-        memory_only=getattr(args, 'memory_only', False)
+        memory_only=getattr(args, 'memory_only', False),
+        switch_engine=getattr(args, 'switch_engine', False)
     )
     ws = Workspace(input_dir, output_dir=args.output)
     job = TranslationJob(job_config, workspace=ws)

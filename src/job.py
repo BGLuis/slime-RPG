@@ -26,6 +26,7 @@ class JobConfig:
     is_interactive: bool = False
     memory_only: bool = False
     offline: bool = False
+    switch_engine: bool = False
 
     def __post_init__(self):
         if self.offline:
@@ -135,6 +136,11 @@ class TranslationJob:
             if self.extractor:
                 setattr(self.extractor, 'memory_only', True)
                 setattr(self.extractor, 'offline', True)
+
+        if getattr(self.config, 'switch_engine', False):
+            setattr(self.translator, 'switch_engine', True)
+            if hasattr(self.translator, 'cache') and self.translator.cache:
+                setattr(self.translator.cache, 'switch_engine', True)
 
     def add_observer(self, callback):
         self.observers.append(callback)
