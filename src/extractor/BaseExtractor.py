@@ -230,19 +230,25 @@ class BaseExtractor(ABC):
     def _infer_file_name(cls, data):
         if hasattr(data, '_file_name') and getattr(data, '_file_name'):
             return getattr(data, '_file_name')
-        return 'file.json'
+        return None
 
     @_ClassOrInstanceMethod
     def extract_segments(target, file_name_or_data, maybe_data=None, *, file_name=None):
         cls = target if isinstance(target, type) else target.__class__
         if maybe_data is not None:
-            inferred_name = str(file_name_or_data)
+            inferred_name = str(file_name_or_data) if file_name_or_data else None
             data = maybe_data
         elif isinstance(file_name_or_data, (str, os.PathLike)) and os.path.exists(str(file_name_or_data)):
             inferred_name, data = target.extract_files(str(file_name_or_data))
         else:
             data = file_name_or_data
-            inferred_name = file_name or cls._infer_file_name(data)
+            inferred_name = file_name or (hasattr(data, '_file_name') and getattr(data, '_file_name'))
+
+        if not inferred_name:
+            inferred_name = cls._infer_file_name(data)
+
+        if not inferred_name:
+            raise ValueError("extract_segments requires an explicit file_name")
 
         if hasattr(target, '_walk_or_apply_segments'):
             segments = target._walk_or_apply_segments(inferred_name, data, mode='extract')

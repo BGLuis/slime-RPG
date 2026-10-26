@@ -517,18 +517,7 @@ class WolfRPGExtractor(BaseExtractor):
     def _infer_file_name(cls, data):
         if hasattr(data, '_file_name') and getattr(data, '_file_name'):
             return getattr(data, '_file_name')
-        if isinstance(data, dict):
-            if 'events' in data:
-                return 'Map001.mps'
-            if 'types' in data:
-                return 'DataBase.dat'
-            if 'lines' in data:
-                return 'script.txt'
-            if 'title' in data:
-                return 'Game.dat'
-        elif isinstance(data, list):
-            return 'CommonEvent.dat'
-        return 'Map001.mps'
+        return None
 
     @staticmethod
     def _kind_for_code(raw_code):
@@ -549,6 +538,8 @@ class WolfRPGExtractor(BaseExtractor):
         cls = target if isinstance(target, type) else target.__class__
         inst = target._create_segment_instance() if isinstance(target, type) else target
         base_name = os.path.basename(file_name) if file_name else cls._infer_file_name(data)
+        if not base_name:
+            raise ValueError("extract_segments requires an explicit file_name")
         if not inst.is_translatable_file(base_name):
             return [] if mode == 'extract' else data
 
