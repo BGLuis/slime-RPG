@@ -278,6 +278,8 @@ class WolfRPGExtractor(BaseExtractor):
             return data
 
         updated = copy_preserving_metadata(data)
+        if hasattr(updated, '__dict__'):
+            updated._is_dirty = True
 
         base_name = os.path.basename(file_name)
         if base_name.endswith('.mps'):

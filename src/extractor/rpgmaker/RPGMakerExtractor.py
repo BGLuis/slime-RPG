@@ -419,6 +419,8 @@ class RPGMakerExtractor(BaseExtractor):
         return None
 
     def update_json(self, file_name, new_json, new_data):
+        if hasattr(new_json, '__dict__'):
+            new_json._is_dirty = True
         for item in self.extract_map:
             if any(re.search(p, file_name) for p in item['file_patterns']):
                 item['insert'](new_json, new_data)

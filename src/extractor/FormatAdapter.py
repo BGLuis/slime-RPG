@@ -92,13 +92,13 @@ class JsonFormatAdapter:
         if isinstance(data, dict):
             wrapped = JsonDataDict(data)
             wrapped._raw_json_bytes = raw_bytes
-            wrapped._json_snapshot = copy.deepcopy(data)
+            wrapped._is_dirty = False
             wrapped._file_name = os.path.basename(file_path)
             return wrapped
         if isinstance(data, list):
             wrapped = JsonDataList(data)
             wrapped._raw_json_bytes = raw_bytes
-            wrapped._json_snapshot = copy.deepcopy(data)
+            wrapped._is_dirty = False
             wrapped._file_name = os.path.basename(file_path)
             return wrapped
         return data
@@ -110,8 +110,8 @@ class JsonFormatAdapter:
         os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
         try:
             raw_json_bytes = getattr(data, "_raw_json_bytes", None)
-            json_snapshot = getattr(data, "_json_snapshot", None)
-            if raw_json_bytes is not None and json_snapshot is not None and data == json_snapshot:
+            is_dirty = getattr(data, "_is_dirty", True)
+            if raw_json_bytes is not None and not is_dirty:
                 with open(file_path, "wb") as f:
                     f.write(raw_json_bytes)
                 logging.info(f"✓ Validated and saved: {file_name}")

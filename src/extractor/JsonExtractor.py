@@ -254,7 +254,10 @@ class JsonExtractor(BaseExtractor):
 
         cleaned_data = BaseExtractor.remove_old_keys(new_data)
         target = copy_preserving_metadata(data)
-        return JsonExtractor._deep_merge(target, cleaned_data)
+        res = JsonExtractor._deep_merge(target, cleaned_data)
+        if hasattr(res, '__dict__'):
+            res._is_dirty = True
+        return res
 
     @_ClassOrInstanceMethod
     def _walk_or_apply_segments(target, file_name, data, mode='extract', translations=None):

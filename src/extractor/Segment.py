@@ -114,6 +114,7 @@ class SegmentList(list):
 _METADATA_ATTRS = (
     "_raw_rvdata",
     "_raw_rvdata_bytes",
+    "_is_dirty",
     "_rvdata_snapshot",
     "_raw_wolf",
     "_raw_wolf_bytes",

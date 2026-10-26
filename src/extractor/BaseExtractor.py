@@ -266,13 +266,24 @@ class BaseExtractor(ABC):
         working_data = copy_preserving_metadata(data)
         segments = target.extract_segments(file_name, data)
         trans_map = resolve_translation_map(list(segments), translations)
+        has_changes = any(trans_map.get(seg.id, seg.source) != seg.source for seg in segments)
 
         if hasattr(target, '_walk_or_apply_segments'):
-            return target._walk_or_apply_segments(file_name, working_data, mode='apply', translations=trans_map)
+            res = target._walk_or_apply_segments(file_name, working_data, mode='apply', translations=trans_map)
+            if hasattr(res, '__dict__'):
+                res._is_dirty = getattr(res, '_is_dirty', False) or has_changes
+            elif hasattr(res, '_csv_meta') and isinstance(res._csv_meta, dict):
+                res._csv_meta['is_dirty'] = res._csv_meta.get('is_dirty', False) or has_changes
+            return res
 
         inst = target._create_segment_instance() if isinstance(target, type) else target
         ordered_texts = [trans_map.get(seg.id, seg.source) for seg in segments]
-        return inst.update_json(file_name, working_data, ordered_texts)
+        res = inst.update_json(file_name, working_data, ordered_texts)
+        if hasattr(res, '__dict__'):
+            res._is_dirty = getattr(res, '_is_dirty', False) or has_changes
+        elif hasattr(res, '_csv_meta') and isinstance(res._csv_meta, dict):
+            res._csv_meta['is_dirty'] = res._csv_meta.get('is_dirty', False) or has_changes
+        return res
 
     @classmethod
     def sanitize_octal_data(cls, data):
