@@ -35,6 +35,15 @@ END;
 CREATE TRIGGER IF NOT EXISTS segment_ad AFTER DELETE ON segment BEGIN
     INSERT INTO segment_fts(segment_fts, rowid, source) VALUES('delete', old.id, old.source);
 END;
+
+CREATE TABLE IF NOT EXISTS game_segment (
+    game TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(game, source_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_game_segment_game ON game_segment(game);
+CREATE INDEX IF NOT EXISTS idx_game_segment_hash ON game_segment(source_hash);
 """
 
 
@@ -269,16 +278,16 @@ class TranslationMemory:
             params.append(eff_prefer)
 
         if eff_scope == 'game' and self.game:
-            clauses.append("(game=? OR game IS NULL)")
-            params.append(self.game)
+            clauses.append("(game=? OR game IS NULL OR source_hash IN (SELECT source_hash FROM game_segment WHERE game=?))")
+            params.extend([self.game, self.game])
 
         order_clauses = [_STATUS_RANK]
         if eff_prefer:
             order_clauses.append("CASE WHEN engine=? THEN 0 ELSE 1 END")
             params.append(eff_prefer)
         if self.game:
-            order_clauses.append("CASE WHEN game=? THEN 0 ELSE 1 END")
-            params.append(self.game)
+            order_clauses.append("CASE WHEN (game=? OR source_hash IN (SELECT source_hash FROM game_segment WHERE game=?)) THEN 0 ELSE 1 END")
+            params.extend([self.game, self.game])
         order_clauses.append("updated_at DESC")
 
         sql = f"""SELECT target FROM segment
@@ -333,8 +342,8 @@ class TranslationMemory:
             extra_where.append("engine=?")
             extra_where_params.append(eff_prefer)
         if eff_scope == 'game' and self.game:
-            extra_where.append("(game=? OR game IS NULL)")
-            extra_where_params.append(self.game)
+            extra_where.append("(game=? OR game IS NULL OR source_hash IN (SELECT source_hash FROM game_segment WHERE game=?))")
+            extra_where_params.extend([self.game, self.game])
 
         order_clauses = ["source_hash", _STATUS_RANK]
         order_params = []
@@ -342,8 +351,8 @@ class TranslationMemory:
             order_clauses.append("CASE WHEN engine=? THEN 0 ELSE 1 END")
             order_params.append(eff_prefer)
         if self.game:
-            order_clauses.append("CASE WHEN game=? THEN 0 ELSE 1 END")
-            order_params.append(self.game)
+            order_clauses.append("CASE WHEN (game=? OR source_hash IN (SELECT source_hash FROM game_segment WHERE game=?)) THEN 0 ELSE 1 END")
+            order_params.extend([self.game, self.game])
         order_clauses.append("updated_at DESC")
 
         for i in range(0, len(hashes), chunk):
@@ -399,11 +408,17 @@ class TranslationMemory:
             if isinstance(text, str) and isinstance(translated, str) and text.strip() == translated.strip():
                 return
         now = time.strftime('%Y-%m-%dT%H:%M:%S')
+        eff_game = game if game is not None else self.game
         with self._lock:
             self._conn.execute(
                 _UPSERT_SQL,
                 self._segment_row(text, translated, status, context, now, game=game),
             )
+            if eff_game and isinstance(text, str) and text.strip():
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO game_segment (game, source_hash, created_at) VALUES (?, ?, ?)",
+                    (eff_game, source_hash(text), now),
+                )
             self._conn.commit()
 
     def store_many(self, pairs, status='machine', context=None, allow_identity=False, game=None):
@@ -416,16 +431,44 @@ class TranslationMemory:
         idiomas de origem e destino forem distintos (evita envenenar o cache com fallbacks).
         """
         now = time.strftime('%Y-%m-%dT%H:%M:%S')
-        rows = [
-            self._segment_row(s, t, status, context, now, game=game)
-            for s, t in pairs
+        eff_game = game if game is not None else self.game
+        valid_pairs = [
+            (s, t) for s, t in pairs
             if isinstance(s, str) and s.strip() and t is not None
             and (allow_identity or not (status == 'machine' and self.src_lang != self.tgt_lang and s.strip() == t.strip()))
         ]
+        if not valid_pairs:
+            return
+        rows = [
+            self._segment_row(s, t, status, context, now, game=game)
+            for s, t in valid_pairs
+        ]
+        with self._lock:
+            self._conn.executemany(_UPSERT_SQL, rows)
+            if eff_game:
+                game_rows = [
+                    (eff_game, source_hash(s), now)
+                    for s, _ in valid_pairs
+                ]
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO game_segment (game, source_hash, created_at) VALUES (?, ?, ?)",
+                    game_rows,
+                )
+            self._conn.commit()
+
+    def link_game_segments(self, game_name, source_hashes):
+        """Associa retroativamente uma lista de source_hashes a um jogo na tabela game_segment."""
+        if not game_name or not source_hashes:
+            return
+        now = time.strftime('%Y-%m-%dT%H:%M:%S')
+        rows = [(game_name, h, now) for h in set(source_hashes) if h]
         if not rows:
             return
         with self._lock:
-            self._conn.executemany(_UPSERT_SQL, rows)
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO game_segment (game, source_hash, created_at) VALUES (?, ?, ?)",
+                rows,
+            )
             self._conn.commit()
 
     def lock_term(self, source_text, translated_text):
