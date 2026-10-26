@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 from src.extractor.Segment import Segment
 
 
@@ -47,6 +47,94 @@ class EventCommandStrategy:
                     ctx["key"] = k
                     segments.append(Segment(id=f"{prefix}/{k}", source=sub_val, context=ctx))
         return segments
+
+
+def process_event_command_items(
+    cmd_items: Iterable[Dict[str, Any]],
+    prefix_base: str,
+    base_name: str,
+    cmd_lookup_fn: Callable[[int], Dict[str, Any]],
+    strategy_lookup_fn: Callable[[Any], Optional[EventCommandStrategy]],
+    kind_lookup_fn: Callable[[Any], str],
+    mode: str = "extract",
+    translations: Optional[Dict[str, str]] = None,
+    segments: Optional[List[Segment]] = None,
+) -> List[Dict[str, Any]]:
+    """Itera comandos de evento em modo 'extract' ou 'apply', montando Segments ou atualizando valores traduzidos."""
+    modified_items: List[Dict[str, Any]] = []
+    translations = translations or {}
+
+    for list_item in cmd_items:
+        cmd_id = list_item.get("id")
+        val = list_item.get("text")
+        raw_cmd = cmd_lookup_fn(cmd_id) if callable(cmd_lookup_fn) else {}
+        raw_code = raw_cmd.get("code") if isinstance(raw_cmd, dict) else None
+        strategy = strategy_lookup_fn(raw_code) if callable(strategy_lookup_fn) else None
+        kind = getattr(strategy, "kind", None) or (kind_lookup_fn(raw_code) if callable(kind_lookup_fn) else None)
+        cmd_prefix = f"{base_name}#{prefix_base}/cmd:{cmd_id}"
+        changed = False
+
+        if isinstance(val, str):
+            seg_id = cmd_prefix
+            if mode == "extract":
+                if segments is not None:
+                    segments.append(Segment(
+                        id=seg_id,
+                        source=val,
+                        context={"file": base_name, "code": raw_code, "kind": kind},
+                    ))
+            else:
+                new_val = translations.get(seg_id, val)
+                if new_val != val:
+                    changed = True
+                list_item["text"] = new_val
+        elif isinstance(val, list):
+            new_list = []
+            for sub_idx, sub_val in enumerate(val):
+                seg_id = f"{cmd_prefix}/{sub_idx}"
+                if isinstance(sub_val, str):
+                    if mode == "extract":
+                        if segments is not None:
+                            segments.append(Segment(
+                                id=seg_id,
+                                source=sub_val,
+                                context={"file": base_name, "code": raw_code, "index": sub_idx, "kind": kind},
+                            ))
+                    else:
+                        new_sub = translations.get(seg_id, sub_val)
+                        if new_sub != sub_val:
+                            changed = True
+                        new_list.append(new_sub)
+                else:
+                    new_list.append(sub_val)
+            if mode == "apply":
+                list_item["text"] = new_list
+        elif isinstance(val, dict):
+            new_dict = {}
+            for k, sub_val in val.items():
+                seg_id = f"{cmd_prefix}/{k}"
+                if isinstance(sub_val, str):
+                    if mode == "extract":
+                        if segments is not None:
+                            segments.append(Segment(
+                                id=seg_id,
+                                source=sub_val,
+                                context={"file": base_name, "code": raw_code, "key": k, "kind": kind},
+                            ))
+                    else:
+                        new_sub = translations.get(seg_id, sub_val)
+                        if new_sub != sub_val:
+                            changed = True
+                        new_dict[k] = new_sub
+                else:
+                    new_dict[k] = sub_val
+            if mode == "apply":
+                list_item["text"] = new_dict
+
+        if mode == "apply" and changed:
+            modified_items.append(list_item)
+
+    return modified_items
 
 
 def _resolve_item_by_id(collection: Any, target_id: Any) -> Optional[Dict[str, Any]]:

@@ -453,7 +453,7 @@ class RPGMakerExtractor(BaseExtractor):
         import copy
         import os
         from src.extractor.Segment import Segment
-        from src.extractor.EventCommandStrategy import _resolve_item_by_id
+        from src.extractor.EventCommandStrategy import _resolve_item_by_id, process_event_command_items
 
         cls = target if isinstance(target, type) else target.__class__
         inst = target._create_segment_instance() if isinstance(target, type) else target
@@ -488,75 +488,17 @@ class RPGMakerExtractor(BaseExtractor):
             return {}
 
         def _handle_cmd_List(cmd_items, prefix_base, cmd_lookup_fn):
-            modified_items = []
-            for list_item in cmd_items:
-                cmd_id = list_item['id']
-                val = list_item['text']
-                raw_cmd = cmd_lookup_fn(cmd_id)
-                raw_code = raw_cmd.get('code') if isinstance(raw_cmd, dict) else None
-                code_enum = RPGEventCode.from_code(raw_code)
-                strategy = inst._strategies.get(code_enum)
-                kind = getattr(strategy, 'kind', None) or cls._kind_for_code(raw_code)
-                cmd_prefix = f"{base_name}#{prefix_base}/cmd:{cmd_id}"
-                changed = False
-
-                if isinstance(val, str):
-                    seg_id = cmd_prefix
-                    if mode == 'extract':
-                        segments.append(Segment(
-                            id=seg_id,
-                            source=val,
-                            context={'file': base_name, 'code': raw_code, 'kind': kind},
-                        ))
-                    else:
-                        new_val = translations.get(seg_id, val)
-                        if new_val != val:
-                            changed = True
-                        list_item['text'] = new_val
-                elif isinstance(val, list):
-                    new_list = []
-                    for sub_idx, sub_val in enumerate(val):
-                        seg_id = f"{cmd_prefix}/{sub_idx}"
-                        if isinstance(sub_val, str):
-                            if mode == 'extract':
-                                segments.append(Segment(
-                                    id=seg_id,
-                                    source=sub_val,
-                                    context={'file': base_name, 'code': raw_code, 'index': sub_idx, 'kind': kind},
-                                ))
-                            else:
-                                new_sub = translations.get(seg_id, sub_val)
-                                if new_sub != sub_val:
-                                    changed = True
-                                new_list.append(new_sub)
-                        else:
-                            new_list.append(sub_val)
-                    if mode == 'apply':
-                        list_item['text'] = new_list
-                elif isinstance(val, dict):
-                    new_dict = {}
-                    for k, sub_val in val.items():
-                        seg_id = f"{cmd_prefix}/{k}"
-                        if isinstance(sub_val, str):
-                            if mode == 'extract':
-                                segments.append(Segment(
-                                    id=seg_id,
-                                    source=sub_val,
-                                    context={'file': base_name, 'code': raw_code, 'key': k, 'kind': kind},
-                                ))
-                            else:
-                                new_sub = translations.get(seg_id, sub_val)
-                                if new_sub != sub_val:
-                                    changed = True
-                                new_dict[k] = new_sub
-                        else:
-                            new_dict[k] = sub_val
-                    if mode == 'apply':
-                        list_item['text'] = new_dict
-
-                if mode == 'apply' and changed:
-                    modified_items.append(list_item)
-            return modified_items
+            return process_event_command_items(
+                cmd_items=cmd_items,
+                prefix_base=prefix_base,
+                base_name=base_name,
+                cmd_lookup_fn=cmd_lookup_fn,
+                strategy_lookup_fn=lambda code: inst._strategies.get(RPGEventCode.from_code(code)),
+                kind_lookup_fn=cls._kind_for_code,
+                mode=mode,
+                translations=translations,
+                segments=segments,
+            )
 
         if re.search(r'Map\d{3,}', base_name):
             extracted = inst.extract_text_map(copy.deepcopy(data))
