@@ -278,6 +278,8 @@ class WolfRPGExtractor(BaseExtractor):
             return data
 
         updated = copy_preserving_metadata(data)
+        if hasattr(updated, '__dict__'):
+            updated._is_dirty = True
 
         base_name = os.path.basename(file_name)
         if base_name.endswith('.mps'):
@@ -517,18 +519,7 @@ class WolfRPGExtractor(BaseExtractor):
     def _infer_file_name(cls, data):
         if hasattr(data, '_file_name') and getattr(data, '_file_name'):
             return getattr(data, '_file_name')
-        if isinstance(data, dict):
-            if 'events' in data:
-                return 'Map001.mps'
-            if 'types' in data:
-                return 'DataBase.dat'
-            if 'lines' in data:
-                return 'script.txt'
-            if 'title' in data:
-                return 'Game.dat'
-        elif isinstance(data, list):
-            return 'CommonEvent.dat'
-        return 'Map001.mps'
+        return None
 
     @staticmethod
     def _kind_for_code(raw_code):
@@ -544,11 +535,13 @@ class WolfRPGExtractor(BaseExtractor):
 
     @_ClassOrInstanceMethod
     def _walk_or_apply_segments(target, file_name, data, mode='extract', translations=None):
-        from src.extractor.EventCommandStrategy import _resolve_item_by_id
+        from src.extractor.EventCommandStrategy import _resolve_item_by_id, process_event_command_items
 
         cls = target if isinstance(target, type) else target.__class__
         inst = target._create_segment_instance() if isinstance(target, type) else target
         base_name = os.path.basename(file_name) if file_name else cls._infer_file_name(data)
+        if not base_name:
+            raise ValueError("extract_segments requires an explicit file_name")
         if not inst.is_translatable_file(base_name):
             return [] if mode == 'extract' else data
 
@@ -556,54 +549,17 @@ class WolfRPGExtractor(BaseExtractor):
         translations = translations or {}
 
         def _handle_cmd_list(cmd_items, prefix_base, raw_cmd_list):
-            modified_items = []
-            for list_item in cmd_items:
-                cmd_id = list_item['id']
-                val = list_item['text']
-                raw_cmd = raw_cmd_list[cmd_id] if isinstance(raw_cmd_list, list) and cmd_id < len(raw_cmd_list) else {}
-                raw_code = raw_cmd.get('code') if isinstance(raw_cmd, dict) else None
-                strategy = inst._strategies.get(raw_code)
-                kind = getattr(strategy, 'kind', None) or cls._kind_for_code(raw_code)
-                cmd_prefix = f"{base_name}#{prefix_base}/cmd:{cmd_id}"
-                changed = False
-
-                if isinstance(val, str):
-                    seg_id = cmd_prefix
-                    if mode == 'extract':
-                        segments.append(Segment(
-                            id=seg_id,
-                            source=val,
-                            context={'file': base_name, 'code': raw_code, 'kind': kind},
-                        ))
-                    else:
-                        new_val = translations.get(seg_id, val)
-                        if new_val != val:
-                            changed = True
-                        list_item['text'] = new_val
-                elif isinstance(val, list):
-                    new_list = []
-                    for sub_idx, sub_val in enumerate(val):
-                        seg_id = f"{cmd_prefix}/{sub_idx}"
-                        if isinstance(sub_val, str):
-                            if mode == 'extract':
-                                segments.append(Segment(
-                                    id=seg_id,
-                                    source=sub_val,
-                                    context={'file': base_name, 'code': raw_code, 'index': sub_idx, 'kind': kind},
-                                ))
-                            else:
-                                new_sub = translations.get(seg_id, sub_val)
-                                if new_sub != sub_val:
-                                    changed = True
-                                new_list.append(new_sub)
-                        else:
-                            new_list.append(sub_val)
-                    if mode == 'apply':
-                        list_item['text'] = new_list
-
-                if mode == 'apply' and changed:
-                    modified_items.append(list_item)
-            return modified_items
+            return process_event_command_items(
+                cmd_items=cmd_items,
+                prefix_base=prefix_base,
+                base_name=base_name,
+                cmd_lookup_fn=lambda cid: raw_cmd_list[cid] if isinstance(raw_cmd_list, list) and cid < len(raw_cmd_list) else {},
+                strategy_lookup_fn=lambda code: inst._strategies.get(code),
+                kind_lookup_fn=cls._kind_for_code,
+                mode=mode,
+                translations=translations,
+                segments=segments,
+            )
 
         if base_name.endswith('.mps'):
             extracted = inst.extract_text_map(copy.deepcopy(data))

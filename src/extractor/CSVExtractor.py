@@ -254,7 +254,7 @@ class CSVExtractor(BaseExtractor):
                     'has_bom': has_bom,
                     'lineterminator': lineterminator,
                     'raw_bytes': raw_bytes,
-                    'snapshot': copy.deepcopy(rows),
+                    'is_dirty': False,
                 }
                 return [base_name, data]
         except Exception as e:
@@ -387,7 +387,9 @@ class CSVExtractor(BaseExtractor):
 
         updated_data = CSVDataList()
         if hasattr(data, '_csv_meta'):
-            updated_data._csv_meta = getattr(data, '_csv_meta')
+            meta = dict(getattr(data, '_csv_meta'))
+            meta['is_dirty'] = True
+            updated_data._csv_meta = meta
         if hasattr(data, '_file_name'):
             updated_data._file_name = getattr(data, '_file_name')
 
@@ -434,10 +436,10 @@ class CSVExtractor(BaseExtractor):
                     r_idx = int(m.group(1))
                     col = m.group(2)
                     seg_id = f"{base_name}#row:{r_idx}/col:{col}"
-                    ctx = {'file': base_name, 'row': r_idx, 'column': col, 'kind': 'dialogue'}
+                    ctx = {'file': base_name, 'row': r_idx, 'column': col, 'kind': 'db'}
                 else:
                     seg_id = f"{base_name}#{key}"
-                    ctx = {'file': base_name, 'key': key, 'kind': 'dialogue'}
+                    ctx = {'file': base_name, 'key': key, 'kind': 'db'}
                 segments.append(Segment(id=seg_id, source=val, context=ctx))
             return segments
 
@@ -515,8 +517,8 @@ class CSVExtractor(BaseExtractor):
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
         raw_bytes = csv_meta.get('raw_bytes')
-        snapshot = csv_meta.get('snapshot')
-        if raw_bytes is not None and snapshot is not None and target_name == file_name and list(data) == snapshot:
+        is_dirty = csv_meta.get('is_dirty', True)
+        if raw_bytes is not None and not is_dirty and target_name == file_name:
             with open(file_path, 'wb') as f_bin:
                 f_bin.write(raw_bytes)
             logging.info(f"✓ Salvo CSV: {target_name} com delimitador '{delimiter}' (BOM={has_bom})")

@@ -230,97 +230,60 @@ class BaseExtractor(ABC):
     def _infer_file_name(cls, data):
         if hasattr(data, '_file_name') and getattr(data, '_file_name'):
             return getattr(data, '_file_name')
-        return 'file.json'
+        return None
 
     @_ClassOrInstanceMethod
-    def extract_segments(target, file_name_or_data, maybe_data=None, *, file_name=None):
-        cls = target if isinstance(target, type) else target.__class__
-        if maybe_data is not None:
-            inferred_name = str(file_name_or_data)
-            data = maybe_data
-        elif isinstance(file_name_or_data, (str, os.PathLike)) and os.path.exists(str(file_name_or_data)):
-            inferred_name, data = target.extract_files(str(file_name_or_data))
-        else:
-            data = file_name_or_data
-            inferred_name = file_name or cls._infer_file_name(data)
+    def extract_segments(target, file_name, data):
+        if not file_name:
+            if hasattr(data, '_file_name') and getattr(data, '_file_name'):
+                file_name = getattr(data, '_file_name')
+            else:
+                raise ValueError("extract_segments requires an explicit file_name")
 
         if hasattr(target, '_walk_or_apply_segments'):
-            segments = target._walk_or_apply_segments(inferred_name, data, mode='extract')
+            segments = target._walk_or_apply_segments(file_name, data, mode='extract')
         else:
             inst = target._create_segment_instance() if isinstance(target, type) else target
-            raw_texts = inst.extract_text(inferred_name, copy_preserving_metadata(data)) or []
+            raw_texts = inst.extract_text(file_name, copy_preserving_metadata(data)) or []
             segments = [
                 Segment(
-                    id=f"{inferred_name}#{idx}",
+                    id=f"{file_name}#{idx}",
                     source=str(text),
-                    context={'file': inferred_name, 'index': idx, 'kind': 'dialogue'},
+                    context={'file': file_name, 'index': idx, 'kind': 'dialogue'},
                 )
                 for idx, text in enumerate(raw_texts)
             ]
-        return SegmentList(segments, source_data=data, file_name=inferred_name)
+        return SegmentList(segments, source_data=data, file_name=file_name)
 
     @_ClassOrInstanceMethod
-    def apply_segments(target, *args, file_name=None):
-        def _is_segment_seq(obj):
-            if isinstance(obj, SegmentList):
-                return True
-            return isinstance(obj, (list, tuple)) and len(obj) > 0 and isinstance(obj[0], Segment)
-
-        if len(args) == 1 and _is_segment_seq(args[0]):
-            segments = args[0]
-            translations = segments
-            data = getattr(segments, '_source_data', None)
-            inferred_name = file_name or getattr(segments, '_file_name', None)
-        elif len(args) == 2 and _is_segment_seq(args[0]):
-            segments = args[0]
-            translations = args[1]
-            data = getattr(segments, '_source_data', None)
-            inferred_name = file_name or getattr(segments, '_file_name', None)
-        elif len(args) >= 3 and isinstance(args[0], str) and not _is_segment_seq(args[0]):
-            inferred_name = args[0]
-            data = args[1]
-            if len(args) == 3:
-                if _is_segment_seq(args[2]):
-                    segments = args[2]
-                    translations = args[2]
-                else:
-                    segments = target.extract_segments(inferred_name, data)
-                    translations = args[2]
+    def apply_segments(target, file_name, data, translations):
+        if not file_name:
+            if hasattr(data, '_file_name') and getattr(data, '_file_name'):
+                file_name = getattr(data, '_file_name')
             else:
-                segments = args[2]
-                translations = args[3]
-        elif len(args) == 2:
-            data = args[0]
-            inferred_name = file_name or getattr(data, '_file_name', None)
-            if _is_segment_seq(args[1]):
-                segments = args[1]
-                translations = args[1]
-                inferred_name = inferred_name or getattr(segments, '_file_name', None)
-            else:
-                segments = target.extract_segments(data, file_name=inferred_name)
-                translations = args[1]
-                inferred_name = inferred_name or getattr(segments, '_file_name', None)
-        elif len(args) == 3:
-            data = args[0]
-            segments = args[1]
-            translations = args[2]
-            inferred_name = file_name or getattr(segments, '_file_name', None) or getattr(data, '_file_name', None)
-        else:
-            raise TypeError("Invalid arguments for apply_segments")
-
-        cls = target if isinstance(target, type) else target.__class__
-        if not inferred_name:
-            inferred_name = cls._infer_file_name(data)
+                raise ValueError("apply_segments requires an explicit file_name")
 
         working_data = copy_preserving_metadata(data)
+        segments = target.extract_segments(file_name, data)
         trans_map = resolve_translation_map(list(segments), translations)
+        has_changes = any(trans_map.get(seg.id, seg.source) != seg.source for seg in segments)
 
         if hasattr(target, '_walk_or_apply_segments'):
-            return target._walk_or_apply_segments(inferred_name, working_data, mode='apply', translations=trans_map)
+            res = target._walk_or_apply_segments(file_name, working_data, mode='apply', translations=trans_map)
+            if hasattr(res, '__dict__'):
+                res._is_dirty = getattr(res, '_is_dirty', False) or has_changes
+            elif hasattr(res, '_csv_meta') and isinstance(res._csv_meta, dict):
+                res._csv_meta['is_dirty'] = res._csv_meta.get('is_dirty', False) or has_changes
+            return res
 
         inst = target._create_segment_instance() if isinstance(target, type) else target
         ordered_texts = [trans_map.get(seg.id, seg.source) for seg in segments]
-        return inst.update_json(inferred_name, working_data, ordered_texts)
+        res = inst.update_json(file_name, working_data, ordered_texts)
+        if hasattr(res, '__dict__'):
+            res._is_dirty = getattr(res, '_is_dirty', False) or has_changes
+        elif hasattr(res, '_csv_meta') and isinstance(res._csv_meta, dict):
+            res._csv_meta['is_dirty'] = res._csv_meta.get('is_dirty', False) or has_changes
+        return res
 
     @classmethod
     def sanitize_octal_data(cls, data):

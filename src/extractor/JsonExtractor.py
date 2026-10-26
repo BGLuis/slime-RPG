@@ -254,7 +254,10 @@ class JsonExtractor(BaseExtractor):
 
         cleaned_data = BaseExtractor.remove_old_keys(new_data)
         target = copy_preserving_metadata(data)
-        return JsonExtractor._deep_merge(target, cleaned_data)
+        res = JsonExtractor._deep_merge(target, cleaned_data)
+        if hasattr(res, '__dict__'):
+            res._is_dirty = True
+        return res
 
     @_ClassOrInstanceMethod
     def _walk_or_apply_segments(target, file_name, data, mode='extract', translations=None):
@@ -282,11 +285,16 @@ class JsonExtractor(BaseExtractor):
                         out[k] = _walk(v, child_ptr)
                     elif isinstance(v, str):
                         seg_id = f"{base_name}#{child_ptr}"
+                        k_lower = str(k).lower()
+                        if k_lower in ('name', 'title', 'label', 'caption', 'header', 'id', 'category'):
+                            item_kind = 'menu'
+                        else:
+                            item_kind = 'dialogue'
                         if mode == 'extract':
                             segments.append(Segment(
                                 id=seg_id,
                                 source=v,
-                                context={'file': base_name, 'pointer': child_ptr, 'key': k, 'kind': 'dialogue'},
+                                context={'file': base_name, 'pointer': child_ptr, 'key': k, 'kind': item_kind},
                             ))
                         else:
                             new_v = translations.get(seg_id, v)

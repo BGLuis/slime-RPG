@@ -130,3 +130,58 @@ def test_shared_walker_handles_rpgmaker_and_wolf_maps():
     )
     assert [s.context.kind for s in wolf_setstr_segs] == ["script"]
 
+
+def test_process_event_command_items_extract_and_apply():
+    from src.extractor.EventCommandStrategy import process_event_command_items
+
+    cmd_items = [
+        {"id": 0, "text": "Single text line"},
+        {"id": 1, "text": ["Option A", "Option B"]},
+        {"id": 2, "text": {"title": "Menu", "desc": "Information"}},
+    ]
+
+    segments = []
+    # 1. Mode extract
+    process_event_command_items(
+        cmd_items=cmd_items,
+        prefix_base="event:1/page:0",
+        base_name="Map001.json",
+        cmd_lookup_fn=lambda cid: {"code": 101 if cid == 0 else (102 if cid == 1 else 355)},
+        strategy_lookup_fn=lambda code: None,
+        kind_lookup_fn=lambda code: "choice" if code == 102 else ("script" if code == 355 else "dialogue"),
+        mode="extract",
+        segments=segments,
+    )
+    assert len(segments) == 5
+    assert segments[0].id == "Map001.json#event:1/page:0/cmd:0"
+    assert segments[0].source == "Single text line"
+    assert segments[0].context.kind == "dialogue"
+
+    assert segments[1].id == "Map001.json#event:1/page:0/cmd:1/0"
+    assert segments[1].source == "Option A"
+    assert segments[1].context.kind == "choice"
+
+    assert segments[3].id == "Map001.json#event:1/page:0/cmd:2/title"
+    assert segments[3].context.kind == "script"
+
+    # 2. Mode apply with changes
+    translations = {
+        "Map001.json#event:1/page:0/cmd:0": "Texto único",
+        "Map001.json#event:1/page:0/cmd:1/0": "Opção A",
+    }
+    modified = process_event_command_items(
+        cmd_items=cmd_items,
+        prefix_base="event:1/page:0",
+        base_name="Map001.json",
+        cmd_lookup_fn=lambda cid: {"code": 101 if cid == 0 else (102 if cid == 1 else 355)},
+        strategy_lookup_fn=lambda code: None,
+        kind_lookup_fn=lambda code: "dialogue",
+        mode="apply",
+        translations=translations,
+    )
+    assert len(modified) == 2
+    assert modified[0]["text"] == "Texto único"
+    assert modified[1]["text"][0] == "Opção A"
+    assert modified[1]["text"][1] == "Option B"
+
+

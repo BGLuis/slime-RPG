@@ -6,6 +6,7 @@ from .RPGTextFilters import RPGTextFilters
 EventStrategy = EventCommandStrategy
 
 class ShowTextStrategy(EventStrategy):
+    kind = "dialogue"
     _text_keys = ["icon:", "secret:", "title:", "name:", "text:", "message:", "text1:", "text2:", "secretText:", "id:"]
     _title_pattern = re.compile(r'<([^<>]*)>|<<([^<>]*)>>')
 

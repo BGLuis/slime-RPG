@@ -7,6 +7,8 @@ WolfEventStrategy = EventCommandStrategy
 
 class ShowMessageStrategy(WolfEventStrategy):
     """Estratégia para comandos de exibição de mensagem/diálogo (CID 101)"""
+    kind = "dialogue"
+
     def extract(self, item, context=None):
         string_args = item.get('string_args', item.get('parameters', []))
         if not string_args:
@@ -128,6 +130,8 @@ class CommonEventParamStrategy(WolfEventStrategy):
 
 class PictureStrategy(WolfEventStrategy):
     """Estratégia para comando de imagem com texto renderizado (CID 150)"""
+    kind = "menu"
+
     def extract(self, item, context=None):
         args = item.get('parameters', item.get('args', []))
         if args:
@@ -150,6 +154,8 @@ class PictureStrategy(WolfEventStrategy):
 
 class CommentStrategy(WolfEventStrategy):
     """Estratégia para comentários (CID 103)"""
+    kind = "script"
+
     def extract(self, item, context=None):
         string_args = item.get('string_args', [])
         if not string_args:

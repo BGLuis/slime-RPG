@@ -14,7 +14,7 @@ class RVDataList(list):
         super().__init__(*args, **kwargs)
         self._raw_rvdata = None
         self._raw_rvdata_bytes = None
-        self._rvdata_snapshot = None
+        self._is_dirty = False
         self._file_name = None
 
 class RVDataDict(dict):
@@ -23,7 +23,7 @@ class RVDataDict(dict):
         super().__init__(*args, **kwargs)
         self._raw_rvdata = None
         self._raw_rvdata_bytes = None
-        self._rvdata_snapshot = None
+        self._is_dirty = False
         self._file_name = None
 
 
@@ -54,9 +54,7 @@ class RVDataAdapter:
         normalized = RVDataAdapter.to_normalized(file_name, raw_data)
         normalized._raw_rvdata = raw_data
         normalized._raw_rvdata_bytes = raw_bytes
-        normalized._rvdata_snapshot = copy.deepcopy(
-            dict(normalized) if isinstance(normalized, dict) else list(normalized)
-        )
+        normalized._is_dirty = False
         normalized._file_name = file_name
         return normalized
 
@@ -92,8 +90,8 @@ class RVDataAdapter:
             os.makedirs(dir_name, exist_ok=True)
 
         raw_bytes = getattr(data, '_raw_rvdata_bytes', None)
-        snapshot = getattr(data, '_rvdata_snapshot', None)
-        if raw_bytes is not None and snapshot is not None and data == snapshot:
+        is_dirty = getattr(data, '_is_dirty', True)
+        if raw_bytes is not None and not is_dirty:
             with open(file_path, 'wb') as f:
                 f.write(raw_bytes)
             logging.info(f"✓ Validated and saved RVData2: {file_name}")

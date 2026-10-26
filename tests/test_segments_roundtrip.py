@@ -48,7 +48,7 @@ def _assert_segment_contracts(extractor, file_path, out_dir):
         assert seg.context.get("kind") in VALID_KINDS
         assert seg.context.kind in VALID_KINDS
 
-    reconstructed = extractor.apply_segments(extractor.extract_segments(file_name, data1), lambda x: x)
+    reconstructed = extractor.apply_segments(file_name, data1, lambda x: x)
     extractor.import_file(file_name, reconstructed, str(out_dir))
 
     out_path = os.path.join(str(out_dir), file_name)
@@ -106,7 +106,6 @@ def test_rpgmaker_json_roundtrip_and_stable_ids(tmp_path):
     modified_map = extractor.apply_segments(
         "Map001.json",
         loaded_map,
-        segs_map,
         {target_seg.id: "Hero Translated"},
     )
     segs_after = extractor.extract_segments("Map001.json", modified_map)
@@ -440,7 +439,6 @@ def test_csv_roundtrip_and_stable_ids(tmp_path):
     updated_csv = extractor.apply_segments(
         "dialogue.csv",
         data_csv1,
-        segs_csv1,
         {"dialogue.csv#row:0/col:text": "Olá herói!"},
     )
     assert updated_csv[0]["text"] == "Olá herói!"
@@ -487,7 +485,6 @@ def test_json_extractor_roundtrip_and_stable_ids(tmp_path):
     updated_json = extractor.apply_segments(
         "ui_strings.json",
         data_json,
-        segs_json,
         {"ui_strings.json#/ui/title": "Explorador de Masmorras"},
     )
     assert updated_json["ui"]["title"] == "Explorador de Masmorras"
@@ -524,7 +521,6 @@ def test_sparse_and_non_contiguous_ids_roundtrip():
     updated_map = rpg.apply_segments(
         "Map001.json",
         sparse_map,
-        segs_map,
         {"Map001.json#event:5/page:0/cmd:0/0": "Sim", "Map001.json#event:5/page:0/cmd:1": "Evento esparso!"},
     )
     assert updated_map["events"][1]["pages"][0]["list"][0]["parameters"][0][0] == "Sim"
