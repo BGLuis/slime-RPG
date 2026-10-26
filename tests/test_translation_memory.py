@@ -412,3 +412,22 @@ def test_engine_migration_capitalized_and_variants(tmp_path):
     row = read_conn.execute("SELECT engine FROM segment WHERE source_hash=?", (h,)).fetchone()
     read_conn.close()
     assert row[0] == 'google'
+
+
+def test_translation_memory_flush_commits_shared_connection(tmp_path):
+    db_file = str(tmp_path / 'flush_test.db')
+    TranslationMemory._reset_pools()
+    tm = TranslationMemory(db_file, 'en', 'pt', engine='google')
+    tm.flush()
+
+
+def test_base_translate_save_cache_calls_flush(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    from src.translate.GoogleTranslate import GoogleTranslate
+    monkeypatch.setattr(GoogleTranslate, 'cache_path_base', str(tmp_path))
+    TranslationMemory._reset_pools()
+    gt = GoogleTranslate(lang_source='en', lang_target='pt')
+    mock_flush = MagicMock()
+    gt.cache.flush = mock_flush
+    gt.save_cache()
+    mock_flush.assert_called_once()

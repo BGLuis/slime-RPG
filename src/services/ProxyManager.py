@@ -220,7 +220,3 @@ class ProxyManager:
             remaining = len(self._working_proxies)
         if remaining < 3:
             self.ensure_proxies(min_count=5)
-
-    def report_proxy_success(self, proxy_dict):
-        # Sucesso: mantém na rotação
-        pass

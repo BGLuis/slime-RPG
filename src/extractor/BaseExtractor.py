@@ -1050,10 +1050,3 @@ class BaseExtractor(ABC):
                                 except Exception:
                                     pass
                             shutil.copy2(file, dest_path)
-
-    def sanitize_output_files(self):
-        """
-        Mantido para compatibilidade retroativa. A sanitização de literais octais
-        agora é executada em memória antes da serialização, eliminando re-leituras em disco.
-        """
-        pass

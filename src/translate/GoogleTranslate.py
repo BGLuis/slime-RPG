@@ -125,16 +125,6 @@ class GoogleTranslate(BaseTranslate):
         super().__init__(delimiter, char_limit, lang_source, lang_target)
         self.translate_client = GoogleTranslator(source=self.lang_source, target=self.lang_target)
 
-    @staticmethod
-    def preprocess_text(texts):
-        for i, text in enumerate(texts):
-            texts[i] = text
-
-    @staticmethod
-    def postprocess_text(texts):
-        for i, text in enumerate(texts):
-            texts[i] = text
-
     def _translate_gtx(self, text):
         from src.services.ProxyManager import ProxyManager
         proxy_mgr = ProxyManager.get_instance()
@@ -175,9 +165,7 @@ class GoogleTranslate(BaseTranslate):
             if not data_json or not data_json[0]:
                 return None
 
-            if proxy_dict:
-                proxy_mgr.report_proxy_success(proxy_dict)
-            else:
+            if not proxy_dict:
                 proxy_mgr.report_direct_success()
 
             return ''.join(part[0] for part in data_json[0] if part and part[0])

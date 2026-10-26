@@ -66,17 +66,6 @@ class OllamaTranslate(BaseTranslate):
         self._load_cache_for_current_languages()
         self.context_language = f"Translate the user's message from {self.lang_source} to {self.lang_target}."
 
-    @staticmethod
-    def preprocess_text(texts):
-        for i, text in enumerate(texts):
-            texts[i] = text
-
-
-    @staticmethod
-    def postprocess_text(texts):
-        for i, text in enumerate(texts):
-            texts[i] = text
-
     def _create_batches(self, texts):
         """Ollama prefers single-item batches to manage context window and prompt size."""
         return [[text] for text in texts]
