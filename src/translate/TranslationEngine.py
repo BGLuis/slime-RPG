@@ -137,7 +137,7 @@ class TranslationEngine:
                     if self.consecutive_failures >= self.failure_threshold:
                         self.circuit_open = True
 
-                    if isinstance(e, ProviderAuthError):
+                    if isinstance(e, (ProviderAuthError, ProviderRateLimited)):
                         raise
 
                     if attempt < self.max_retries - 1:
@@ -159,6 +159,9 @@ class TranslationEngine:
     def _fallback_per_item(self, batch: List[Segment], ctx: Optional[Any] = None) -> List[str]:
         results = []
         for seg in batch:
+            if self.circuit_open:
+                results.append(seg.source)
+                continue
             with self.semaphore:
                 with self._concurrency_lock:
                     self.active_concurrency += 1
@@ -173,7 +176,9 @@ class TranslationEngine:
                     else:
                         res = [seg.source]
                     results.append(res[0] if res else seg.source)
-                except Exception:
+                except Exception as e:
+                    if isinstance(e, (ProviderAuthError, ProviderRateLimited)):
+                        raise
                     results.append(seg.source)
                 finally:
                     with self._concurrency_lock:
@@ -237,9 +242,11 @@ class TranslationEngine:
                 storable = [
                     (s, trans) for s, trans in translated_map.items()
                     if s in unique_uncached and trans is not None
+                    and "__xtok_" not in s.lower() and "__xtok_" not in str(trans).lower()
                     and not (s.strip() == str(trans).strip())
                 ]
-                self.memory.store_many(storable, game=self.game)
+                if storable:
+                    self.memory.store_many(storable, game=self.game)
 
         results_by_file: Dict[str, Dict[str, str]] = {}
         for file_key, segs in files_segments.items():

@@ -91,3 +91,112 @@ def test_20_files_cross_file_batching_and_dedup(tmp_path):
         assert out_file.exists()
         out_data = json.loads(out_file.read_text())
         assert out_data["events"][0]["text"][0] == "PT:..."
+
+
+def test_cross_file_batching_preserves_masked_tokens(tmp_path):
+    r"""
+    Verify that RPG Maker control codes and variables (\V[1], \C[2], etc.)
+    are properly masked before cross-file batching and restored in final files.
+    """
+    from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
+
+    class MaskCheckingProvider(BaseTranslate):
+        agent = "mask_checker"
+        id = "mask_checker"
+        capabilities = Capabilities(max_request_chars=5000, max_items=10, native_batch=True)
+
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.received_texts = []
+
+        def _translate_single_batch(self, texts):
+            self.received_texts.extend(texts)
+            # Ensure no raw RPG control codes leak into provider
+            for t in texts:
+                assert "\\V[" not in t, f"Raw control code leaked to provider: {t}"
+                assert "\\C[" not in t, f"Raw color code leaked to provider: {t}"
+                assert "__XTOK_" in t or "Simple" in t
+            return [t.replace("Hero", "Herói").replace("Danger", "Perigo") for t in texts]
+
+        def translate(self, segments, ctx=None):
+            texts = [s.source for s in segments]
+            return self._translate_single_batch(texts)
+
+    input_dir = tmp_path / "game_input"
+    output_dir = tmp_path / "game_output"
+    process_dir = tmp_path / "game_process"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    process_dir.mkdir()
+
+    provider = MaskCheckingProvider(lang_source="en", lang_target="pt")
+    provider.cache_path_base = str(tmp_path)
+    provider._load_cache_for_current_languages()
+
+    extractor = RPGMakerExtractor(provider)
+    extractor.folderInput = str(input_dir)
+    extractor.folderOutput = str(output_dir)
+    extractor.folderProcess = str(process_dir)
+
+    # File 1 with \V[1]
+    f1_data = {
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "id": 0,
+                        "list": [
+                            {"code": 401, "parameters": ["Hero \\V[1]! Danger!"], "indent": 0},
+                            {"code": 0, "parameters": [], "indent": 0}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    (input_dir / "Map001.json").write_text(json.dumps(f1_data))
+
+    # File 2 with \C[2]
+    f2_data = {
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "id": 0,
+                        "list": [
+                            {"code": 401, "parameters": ["Danger \\C[2]! Hero!"], "indent": 0},
+                            {"code": 0, "parameters": [], "indent": 0}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    (input_dir / "Map002.json").write_text(json.dumps(f2_data))
+
+    extractor.process_files()
+    extractor.import_files()
+
+    # Verify provider received masked strings with __XTOK_
+    assert any("__XTOK_" in s for s in provider.received_texts)
+
+    # Verify output Map001 has restored \V[1] and translated words
+    out1 = json.loads((output_dir / "Map001.json").read_text())
+    text1 = out1["events"][1]["pages"][0]["list"][0]["parameters"][0]
+    assert "\\V[1]" in text1
+    assert "Herói" in text1
+    assert "Perigo" in text1
+    assert "__XTOK_" not in text1
+
+    # Verify output Map002 has restored \C[2] and translated words
+    out2 = json.loads((output_dir / "Map002.json").read_text())
+    text2 = out2["events"][1]["pages"][0]["list"][0]["parameters"][0]
+    assert "\\C[2]" in text2
+    assert "Herói" in text2
+    assert "Perigo" in text2
+    assert "__XTOK_" not in text2
+

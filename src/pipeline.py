@@ -56,6 +56,8 @@ class CacheLookupStep(PipelineStep):
 
         cache = context.translate_instance.cache
 
+        session_trans = getattr(context.translate_instance, '_session_translations', {})
+
         # Um único lookup em lote (TranslationMemory.lookup_many) em vez de 2
         # queries por string sob um lock global. Dublês de teste que usam um dict
         # puro caem no fallback item-a-item.
@@ -67,6 +69,8 @@ class CacheLookupStep(PipelineStep):
                     context.cached_positions[i] = s
                 elif s in hits:
                     context.cached_positions[i] = hits[s]
+                elif s in session_trans:
+                    context.cached_positions[i] = session_trans[s]
                 else:
                     context.pending_indices.append(i)
                     context.pending_originals.append(s)
@@ -77,6 +81,8 @@ class CacheLookupStep(PipelineStep):
                     context.cached_positions[i] = s
                 elif s in cache:
                     context.cached_positions[i] = cache[s]
+                elif s in session_trans:
+                    context.cached_positions[i] = session_trans[s]
                 else:
                     context.pending_indices.append(i)
                     context.pending_originals.append(s)

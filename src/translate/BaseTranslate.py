@@ -61,13 +61,15 @@ class BaseTranslate(ABC):
         self.lang_target = lang_target if lang_target else self.__class__.lang_target
         self.translate_client = None
         self.game_synopsis = None
+        self._session_translations = {}
+        self._failed_keys = set()
         self._load_cache_for_current_languages()
 
     def __deepcopy__(self, memo):
         new_obj = self.__class__.__new__(self.__class__)
         memo[id(self)] = new_obj
         for key, value in self.__dict__.items():
-            if key in ('cache', 'cache_lock'):
+            if key in ('cache', 'cache_lock', '_session_translations', '_failed_keys', '_engine'):
                 setattr(new_obj, key, value)
             else:
                 setattr(new_obj, key, copy.deepcopy(value, memo))
@@ -151,18 +153,22 @@ class BaseTranslate(ABC):
 
     def _create_batches(self, texts):
         """
-        Default implementation: chunks texts based on char_limit.
+        Chunks texts based on capabilities (max_request_chars, max_items) or char_limit.
         Can be overridden by subclasses if different batching logic is needed.
         """
         batches = []
         current_batch = []
         current_length = 0
+        caps = getattr(self, 'capabilities', None)
+        max_chars = getattr(caps, 'max_request_chars', self.char_limit) if caps else self.char_limit
+        max_items = getattr(caps, 'max_items', None) if caps else None
 
         for text in texts:
             text_len = len(text) + len(self.delimiter)
+            item_limit_reached = max_items is not None and len(current_batch) >= max_items
+            char_limit_reached = current_length + text_len >= max_chars and bool(current_batch)
 
-            # If adding this text exceeds the limit and we have a non-empty batch, start a new one
-            if current_length + text_len >= self.char_limit and current_batch:
+            if item_limit_reached or char_limit_reached:
                 batches.append(current_batch)
                 current_batch = []
                 current_length = 0

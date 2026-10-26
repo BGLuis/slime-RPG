@@ -932,6 +932,8 @@ class BaseExtractor(ABC):
                             game=getattr(self, 'game_name', None),
                         )
                         files_segments = {}
+                        file_mask_records = {}
+
                         for f, ent in pending_files:
                             if ent:
                                 _r, _d, rtext, fn = ent
@@ -942,15 +944,43 @@ class BaseExtractor(ABC):
                                     rtext = self.extract_text(fn, _d) if _d is not None else None
                                 except Exception:
                                     rtext = None
+                                    _d = None
                             if rtext:
                                 strings = [s for s in TextsUtils.dictToList(rtext) if isinstance(s, str) and s.strip()]
-                                files_segments[f] = [
-                                    Segment(id=f"{fn}#{idx}", source=s, context={'kind': 'dialogue'})
-                                    for idx, s in enumerate(strings)
-                                ]
+                                if strings:
+                                    patterns = self._get_patterns(fn, _d)
+                                    masked_strings, mask_map = TextsUtils.mask_tokens_in_structure(strings, patterns)
+                                    file_mask_records[f] = (strings, masked_strings, mask_map, fn)
+                                    files_segments[f] = [
+                                        Segment(id=f"{fn}#{idx}", source=m_s, context={'kind': 'dialogue'})
+                                        for idx, m_s in enumerate(masked_strings)
+                                    ]
 
                         if files_segments:
-                            engine.translate_segments_across_files(files_segments)
+                            results_by_file = engine.translate_segments_across_files(files_segments)
+                            session_trans = getattr(self.translate, '_session_translations', {})
+                            to_store_cache = []
+
+                            for f, (orig_strings, masked_strings, mask_map, fn) in file_mask_records.items():
+                                file_results = results_by_file.get(f, {})
+                                translated_masked = [
+                                    file_results.get(f"{fn}#{idx}", m_s)
+                                    for idx, m_s in enumerate(masked_strings)
+                                ]
+                                unmasked = TextsUtils.unmask_tokens_in_structure(translated_masked, mask_map)
+                                fixed = self.fix_text_translate(unmasked, orig_strings) if hasattr(self, 'fix_text_translate') else unmasked
+
+                                for orig, trans in zip(orig_strings, fixed):
+                                    session_trans[orig] = trans
+                                    if orig.strip() != str(trans).strip() and "__xtok_" not in str(trans).lower():
+                                        to_store_cache.append((orig, trans))
+
+                            if hasattr(self.translate, '_session_translations'):
+                                self.translate._session_translations = session_trans
+
+                            cache = getattr(self.translate, 'cache', None)
+                            if cache and hasattr(cache, 'store_many') and to_store_cache:
+                                cache.store_many(to_store_cache, game=getattr(self, 'game_name', None))
                     except Exception as e:
                         logging.debug(f"Cross-file engine translation fallback to per-file: {e}")
 

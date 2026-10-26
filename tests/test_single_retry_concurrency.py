@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 import pytest
@@ -120,3 +121,57 @@ def test_per_item_fallback_never_exceeds_concurrency_ceiling():
         f"Peak calls during per-item fallback ({provider.peak_calls}) exceeded ceiling ({provider.MAX_REQUESTS_SIMULTANEOUSLY})"
     )
     assert engine.peak_concurrency <= provider.MAX_REQUESTS_SIMULTANEOUSLY
+
+
+def test_always_failing_provider_in_full_extractor_run_calls_le_5(tmp_path):
+    """
+    Acceptance criterion: Across a full extractor run (multi-file),
+    an always-failing provider never exceeds <= 5 calls per batch/job.
+    """
+    from src.extractor.JsonExtractor import JsonExtractor
+    from src.translate.BaseTranslate import BaseTranslate
+
+    class FailingExtractorProvider(BaseTranslate):
+        agent = "failing_extractor"
+        id = "failing_extractor"
+        capabilities = Capabilities(max_request_chars=5000, max_items=10, native_batch=True)
+        total_calls = 0
+        _call_lock = threading.Lock()
+
+        def _translate_single_batch(self, texts):
+            with self._call_lock:
+                FailingExtractorProvider.total_calls += 1
+            raise ConnectionError("Persistent network outage")
+
+        def translate(self, segments, ctx=None):
+            with self._call_lock:
+                FailingExtractorProvider.total_calls += 1
+            raise ConnectionError("Persistent network outage")
+
+    FailingExtractorProvider.total_calls = 0
+    input_dir = tmp_path / "inp"
+    output_dir = tmp_path / "out"
+    process_dir = tmp_path / "proc"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    process_dir.mkdir()
+
+    for i in range(5):
+        (input_dir / f"Map{i:03d}.json").write_text(
+            json.dumps({"events": [{"text": ["Hero", "Sword", f"Quest {i}"]}]})
+        )
+
+    provider = FailingExtractorProvider(lang_source="en", lang_target="pt")
+    provider.cache_path_base = str(tmp_path)
+    provider._load_cache_for_current_languages()
+
+    extractor = JsonExtractor(provider)
+    extractor.folderInput = str(input_dir)
+    extractor.folderOutput = str(output_dir)
+    extractor.folderProcess = str(process_dir)
+
+    extractor.process_files()
+    extractor.import_files()
+
+    assert FailingExtractorProvider.total_calls <= 5, f"Expected <= 5 calls, but got {FailingExtractorProvider.total_calls}"
+
