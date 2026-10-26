@@ -862,10 +862,14 @@ class BaseExtractor(ABC):
         exts = tuple(f".{t.lower().lstrip('.')}" for t in self.files_types) if self.files_types else None
 
         files = []
+        target_files = getattr(self, 'target_files', None)
         for root, _, filenames in os.walk(folder_input):
             for filename in filenames:
                 file_path = os.path.join(root, filename)
                 if exts is None or filename.lower().endswith(exts):
+                    rel = os.path.relpath(file_path, folder_input).replace('\\', '/')
+                    if target_files is not None and rel not in target_files and filename not in target_files:
+                        continue
                     files.append(file_path)
 
         files.sort()

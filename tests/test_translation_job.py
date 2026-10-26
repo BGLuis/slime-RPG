@@ -414,3 +414,165 @@ def test_memory_only_application(tmp_path):
         result_data = json.loads((input_dir / "test.json").read_text(encoding="utf-8"))
         assert result_data["dialogue"] == "Olá"
         assert result_data["message"] == "Farewell"
+
+
+def test_incremental_skips_intact(tmp_path):
+    import os
+    import json
+    from src.extractor.JsonExtractor import JsonExtractor
+    from src.services import GameMetadata
+
+    orig_dir = tmp_path / "original"
+    orig_dir.mkdir()
+    trans_dir = tmp_path / "translated"
+    trans_dir.mkdir()
+
+    (orig_dir / "intact.json").write_text(json.dumps({"dialogue": "Original Intact"}), encoding="utf-8")
+    (trans_dir / "intact.json").write_text(json.dumps({"dialogue": "Traduzido Intacto"}), encoding="utf-8")
+
+    (orig_dir / "changed.json").write_text(json.dumps({"dialogue": "Original Initial"}), encoding="utf-8")
+    (trans_dir / "changed.json").write_text(json.dumps({"dialogue": "Traduzido Initial"}), encoding="utf-8")
+
+    meta = GameMetadata.build_meta(
+        str(trans_dir), str(orig_dir), ["json"],
+        origin=GameMetadata.ORIGIN_JOB,
+        extractor="json",
+        translator="MockTranslator",
+        lang_source="en",
+        lang_target="pt",
+    )
+    GameMetadata.save_meta(str(trans_dir), meta)
+
+    (orig_dir / "changed.json").write_text(json.dumps({"dialogue": "Original Updated"}), encoding="utf-8")
+
+    processed_files = []
+
+    class TrackingTranslator:
+        agent = "TrackingTrans"
+        name = "TrackingTrans"
+        lang_source = "en"
+        lang_target = "pt"
+        cache = {}
+
+        def translate_batch(self, batch, callback=None):
+            return [f"Tr-{s}" for s in batch]
+
+        def translator(self, text, callback=None):
+            return f"Tr-{text}"
+
+        def change_language(self, s, t):
+            self.lang_source = s
+            self.lang_target = t
+
+        def save_cache(self):
+            pass
+
+    translator = TrackingTranslator()
+    cfg = JobConfig(
+        extractor_name="json",
+        translator_name="Google",
+        lang_source="en",
+        lang_target="pt",
+        input_dir=str(orig_dir),
+        output_dir=str(trans_dir),
+        incremental=True,
+        backup=False,
+        verify=False,
+    )
+    with Workspace(str(orig_dir), output_dir=str(trans_dir)) as ws:
+        extractor = JsonExtractor(translator, workspace=ws)
+        orig_process_file = extractor.process_file
+
+        def tracking_process_file(file, *args, **kwargs):
+            processed_files.append(os.path.basename(str(file)))
+            return orig_process_file(file, *args, **kwargs)
+
+        extractor.process_file = tracking_process_file
+
+        job = TranslationJob(cfg, workspace=ws, extractor=extractor, translator=translator)
+        success = job.run(is_interactive=False)
+        assert success is True
+
+    assert "intact.json" not in processed_files
+    assert "changed.json" in processed_files
+
+    intact_content = json.loads((trans_dir / "intact.json").read_text(encoding="utf-8"))
+    assert intact_content["dialogue"] == "Traduzido Intacto"
+
+
+def test_incremental_updates_metadata(tmp_path):
+    import json
+    from src.extractor.JsonExtractor import JsonExtractor
+    from src.services import GameMetadata
+
+    orig_dir = tmp_path / "original_meta"
+    orig_dir.mkdir()
+    trans_dir = tmp_path / "translated_meta"
+    trans_dir.mkdir()
+
+    (orig_dir / "intact.json").write_text(json.dumps({"dialogue": "Original Intact"}), encoding="utf-8")
+    (trans_dir / "intact.json").write_text(json.dumps({"dialogue": "Traduzido Intacto"}), encoding="utf-8")
+
+    (orig_dir / "changed.json").write_text(json.dumps({"dialogue": "Original Initial"}), encoding="utf-8")
+    (trans_dir / "changed.json").write_text(json.dumps({"dialogue": "Traduzido Initial"}), encoding="utf-8")
+
+    past_ts = "2020-01-01T00:00:00"
+    meta = GameMetadata.build_meta(
+        str(trans_dir), str(orig_dir), ["json"],
+        origin=GameMetadata.ORIGIN_JOB,
+        extractor="json",
+        translator="MockTranslator",
+        lang_source="en",
+        lang_target="pt",
+    )
+    meta["created_at"] = past_ts
+    meta["updated_at"] = past_ts
+    GameMetadata.save_meta(str(trans_dir), meta)
+
+    (orig_dir / "changed.json").write_text(json.dumps({"dialogue": "Brand New Content"}), encoding="utf-8")
+
+    class SimpleTranslator:
+        agent = "SimpleTrans"
+        name = "SimpleTrans"
+        lang_source = "en"
+        lang_target = "pt"
+        cache = {}
+
+        def translate_batch(self, batch, callback=None):
+            return [f"Tr-{s}" for s in batch]
+
+        def translator(self, text, callback=None):
+            return f"Tr-{text}"
+
+        def change_language(self, s, t):
+            self.lang_source = s
+            self.lang_target = t
+
+        def save_cache(self):
+            pass
+
+    translator = SimpleTranslator()
+    cfg = JobConfig(
+        extractor_name="json",
+        translator_name="Google",
+        lang_source="en",
+        lang_target="pt",
+        input_dir=str(orig_dir),
+        output_dir=str(trans_dir),
+        incremental=True,
+        backup=False,
+        verify=False,
+    )
+    with Workspace(str(orig_dir), output_dir=str(trans_dir)) as ws:
+        extractor = JsonExtractor(translator, workspace=ws)
+        job = TranslationJob(cfg, workspace=ws, extractor=extractor, translator=translator)
+        success = job.run(is_interactive=False)
+        assert success is True
+
+    updated_meta = GameMetadata.load_meta(str(trans_dir))
+    assert updated_meta is not None
+    assert updated_meta["created_at"] == past_ts
+    assert updated_meta["updated_at"] > past_ts
+
+    expected_new_hash = GameMetadata.sha256_file(str(trans_dir / "changed.json"))
+    assert updated_meta["files"]["changed.json"]["translated_sha256"] == expected_new_hash

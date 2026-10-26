@@ -27,6 +27,7 @@ class JobConfig:
     memory_only: bool = False
     offline: bool = False
     switch_engine: bool = False
+    incremental: bool = False
 
     def __post_init__(self):
         if self.offline:
@@ -228,6 +229,34 @@ class TranslationJob:
         if hasattr(self.extractor, 'init_folder'):
             self.extractor.init_folder()
 
+        if getattr(self.config, 'incremental', False):
+            from src.services import GameMetadata
+            meta_dir = (
+                self.workspace.output_dir
+                if GameMetadata.load_meta(self.workspace.output_dir)
+                else self.workspace.input_dir
+            )
+            meta = GameMetadata.load_meta(meta_dir)
+            if meta:
+                orig_dir = (
+                    self._backup_dir
+                    or GameMetadata.resolve_original_dir(meta_dir, meta)
+                    or (self.workspace.input_dir if not self.workspace.is_in_place else None)
+                )
+                report = GameMetadata.verify(meta_dir, orig_dir)
+                if report is not None:
+                    target_files = {
+                        item['file'].replace('\\', '/')
+                        for item in report
+                        if item.get('state') in (
+                            GameMetadata.STATE_ORIGINAL_CHANGED,
+                            GameMetadata.STATE_NEW,
+                            GameMetadata.STATE_PARTIAL,
+                        )
+                    }
+                    self.extractor.target_files = target_files
+                    log(f"Modo incremental: {len(target_files)} arquivo(s) precisam de tradução", 'cyan')
+
         log(_i18n.tr('log_processing_files'), 'green')
 
         if not gui_signals:
@@ -341,7 +370,15 @@ class TranslationJob:
             original_dir = self.workspace.input_dir
 
         if not original_dir or not os.path.isdir(original_dir):
-            original_dir = None
+            prev_meta = GameMetadata.load_meta(translated_dir)
+            if prev_meta:
+                resolved = GameMetadata.resolve_original_dir(translated_dir, prev_meta)
+                if resolved and os.path.isdir(resolved):
+                    original_dir = resolved
+                else:
+                    original_dir = None
+            else:
+                original_dir = None
 
         try:
             file_status = {
