@@ -217,6 +217,13 @@ Atalhos/abreviações de terminal disponíveis:
     parser.add_argument('--keep-original', action='store_true',
                         help='No modo filenames, manter o arquivo original e criar uma cópia traduzida')
 
+    parser.add_argument('--adopt', metavar='PASTA_TRADUZIDA',
+                        help='Registra o metadado de um jogo já traduzido (requer --original e -e)')
+    parser.add_argument('--verify-game', metavar='PASTA_TRADUZIDA',
+                        help='Confere arquivos traduzidos contra o metadado registrado')
+    parser.add_argument('--original', metavar='PASTA_ORIGINAL',
+                        help='Pasta com os arquivos originais (usada por --adopt e --verify-game)')
+
     parser.add_argument('--list-extractors', action='store_true',
                         help='Listar extratores disponíveis')
     parser.add_argument('--list-translators', action='store_true',
@@ -250,6 +257,53 @@ def list_options():
     print(_i18n.tr('cli_languages_supported'))
     for lang_name, lang_code in lang_options.items():
         print(f"  - {lang_code}: {lang_name}")
+
+
+def run_game_metadata_command(args):
+    """Executa --adopt / --verify-game. Devolve o código de saída."""
+    from src.services import GameMetadata
+
+    if args.adopt:
+        if not (args.original and args.extractor):
+            cli.print_colored_line('--adopt exige --original e -e/--extractor.', 'red')
+            return 1
+        try:
+            extractor_name = ExtractorFactory.find_match(args.extractor)
+        except AmbiguousPluginError as e:
+            cli.print_colored_line(str(e), 'red')
+            return 1
+        if not extractor_name:
+            cli.print_colored_line(f"Extrator não encontrado: {args.extractor}", 'red')
+            return 1
+        for label, folder in (('traduzida', args.adopt), ('original', args.original)):
+            if not os.path.isdir(folder):
+                cli.print_colored_line(f"Pasta {label} não existe: {folder}", 'red')
+                return 1
+        extensions = ExtractorFactory.get_available()[extractor_name].files_types
+        meta = GameMetadata.build_meta(
+            args.adopt, args.original, extensions,
+            origin=GameMetadata.ORIGIN_LEGACY, extractor=extractor_name, translator=None,
+            lang_source=args.source, lang_target=args.target,
+            previous=GameMetadata.load_meta(args.adopt),
+        )
+        path = GameMetadata.save_meta(args.adopt, meta)
+        states = GameMetadata.summarize(
+            [{'state': e['status']} for e in meta['files'].values()]
+        )
+        cli.print_colored_line(f"Metadado gravado em {path}", 'green')
+        cli.print_colored_line(f"  {len(meta['files'])} arquivo(s) registrados: {states}", 'cyan')
+        return 0
+
+    report = GameMetadata.verify(args.verify_game, args.original)
+    if report is None:
+        cli.print_colored_line(
+            f"Sem metadado em {args.verify_game}. Use --adopt para registrar o jogo.", 'yellow')
+        return 1
+    for item in report:
+        if item['state'] not in (GameMetadata.STATE_INTACT, GameMetadata.STATE_UNCHANGED):
+            cli.print_colored_line(f"  [{item['state']}] {item['file']}", 'yellow')
+    cli.print_colored_line(f"Resumo: {GameMetadata.summarize(report)}", 'cyan')
+    return 0
 
 
 def validate_arguments(args):
@@ -653,6 +707,9 @@ def main(argv=None):
             cli.print_colored_line(_i18n.tr('log_details', error=e), 'yellow')
             cli.print_colored_line(_i18n.tr('log_starting_terminal_mode'), 'cyan')
             time.sleep(3)
+
+    if args.adopt or args.verify_game:
+        sys.exit(run_game_metadata_command(args))
 
     # Opções de listagem
     if args.list_extractors or args.list_translators or args.list_languages:

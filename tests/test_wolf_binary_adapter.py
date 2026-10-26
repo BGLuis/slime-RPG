@@ -78,6 +78,50 @@ def test_wolf_map_roundtrip(tmp_path):
     assert reloaded_cmds[2]["string_args"] == ["Active Quest"]
 
 
+def test_wolf_pro_lz4_map_roundtrip(tmp_path):
+    map_path = tmp_path / "Map002.mps"
+
+    # Construir mapa compactado do Wolf RPG Pro 3.x (attributes >= 0x65)
+    wolf_map = WolfMap()
+    wolf_map.encoding_type = 85  # UTF-8
+    wolf_map.is_utf8 = True
+    wolf_map.attributes = 101  # 0x65
+    wolf_map.version = 103  # 0x67
+    wolf_map.unknown_str = "ProArea"
+    wolf_map.tileset_id = 2
+    wolf_map.width = 8
+    wolf_map.height = 8
+    wolf_map.no_tiles = True
+    wolf_map.is_compressed = True
+
+    ev = WolfMapEvent(event_id=1)
+    ev.name = "Chest"
+    ev.x = 2
+    ev.y = 3
+
+    page = WolfMapPage(page_id=0)
+    cmd1 = WolfCommand(cid=WolfEventCode.SHOW_MESSAGE, string_args=["Você encontrou uma poção!"])
+    page.commands = [cmd1]
+    ev.pages = [page]
+    wolf_map.events = [ev]
+
+    wolf_map.save(str(map_path))
+    assert map_path.exists()
+
+    # Carregar via WolfBinaryAdapter
+    normalized = WolfBinaryAdapter.load_file(str(map_path))
+    assert normalized["events"][1]["name"] == "Chest"
+    assert normalized["events"][1]["pages"][0]["list"][0]["string_args"] == ["Você encontrou uma poção!"]
+
+    # Modificar texto e salvar
+    normalized["events"][1]["pages"][0]["list"][0]["string_args"] = ["You found a potion!"]
+    WolfBinaryAdapter.save_file(str(map_path), normalized)
+
+    # Recarregar e verificar
+    reloaded = WolfBinaryAdapter.load_file(str(map_path))
+    assert reloaded["events"][1]["pages"][0]["list"][0]["string_args"] == ["You found a potion!"]
+
+
 def test_wolf_common_events_roundtrip(tmp_path):
     ce_path = tmp_path / "CommonEvent.dat"
 

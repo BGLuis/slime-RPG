@@ -44,6 +44,106 @@ def decrypt_dat_v1(data: bytearray, seeds: List[int], intervals: List[int]) -> b
     return data
 
 
+def lz4_decompress(src: bytes, uncompressed_size: int = None) -> bytes:
+    """Descompacta um bloco LZ4 simples utilizado pelo Wolf RPG Pro / 3.x."""
+    src_len = len(src)
+    src_pos = 0
+    dst = bytearray()
+    while src_pos < src_len:
+        token = src[src_pos]
+        src_pos += 1
+        lit_len = token >> 4
+        if lit_len == 15:
+            while src_pos < src_len:
+                s = src[src_pos]
+                src_pos += 1
+                lit_len += s
+                if s != 255:
+                    break
+        if lit_len > 0:
+            dst.extend(src[src_pos:src_pos + lit_len])
+            src_pos += lit_len
+        if src_pos >= src_len:
+            break
+        offset = struct.unpack_from('<H', src, src_pos)[0]
+        src_pos += 2
+        if offset == 0:
+            break
+        match_len = (token & 0x0F) + 4
+        if match_len == 19:
+            while src_pos < src_len:
+                s = src[src_pos]
+                src_pos += 1
+                match_len += s
+                if s != 255:
+                    break
+        for _ in range(match_len):
+            dst.append(dst[-offset])
+    if uncompressed_size is not None and len(dst) > uncompressed_size:
+        return bytes(dst[:uncompressed_size])
+    return bytes(dst)
+
+
+def lz4_compress(src: bytes) -> bytes:
+    """Compacta um buffer em formato de bloco LZ4 para o Wolf RPG Pro / 3.x."""
+    src_len = len(src)
+    if src_len == 0:
+        return b''
+    hash_table = {}
+    pos = 0
+    anchor = 0
+    dst = bytearray()
+
+    def hash_fn(p: int) -> int:
+        return ((struct.unpack_from('<I', src, p)[0] * 2654435761) & 0xFFFFFFFF) >> 18
+
+    while pos <= src_len - 12:
+        h = hash_fn(pos)
+        ref = hash_table.get(h)
+        hash_table[h] = pos
+        if ref is not None and (pos - ref) < 65536 and src[ref:ref + 4] == src[pos:pos + 4]:
+            match_len = 4
+            while pos + match_len < src_len - 5 and src[ref + match_len] == src[pos + match_len]:
+                match_len += 1
+            lit_len = pos - anchor
+            offset = pos - ref
+            token_lit = min(lit_len, 15)
+            token_match = min(match_len - 4, 15)
+            dst.append((token_lit << 4) | token_match)
+            if lit_len >= 15:
+                rem = lit_len - 15
+                while rem >= 255:
+                    dst.append(255)
+                    rem -= 255
+                dst.append(rem)
+            if lit_len > 0:
+                dst.extend(src[anchor:anchor + lit_len])
+            dst.extend(struct.pack('<H', offset))
+            if match_len - 4 >= 15:
+                rem = (match_len - 4) - 15
+                while rem >= 255:
+                    dst.append(255)
+                    rem -= 255
+                dst.append(rem)
+            pos += match_len
+            anchor = pos
+            continue
+        pos += 1
+
+    lit_len = src_len - anchor
+    token_lit = min(lit_len, 15)
+    dst.append(token_lit << 4)
+    if lit_len >= 15:
+        rem = lit_len - 15
+        while rem >= 255:
+            dst.append(255)
+            rem -= 255
+        dst.append(rem)
+    if lit_len > 0:
+        dst.extend(src[anchor:src_len])
+    return bytes(dst)
+
+
 class WolfDataList(list):
     """Subclasse de list para anexar os dados binários originais do Wolf RPG"""
     def __init__(self, *args, **kwargs):
@@ -484,26 +584,28 @@ class WolfMap:
         self.no_tiles = False
         self.tiles = b""
         self.events: List[WolfMapEvent] = []
+        self.is_compressed: bool = False
 
     @classmethod
     def load(cls, file_path_or_bytes: Union[str, bytes]) -> 'WolfMap':
         coder = WolfFileCoder.open_read(file_path_or_bytes)
         raw_val = coder.stream.getvalue()
-        if len(raw_val) >= 33 and raw_val.startswith(cls.MAP_MAGIC):
-            encoding_type = struct.unpack_from('<I', raw_val, 16)[0]
-            if encoding_type == 85 and len(raw_val) >= 25:
-                attr = struct.unpack_from('<I', raw_val, 20)[0]
-                ver = raw_val[24]
-                if attr == 103 and ver == 105:
-                    fname = os.path.basename(file_path_or_bytes) if isinstance(file_path_or_bytes, str) else "Map"
-                    raise WolfProEncryptedError(
-                        f"O mapa '{fname}' utiliza compressão/proteção do WOLF RPG Pro 3.x. "
-                        "Para traduzir este arquivo, desproteja-o previamente utilizando o UberWolf (opção 'Remove Pro Protection')."
-                    )
+        is_compressed = False
+
+        if len(raw_val) >= 25 and raw_val.startswith(cls.MAP_MAGIC):
+            attr = struct.unpack_from('<I', raw_val, 20)[0]
+            if attr >= 0x65 and len(raw_val) >= 33:
+                # Mapa compactado com bloco LZ4 (Wolf RPG Pro / 3.x)
+                dec_size, enc_size = struct.unpack_from('<II', raw_val, 25)
+                comp_data = raw_val[33:33 + enc_size]
+                decomp = lz4_decompress(comp_data, dec_size)
+                coder = WolfFileCoder.open_read(raw_val[:25] + decomp)
+                is_compressed = True
 
         coder.verify(cls.MAP_MAGIC)
 
         m = cls()
+        m.is_compressed = is_compressed
         m.encoding_type = coder.read_u4()
         m.is_utf8 = (m.encoding_type == 85)
         coder.is_utf8 = m.is_utf8
@@ -515,7 +617,7 @@ class WolfMap:
 
         m.width = coder.read_u4()
         m.height = coder.read_u4()
-        event_count = coder.read_u4()
+        coder.read_u4()  # event_count
 
         m.no_tiles = False
         if m.encoding_type != 0:
@@ -544,6 +646,44 @@ class WolfMap:
         return m
 
     def save(self, file_path_or_coder: Optional[Union[str, WolfFileCoder]] = None) -> bytes:
+        if self.is_compressed or self.attributes >= 0x65:
+            header_coder = WolfFileCoder.open_write(is_utf8=self.is_utf8)
+            header_coder.write(self.MAP_MAGIC)
+            header_coder.write_u4(self.encoding_type)
+            header_coder.write_u4(self.attributes)
+            header_coder.write_u1(self.version)
+            header_bytes = header_coder.getvalue()
+
+            body_coder = WolfFileCoder.open_write(is_utf8=self.is_utf8)
+            body_coder.write_string(self.unknown_str)
+            body_coder.write_u4(self.tileset_id)
+            body_coder.write_u4(self.width)
+            body_coder.write_u4(self.height)
+            body_coder.write_u4(len(self.events))
+
+            if self.encoding_type != 0:
+                if self.no_tiles:
+                    body_coder.write_u4(0xFFFFFFFF)
+
+            if not self.no_tiles:
+                body_coder.write(self.tiles)
+
+            for ev in self.events:
+                body_coder.write_u1(self.MAP_EVENT_MARKER)
+                ev.write(body_coder)
+
+            body_coder.write_terminator(self.MAP_TERMINATOR)
+            body_bytes = body_coder.getvalue()
+
+            comp_bytes = lz4_compress(body_bytes)
+            out_bytes = header_bytes + struct.pack('<II', len(body_bytes), len(comp_bytes)) + comp_bytes
+            if isinstance(file_path_or_coder, str):
+                with open(file_path_or_coder, 'wb') as f:
+                    f.write(out_bytes)
+            elif isinstance(file_path_or_coder, WolfFileCoder):
+                file_path_or_coder.write(out_bytes)
+            return out_bytes
+
         if isinstance(file_path_or_coder, WolfFileCoder):
             coder = file_path_or_coder
         else:
@@ -745,17 +885,29 @@ class WolfCommonEvents:
                 "Para traduzir este arquivo, desproteja-o previamente utilizando o UberWolf (opção 'Remove Pro Protection')."
             )
         ce = cls()
-        try:
-            coder.verify(cls.COMMON_MAGIC2)
-            ce.magic = cls.COMMON_MAGIC2
+        if raw_val[:10] == b'\x00W\x00\x00OL\x00FC\x00':
+            coder.verify(raw_val[:11])
+            ce.magic = raw_val[:11]
             ce.wolfversion = 2
             coder.is_utf8 = False
-        except Exception:
-            coder.verify(cls.COMMON_MAGIC3)
-            ce.magic = cls.COMMON_MAGIC3
+        elif raw_val[:10] == b'\x00W\x00\x00OLUFC\x00':
+            coder.verify(raw_val[:11])
+            ce.magic = raw_val[:11]
             ce.wolfversion = 3
             ce.is_utf8 = True
             coder.is_utf8 = True
+        else:
+            try:
+                coder.verify(cls.COMMON_MAGIC2)
+                ce.magic = cls.COMMON_MAGIC2
+                ce.wolfversion = 2
+                coder.is_utf8 = False
+            except Exception:
+                coder.verify(cls.COMMON_MAGIC3)
+                ce.magic = cls.COMMON_MAGIC3
+                ce.wolfversion = 3
+                ce.is_utf8 = True
+                coder.is_utf8 = True
 
         events_len = coder.read_u4()
         ce.events = [None] * events_len
@@ -804,12 +956,16 @@ class WolfDatabaseField:
         self.default_value = 0
 
     @property
+    def is_valid(self) -> bool:
+        return self.indexinfo >= self.INT_START
+
+    @property
     def is_string(self) -> bool:
         return self.indexinfo >= self.STRING_START
 
     @property
     def is_int(self) -> bool:
-        return not self.is_string
+        return self.INT_START <= self.indexinfo < self.STRING_START
 
     @property
     def index(self) -> int:
@@ -941,7 +1097,9 @@ class WolfDatabase:
                 t.fields[idx].indexinfo = coder.read_u4()
 
             data_size = coder.read_u4()
-            if len(t.data) < data_size:
+            if len(t.data) > data_size:
+                t.data = t.data[:data_size]
+            elif len(t.data) < data_size:
                 for idx in range(len(t.data), data_size):
                     t.data.append(WolfDatabaseData(f"Data_{idx}"))
 

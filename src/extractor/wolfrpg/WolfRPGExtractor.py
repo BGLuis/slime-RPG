@@ -54,14 +54,52 @@ class WolfRPGExtractor(BaseExtractor):
         if not os.path.exists(folder_input):
             return
 
+        multimedia_prefixes = (
+            'bgm', 'se', 'seh', 'sound', 'voice', 'graphic', 'picture', 'cg',
+            'hcg', 'samune', 'hsamune', 'face', 'charachip', 'enemychip', 'enemygraphic',
+            'eventgraphic', 'systemgraphic', 'battlegraphic', 'battleeffect',
+            'mapchip', 'parallax', 'fog', 'font', 'hfont', 'icon', 'movie', 'video'
+        )
+
         for root, _, filenames in os.walk(folder_input):
             for filename in filenames:
                 if filename.lower().endswith('.wolf'):
                     archive_path = os.path.join(root, filename)
-                    dest_dir = os.path.dirname(archive_path)
+                    stem = os.path.splitext(filename)[0]
+
+                    if any(stem.lower().startswith(p) for p in multimedia_prefixes):
+                        logging.info(f"Ignorando contêiner multimídia {filename}")
+                        continue
+
+                    # No Wolf RPG, arquivos como BasicData.wolf e MapData.wolf correspondem
+                    # às pastas Data/BasicData e Data/MapData.
+                    # Se o contêiner for Data.wolf, os arquivos já costumam conter a hierarquia interna.
+                    if stem.lower() != 'data':
+                        dest_dir = os.path.join(root, stem)
+                    else:
+                        dest_dir = root
+
+                    if os.path.exists(dest_dir) and any(not f.lower().endswith('.wolf') for f in os.listdir(dest_dir)):
+                        logging.info(f"Pasta {dest_dir} já contém arquivos extraídos. Pulando descompactação de {filename}.")
+                        bak_path = archive_path + ".bak"
+                        if not os.path.exists(bak_path):
+                            try:
+                                os.rename(archive_path, bak_path)
+                                logging.info(f"Renomeado {filename} para {os.path.basename(bak_path)} para priorizar pasta solta.")
+                            except Exception as e:
+                                logging.warning(f"Não foi possível renomear {filename}: {e}")
+                        continue
+
                     try:
                         WolfArchive.extract_archive(archive_path, dest_dir)
                         logging.info(f"✓ Extraído contêiner .wolf {filename} para {dest_dir}")
+                        bak_path = archive_path + ".bak"
+                        if not os.path.exists(bak_path):
+                            try:
+                                os.rename(archive_path, bak_path)
+                                logging.info(f"Renomeado {filename} para {os.path.basename(bak_path)} para priorizar pasta solta.")
+                            except Exception as e:
+                                logging.warning(f"Não foi possível renomear {filename}: {e}")
                     except Exception as e:
                         logging.error(f"✗ Falha ao descompactar contêiner .wolf {archive_path}: {e}")
                         raise
@@ -203,7 +241,8 @@ class WolfRPGExtractor(BaseExtractor):
             p_format_vars
         ]
 
-    def is_translatable_file(self, file_name, file_path=None):
+    @classmethod
+    def is_translatable_file(cls, file_name, file_path=None):
         base_name = os.path.basename(file_name)
         if base_name.endswith('.mps'):
             return True

@@ -61,6 +61,7 @@ class TranslationJob:
         self.extractor = None
         self.translator = None
         self.fn_translator = None
+        self._backup_dir = None
 
         self._init_components(extractor=extractor, translator=translator)
 
@@ -127,6 +128,7 @@ class TranslationJob:
         backup_dir = f"{self.workspace.input_dir}-{self.config.lang_source}"
         exts = getattr(self.extractor, 'files_types', []) if self.extractor else None
         newly_backed_up = ensure_backup(self.workspace.input_dir, backup_dir, extensions=exts)
+        self._backup_dir = backup_dir
         return backup_dir, bool(newly_backed_up)
 
     def run(self, gui_signals=None, gui_verify_callback=None, is_interactive=None):
@@ -260,8 +262,10 @@ class TranslationJob:
             from main import sync_folder_tree
             sync_folder_tree(self.extractor.folderOutput, self.workspace.output_dir)
 
-        # Resumo final de arquivos com erro ou parciais
         threads_status = getattr(self.extractor, 'threads_status', [])
+        self._record_game_metadata(threads_status, log)
+
+        # Resumo final de arquivos com erro ou parciais
         error_files = [
             s for s in threads_status
             if s.get('status') == 'erro'
@@ -289,6 +293,46 @@ class TranslationJob:
         else:
             log(_i18n.tr('log_finished_success'), 'green')
         return True
+
+    def _record_game_metadata(self, threads_status, log):
+        """Registra original x traduzido; uma falha aqui nunca deve invalidar a tradução."""
+        from src.services import GameMetadata
+
+        translated_dir = self.workspace.output_dir
+        if not translated_dir or not os.path.isdir(translated_dir):
+            return
+
+        original_dir = self._backup_dir
+        if not original_dir and not self.workspace.is_in_place:
+            original_dir = self.workspace.input_dir
+
+        if not original_dir or not os.path.isdir(original_dir):
+            original_dir = None
+
+        try:
+            file_status = {
+                s['file'].replace(os.sep, '/'): ('unchanged' if s['status'] == 'ignore' else s['status'])
+                for s in threads_status
+                if s.get('file') and s.get('status') in ('success', 'partial', 'ignore')
+            }
+            meta = GameMetadata.build_meta(
+                translated_dir, original_dir, getattr(self.extractor, 'files_types', None),
+                origin=GameMetadata.ORIGIN_JOB,
+                extractor=self.config.extractor_name,
+                translator=self.config.translator_name,
+                lang_source=self.config.lang_source,
+                lang_target=self.config.lang_target,
+                file_status=file_status,
+                previous=GameMetadata.load_meta(translated_dir),
+            )
+            saved_path = GameMetadata.save_meta(translated_dir, meta)
+            if original_dir:
+                log(f"Metadado do jogo gravado em {saved_path}", 'green')
+            else:
+                log(f"Metadado do jogo gravado sem backup original em {saved_path}", 'cyan')
+        except Exception as e:
+            logging.warning(f"Não foi possível gravar o metadado do jogo: {e}")
+            log(f"Aviso: Não foi possível gravar o metadado do jogo: {e}", 'yellow')
 
     def _run_filenames_mode(self, log):
         self.fn_translator.folderOutput = self.workspace.output_dir

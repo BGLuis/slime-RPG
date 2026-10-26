@@ -1,5 +1,6 @@
+import io
 import os
-from io import SEEK_END, SEEK_SET, TextIOWrapper
+from io import SEEK_END, SEEK_SET
 from pathlib import Path
 from stat import FILE_ATTRIBUTE_DIRECTORY
 
@@ -214,6 +215,309 @@ class ArchivedFile:
 )"""
 
 
+class WinRng:
+    """MSVC LCG Pseudo-Random Number Generator."""
+    def __init__(self, seed: int = 1):
+        self.state = seed & 0xFFFFFFFF
+
+    def srand(self, seed: int):
+        self.state = seed & 0xFFFFFFFF
+
+    def rand(self) -> int:
+        self.state = (self.state * 214013 + 2531011) & 0xFFFFFFFF
+        return (self.state >> 16) & 0x7FFF
+
+
+def rotr8(val: int, r: int) -> int:
+    val &= 0xFF
+    r %= 8
+    return ((val >> r) | (val << (8 - r))) & 0xFF
+
+
+SBOX = [
+    0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
+    0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0, 0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0,
+    0xB7, 0xFD, 0x93, 0x26, 0x36, 0x3F, 0xF7, 0xCC, 0x34, 0xA5, 0xE5, 0xF1, 0x71, 0xD8, 0x31, 0x15,
+    0x04, 0xC7, 0x23, 0xC3, 0x18, 0x96, 0x05, 0x9A, 0x07, 0x12, 0x80, 0xE2, 0xEB, 0x27, 0xB2, 0x75,
+    0x09, 0x83, 0x2C, 0x1A, 0x1B, 0x6E, 0x5A, 0xA0, 0x52, 0x3B, 0xD6, 0xB3, 0x29, 0xE3, 0x2F, 0x84,
+    0x53, 0xD1, 0x00, 0xED, 0x20, 0xFC, 0xB1, 0x5B, 0x6A, 0xCB, 0xBE, 0x39, 0x4A, 0x4C, 0x58, 0xCF,
+    0xD0, 0xEF, 0xAA, 0xFB, 0x43, 0x4D, 0x33, 0x85, 0x45, 0xF9, 0x02, 0x7F, 0x50, 0x3C, 0x9F, 0xA8,
+    0x51, 0xA3, 0x40, 0x8F, 0x92, 0x9D, 0x38, 0xF5, 0xBC, 0xB6, 0xDA, 0x21, 0x10, 0xFF, 0xF3, 0xD2,
+    0xCD, 0x0C, 0x13, 0xEC, 0x5F, 0x97, 0x44, 0x17, 0xC4, 0xA7, 0x7E, 0x3D, 0x64, 0x5D, 0x19, 0x73,
+    0x60, 0x81, 0x4F, 0xDC, 0x22, 0x2A, 0x90, 0x88, 0x46, 0xEE, 0xB8, 0x14, 0xDE, 0x5E, 0x0B, 0xDB,
+    0xE0, 0x32, 0x3A, 0x0A, 0x49, 0x06, 0x24, 0x5C, 0xC2, 0xD3, 0xAC, 0x62, 0x91, 0x95, 0xE4, 0x79,
+    0xE7, 0xC8, 0x37, 0x6D, 0x8D, 0xD5, 0x4E, 0xA9, 0x6C, 0x56, 0xF4, 0xEA, 0x65, 0x7A, 0xAE, 0x08,
+    0xBA, 0x78, 0x25, 0x2E, 0x1C, 0xA6, 0xB4, 0xC6, 0xE8, 0xDD, 0x74, 0x1F, 0x4B, 0xBD, 0x8B, 0x8A,
+    0x70, 0x3E, 0xB5, 0x66, 0x48, 0x03, 0xF6, 0x0E, 0x61, 0x35, 0x57, 0xB9, 0x86, 0xC1, 0x1D, 0x9E,
+    0xE1, 0xF8, 0x98, 0x11, 0x69, 0xD9, 0x8E, 0x94, 0x9B, 0x1E, 0x87, 0xE9, 0xCE, 0x55, 0x28, 0xDF,
+    0x8C, 0xA1, 0x89, 0x0D, 0xBF, 0xE6, 0x42, 0x68, 0x41, 0x99, 0x2D, 0x0F, 0xB0, 0x54, 0xBB, 0x16,
+]
+RCON = [0x8D, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36]
+
+
+def xtime(x: int) -> int:
+    return ((x << 1) ^ (((x >> 7) & 1) * 0x1B)) & 0xFF
+
+
+def aes_key_expansion(key: bytes) -> bytearray:
+    p_round_key = bytearray(176)
+    for i in range(4):
+        p_round_key[i * 4 + 0] = key[i * 4 + 0]
+        p_round_key[i * 4 + 1] = key[i * 4 + 1]
+        p_round_key[i * 4 + 2] = key[i * 4 + 2]
+        p_round_key[i * 4 + 3] = key[i * 4 + 3]
+
+    for i in range(4, 44):
+        k = (i - 1) * 4
+        tempa = [p_round_key[k + 0], p_round_key[k + 1], p_round_key[k + 2], p_round_key[k + 3]]
+        if (i % 4) == 0:
+            u8tmp = tempa[0]
+            tempa[0] = tempa[1]
+            tempa[1] = tempa[2]
+            tempa[2] = tempa[3]
+            tempa[3] = u8tmp
+            tempa[0] = SBOX[tempa[0]] ^ RCON[i // 4]
+            tempa[1] = SBOX[tempa[1]] >> 4
+            tempa[2] = (~SBOX[tempa[2]]) & 0xFF
+            tempa[3] = rotr8(SBOX[tempa[3]], 7)
+
+        j = i * 4
+        k = (i - 4) * 4
+        p_round_key[j + 0] = p_round_key[k + 0] ^ tempa[0]
+        p_round_key[j + 1] = p_round_key[k + 1] ^ tempa[1]
+        p_round_key[j + 2] = p_round_key[k + 2] ^ tempa[2]
+        p_round_key[j + 3] = p_round_key[k + 3] ^ tempa[3]
+
+    return p_round_key
+
+
+def aes_cipher(p_state: bytearray, p_round_key: bytearray):
+    for i in range(16):
+        p_state[i] ^= p_round_key[i]
+
+    for r in range(1, 10):
+        for i in range(16):
+            p_state[i] = SBOX[p_state[i]]
+        p_state[1], p_state[5], p_state[9], p_state[13] = p_state[5], p_state[9], p_state[13], p_state[1]
+        p_state[2], p_state[10] = p_state[10], p_state[2]
+        p_state[6], p_state[14] = p_state[14], p_state[6]
+        p_state[3], p_state[7], p_state[11], p_state[15] = p_state[15], p_state[3], p_state[7], p_state[11]
+
+        for c in range(4):
+            idx = c * 4
+            s0 = p_state[idx + 0]
+            s1 = p_state[idx + 1]
+            s2 = p_state[idx + 2]
+            s3 = p_state[idx + 3]
+            tmp = s0 ^ s1 ^ s2 ^ s3
+            p_state[idx + 0] ^= tmp ^ xtime(s1 ^ s0)
+            p_state[idx + 1] ^= tmp ^ xtime(s2 ^ s1)
+            p_state[idx + 2] ^= tmp ^ xtime(s2 ^ s3)
+            p_state[idx + 3] ^= tmp ^ xtime(s3 ^ s0)
+
+        rk_idx = r * 16
+        for i in range(16):
+            p_state[i] ^= p_round_key[rk_idx + i]
+
+    for i in range(16):
+        p_state[i] = SBOX[p_state[i]]
+    p_state[1], p_state[5], p_state[9], p_state[13] = p_state[5], p_state[9], p_state[13], p_state[1]
+    p_state[2], p_state[10] = p_state[10], p_state[2]
+    p_state[6], p_state[14] = p_state[14], p_state[6]
+    p_state[3], p_state[7], p_state[11], p_state[15] = p_state[15], p_state[3], p_state[7], p_state[11]
+
+    for i in range(16):
+        p_state[i] ^= p_round_key[160 + i]
+
+
+def init_aes128(p_pwd: bytes, crypt_version: int) -> bytearray:
+    key = bytearray(16)
+    iv = bytearray(16)
+    p_pro_key = bytearray(4)
+
+    for i in range(15):
+        key[i] ^= (p_pwd[(i * 7) % 15] + i * i) & 0xFF
+        iv[i] ^= (p_pwd[(i * 11) % 15] - i * i) & 0xFF
+        key[15] ^= (p_pwd[i] + i * 3) & 0xFF
+        iv[15] ^= (p_pwd[i] + i * 5) & 0xFF
+
+    key[0] ^= p_pro_key[0]
+    iv[10] ^= p_pro_key[0]
+    key[4] ^= p_pro_key[1]
+    iv[1] ^= p_pro_key[1]
+    key[8] ^= p_pro_key[2]
+    iv[4] ^= p_pro_key[2]
+    key[12] ^= p_pro_key[3]
+    iv[7] ^= p_pro_key[3]
+
+    round_key = aes_key_expansion(key)
+    return round_key + iv
+
+
+def aes_ctr_xcrypt(data: bytearray, data_offset: int, key_with_iv: bytearray, size: int):
+    p_iv = memoryview(key_with_iv)[176:192]
+    p_key = key_with_iv[:176]
+    state = bytearray(16)
+    bi = 16
+
+    for i in range(size):
+        if bi == 16:
+            state[:] = p_iv
+            aes_cipher(state, p_key)
+            for j in range(15, -1, -1):
+                if p_iv[j] == 0xFF:
+                    p_iv[j] = 0
+                    continue
+                p_iv[j] += 1
+                break
+            bi = 0
+        data[data_offset + i] ^= state[bi]
+        bi += 1
+
+
+def calc_salt(key_string: bytes) -> bytearray:
+    salt = bytearray(128)
+    str_len = len(key_string)
+    if str_len == 0:
+        return salt
+    for i in range(128):
+        salt[i] = ((i // str_len) + key_string[i % str_len]) & 0xFF
+    return salt
+
+
+def init_wolf_crypt(crypt_version: int, p_pwd: bytes, key_string: bytes = None, other: bool = False) -> bytearray:
+    fac = bytearray(3)
+    s0 = p_pwd[2] & 0xFF
+    s1 = p_pwd[5] & 0xFF
+    s2 = p_pwd[12] & 0xFF
+    s3 = 0
+
+    if not other:
+        length = (p_pwd[11] & 0xFF) // 3
+        for i in range(length):
+            s3 = i ^ rotr8(s3 ^ (p_pwd[i % 15] & 0xFF), 3)
+    else:
+        length = (p_pwd[8] & 0xFF) // 4
+        for i in range(length):
+            s3 = i ^ rotr8(s3 ^ (p_pwd[i % 15] & 0xFF), 2)
+
+    seed = (s0 * s1 + s2 + s3) & 0xFFFFFFFF
+    rng = WinRng(seed)
+
+    fac[s3 % 3] = rng.rand() % 256
+    p_key = bytearray(768)
+
+    for i in range(256):
+        rn = rng.rand() & 0xFFFF
+        p_key[i] = (fac[0] ^ (rng.rand() & 0xFF)) & 0xFF
+        p_key[i + 256] = (fac[1] ^ (rn >> 8)) & 0xFF
+        p_key[i + 512] = (fac[2] ^ (rn & 0xFF)) & 0xFF
+
+    if other and key_string:
+        salt = calc_salt(key_string)
+        mod_factor = 7
+
+        for i in range(3):
+            t = s3
+            for j in range(256):
+                skip = False
+                cur_s = salt[j & 0x7F]
+                cur_s2 = salt[(j + i) % 0x80]
+                cur_k = p_key[i * 256 + j]
+                s_x_k = cur_s ^ cur_k
+                round_val = (cur_s2 | (cur_s << 8)) % mod_factor
+                new_k = s_x_k
+
+                if round_val == 1:
+                    if (cur_s2 % 0xB) == 0:
+                        new_k = cur_k
+                elif round_val == 2:
+                    if (cur_s % 0x1D) == 0:
+                        new_k = (~s_x_k) & 0xFF
+                elif round_val == 3:
+                    if ((round_val + j) % 0x25) == 0:
+                        new_k = cur_s2 ^ s_x_k
+                elif round_val == 4:
+                    if ((cur_s + cur_s2) % 97) == 0:
+                        new_k = (cur_s + s_x_k) & 0xFF
+                elif round_val == 5:
+                    if ((j * round_val) % 0x7B) == 0:
+                        new_k = s_x_k ^ t
+                elif round_val == 6:
+                    if cur_s == 0xFF and cur_s2 == 0:
+                        new_k = 0
+                        skip = True
+
+                if ((j + i) % (cur_s % 5 + 1)) == 0:
+                    new_k ^= (t & 0xFF)
+                elif skip:
+                    new_k = (~s_x_k) & 0xFF
+
+                p_key[i * 256 + j] = new_k & 0xFF
+                t += i
+
+    return p_key
+
+
+def wolf_crypt(p_key: bytearray, data: bytearray, data_offset: int, start: int, end: int):
+    length = end - start
+    v1 = start % 256
+    v2 = (start // 256) % 256
+    v3 = (start // 0x10000) % 256
+
+    pos = 0
+    while pos < length:
+        chunk_len = min(256 - v1, length - pos)
+        k23 = p_key[v2 + 256] ^ p_key[v3 + 512]
+        if v1 == 0 and chunk_len == 256:
+            mask = bytes(p_key[i] ^ k23 for i in range(256))
+            mask_int = int.from_bytes(mask, 'little')
+            c_int = int.from_bytes(data[data_offset + pos : data_offset + pos + 256], 'little')
+            data[data_offset + pos : data_offset + pos + 256] = (c_int ^ mask_int).to_bytes(256, 'little')
+        else:
+            for i in range(chunk_len):
+                data[data_offset + pos + i] ^= p_key[v1 + i] ^ k23
+
+        pos += chunk_len
+        v1 = (v1 + chunk_len) % 256
+        if v1 == 0:
+            v2 += 1
+            if v2 == 256:
+                v2 = 0
+                v3 = (v3 + 1) % 256
+
+
+def crypt_addresses(data: bytearray, p_pwd: bytes):
+    seed = (p_pwd[0] & 0xFF) + (p_pwd[7] & 0xFF) * (p_pwd[12] & 0xFF)
+    rng = WinRng(seed)
+    u16_list = list(struct.unpack('<32H', data[:64]))
+    for i in range(4):
+        base_idx = 4 + i * 4
+        for j in range(3, -1, -1):
+            u16_list[base_idx + j] ^= rng.rand() & 0xFFFF
+    data[:64] = struct.pack('<32H', *u16_list)
+
+
+KNOWN_KEYS = {
+    0x14B: bytes([
+        0xCA, 0x08, 0x4C, 0x5D, 0x17, 0x0D, 0xDA, 0xA1, 0xD7, 0x27, 0xC8, 0x41, 0x54, 0x38, 0x82, 0x32,
+        0x54, 0xB7, 0xF9, 0x46, 0x8E, 0x13, 0x6B, 0xCA, 0xD0, 0x5C, 0x95, 0x95, 0xE2, 0xDC, 0x03, 0x53,
+        0x60, 0x9B, 0x4A, 0x38, 0x17, 0xF3, 0x69, 0x59, 0xA4, 0xC7, 0x9A, 0x43, 0x63, 0xE6, 0x54, 0xAF,
+        0xDB, 0xBB, 0x43, 0x58, 0x00
+    ]),
+    0x13A: bytes([
+        0x31, 0xF9, 0x01, 0x36, 0xA3, 0xE3, 0x8D, 0x3C, 0x7B, 0xC3, 0x7D, 0x25, 0xAD, 0x63, 0x28, 0x19,
+        0x1B, 0xF7, 0x8E, 0x6C, 0xC4, 0xE5, 0xE2, 0x76, 0x82, 0xEA, 0x4F, 0xED, 0x61, 0xDA, 0xE0, 0x44,
+        0x5B, 0xB6, 0x46, 0x3B, 0x06, 0xD5, 0xCE, 0xB6, 0x78, 0x58, 0xD0, 0x7C, 0x82, 0x00
+    ]),
+    0x12C: bytes([
+        0x0F, 0x53, 0xE1, 0x3E, 0x8E, 0xB5, 0x41, 0x91, 0x52, 0x16, 0x55, 0xAE, 0x34, 0xC9, 0x8F, 0x79,
+        0x59, 0x2F, 0x59, 0x6B, 0x95, 0x19, 0x9B, 0x1B, 0x35, 0x9A, 0x2F, 0xDE, 0xC9, 0x7C, 0x12, 0x96,
+        0xC3, 0x14, 0xB5, 0x0F, 0x53, 0xE1, 0x3E, 0x8E, 0x00
+    ]),
+}
+
+
 class DXArchive:
     MIN_COMPRESS = 4  # Minimum number of compressed bytes
     MAX_SEARCHLISTNUM = (
@@ -231,6 +535,9 @@ class DXArchive:
         self.fp = None
         self.huffman_Encode = huffman_Encode
         self.huffman_Decode = huffman_Decode
+        self.newCrypt = False
+        self.specialKey = None
+        self.cryptVersion = 0
 
     def error(self) -> bool:
         if self.fp is not None:
@@ -263,13 +570,79 @@ class DXArchive:
         # Creating a key
         key = self.keyCreate(keyString, keyStringBytes, key)
 
-        self.archiveHead = DARC_HEAD(self.fp.read(len(DARC_HEAD())))  # 64
+        header_bytes = self.fp.read(len(DARC_HEAD()))  # 64
+        self.archiveHead = DARC_HEAD(header_bytes)
 
         if self.archiveHead.head != DXA_HEAD:
             return self.error()
 
         if self.archiveHead.version > DXA_VER or self.archiveHead.version < DXA_VER_MIN:
             return self.error()
+
+        crypt_version = (self.archiveHead.flags >> 16) if self.archiveHead.flags is not None else 0
+        is_new_crypt = (331 <= crypt_version < 1000) or (crypt_version >= 1010)
+
+        if is_new_crypt:
+            self.fp.seek(0, SEEK_SET)
+            file_data = bytearray(self.fp.read())
+            size = len(file_data)
+            p_pwd = bytes(file_data[49:64])
+
+            key_bytes = KNOWN_KEYS.get(crypt_version)
+            if not key_bytes and keyString_ is not None and keyString_ != defaultKeyString:
+                key_bytes = bytes(keyString_)
+            if not key_bytes:
+                self.error()
+                raise ValueError(f"Versão de criptografia Wolf {hex(crypt_version)} não suportada ou chave ausente")
+
+            key_str = key_bytes.split(b'\x00')[0]
+
+            crypt_addresses(file_data, p_pwd)
+            self.archiveHead = DARC_HEAD(file_data[:64])
+
+            special_key_pass1 = init_wolf_crypt(crypt_version, p_pwd, key_str, other=True)
+            wolf_crypt(special_key_pass1, file_data, 64, 64, size - 64)
+
+            aes_rk = init_aes128(p_pwd, crypt_version)
+            aes_ctr_xcrypt(file_data, 64, aes_rk, 0x400)
+            table_size = size - self.archiveHead.fileNameTableStartAddress
+            aes_ctr_xcrypt(file_data, self.archiveHead.fileNameTableStartAddress, aes_rk, table_size)
+
+            pass2_key = init_wolf_crypt(crypt_version, p_pwd, key_str, other=False)
+            self.specialKey = pass2_key
+            self.newCrypt = True
+            self.cryptVersion = crypt_version
+            self.noKey = False
+
+            self.fp.close()
+            self.fp = io.BytesIO(file_data)
+
+            huff_buf = bytearray(file_data[self.archiveHead.fileNameTableStartAddress:])
+            wolf_crypt(self.specialKey, huff_buf, 0, 0, len(huff_buf))
+
+            lz_size = huffman_Decode(bytes(huff_buf), None)
+            if lz_size is None or lz_size <= 0:
+                return self.error()
+
+            lz_buf = bytearray(lz_size)
+            huffman_Decode(bytes(huff_buf), lz_buf)
+
+            head_buf = bytearray(self.archiveHead.headSize)
+            head_buf, _ = self.decode(lz_buf, head_buf)
+
+            base = self.archiveHead.fileNameTableStartAddress or 0
+            f_start = self.archiveHead.fileTableStartAddress - base if self.archiveHead.fileTableStartAddress >= base else self.archiveHead.fileTableStartAddress
+            d_start = self.archiveHead.directoryTableStartAddress - base if self.archiveHead.directoryTableStartAddress >= base else self.archiveHead.directoryTableStartAddress
+
+            self.nameTable = head_buf[:f_start]
+            self.fileTable = head_buf[f_start:d_start]
+            self.directoryTable = head_buf[d_start:]
+
+            self.directoryDecode(
+                DARC_DIRECTORY(self.directoryTable), key, keyString, keyStringBytes
+            )
+
+            return True
 
         headBuffer = [0] * self.archiveHead.headSize
 
@@ -425,6 +798,10 @@ class DXArchive:
     def keyConv(
         self, data: bytearray, size: int, position: int, key: bytearray
     ) -> bytes:
+        if self.newCrypt:
+            wolf_crypt(self.specialKey, data, 0, position, position + size)
+            return data
+
         if key is None:
             return data
 
@@ -686,11 +1063,15 @@ class DXArchive:
         for archivedFile in self.archivedFiles:
             self.extractFile(archivedFile)
 
-    def extractFile(self, archivedFile: ArchivedFile) -> None:
-        if not archivedFile.filePath.parent.exists():
-            archivedFile.filePath.parent.mkdir(parents=True)
-
-        destP = open(archivedFile.filePath, mode="wb")
+    def extractFile(self, archivedFile: ArchivedFile, dest=None) -> None:
+        if dest is None:
+            if not archivedFile.filePath.parent.exists():
+                archivedFile.filePath.parent.mkdir(parents=True)
+            destP = open(archivedFile.filePath, mode="wb")
+            should_close = True
+        else:
+            destP = dest
+            should_close = False
 
         if archivedFile.dataSize != 0:
             outputSize = archivedFile.dataSize
@@ -718,7 +1099,7 @@ class DXArchive:
                     output,
                     archivedFile.huffPressDataSize,
                     archivedFile.key,
-                    0,
+                    archivedFile.dataSize if self.newCrypt else 0,
                 )
                 output[: len(read)] = read
 
@@ -798,7 +1179,7 @@ class DXArchive:
                         output,
                         archivedFile.pressDataSize,
                         archivedFile.key,
-                        0,
+                        archivedFile.dataSize if self.newCrypt else 0,
                     )
                     output[: len(read)] = read
 
@@ -833,7 +1214,13 @@ class DXArchive:
 
                         writeSize += moveSize
 
-        destP.close()
+        if should_close:
+            destP.close()
+
+    def extract_file_bytes(self, archivedFile: ArchivedFile) -> bytes:
+        bio = io.BytesIO()
+        self.extractFile(archivedFile, dest=bio)
+        return bio.getvalue()
 
 
     def encode(self, src, dest=None):
@@ -1544,6 +1931,57 @@ class WolfArchive:
     @staticmethod
     def create_archive(input_dir, output_path, key_string=None, use_compression=True, use_huffman=True):
         return create_wolf_archive(output_path, input_dir, key_string=key_string, use_compression=use_compression, use_huffman=use_huffman)
+
+    @classmethod
+    def list_entries_with_hashes(cls, archive_path, virtual_base_dir="", extensions=None, key_string=None):
+        import hashlib
+        archive = DXArchive()
+        p_arch = Path(archive_path)
+        if not p_arch.exists():
+            return {}
+
+        h = hashlib.sha256()
+        with open(p_arch, 'rb') as f:
+            for chunk in iter(lambda: f.read(1 << 20), b''):
+                h.update(chunk)
+        container_hash = h.hexdigest()
+
+        k_str = key_string if key_string is not None else defaultKeyString
+        if isinstance(k_str, str):
+            k_str = bytearray(k_str.encode('utf-8') + b'\x00')
+        elif isinstance(k_str, bytes):
+            k_str = bytearray(k_str)
+
+        try:
+            success = archive.loadArchive(p_arch, Path("."), k_str)
+            if not success:
+                if archive.fp:
+                    archive.fp.close()
+                return {}
+
+            exts = tuple(f".{e.lower().lstrip('.')}" for e in extensions) if extensions else None
+            results = {}
+            for af in archive.archivedFiles:
+                rel_path = af.filePath.as_posix().lstrip('./')
+                if virtual_base_dir:
+                    full_rel = f"{virtual_base_dir}/{rel_path}".strip('/')
+                else:
+                    full_rel = rel_path
+
+                if exts and not full_rel.lower().endswith(exts):
+                    continue
+
+                data = archive.extract_file_bytes(af)
+                digest = hashlib.sha256(data).hexdigest()
+                results[full_rel] = {
+                    'sha256': digest,
+                    'container': os.path.basename(archive_path),
+                    'container_sha256': container_hash,
+                }
+            return results
+        finally:
+            if archive.fp:
+                archive.fp.close()
 
 
 if __name__ == "__main__":

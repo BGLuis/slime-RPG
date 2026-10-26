@@ -148,15 +148,27 @@ def test_wolf_pro_detection(tmp_path):
         WolfDatabase.load(str(db_path))
     assert "WOLF RPG Pro" in str(exc_info.value)
 
-    # 3. Map*.mps com cabeçalho Pro compactado
-    # 16 bytes magic + 4 bytes enc (85) + 4 bytes attr (103) + 1 byte ver (105) + ...
-    map_pro = b'\0\0\0\0\0\0\0\0\0\0WOLFM\0\x55\x00\x00\x00\x67\x00\x00\x00\x69\x22\x00\x00\x00\x1b\x00\x00\x00'
-    map_path = tmp_path / "Map001.mps"
-    map_path.write_bytes(map_pro)
+    # 3. Map*.mps Pro agora é suportado nativamente com compressão LZ4
+    wolf_map = WolfMap()
+    wolf_map.encoding_type = 85
+    wolf_map.is_utf8 = True
+    wolf_map.attributes = 101  # >= 0x65 -> Wolf Pro LZ4
+    wolf_map.version = 103
+    wolf_map.unknown_str = "ProMap"
+    wolf_map.tileset_id = 1
+    wolf_map.width = 5
+    wolf_map.height = 5
+    wolf_map.no_tiles = True
+    wolf_map.is_compressed = True
 
-    with pytest.raises(WolfProEncryptedError) as exc_info:
-        WolfMap.load(str(map_path))
-    assert "WOLF RPG Pro" in str(exc_info.value)
+    map_path = tmp_path / "Map001.mps"
+    wolf_map.save(str(map_path))
+    assert map_path.exists()
+
+    loaded_map = WolfMap.load(str(map_path))
+    assert loaded_map.attributes == 101
+    assert loaded_map.unknown_str == "ProMap"
+    assert loaded_map.width == 5
 
 
 def test_game_detector_evtext(tmp_path):
