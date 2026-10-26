@@ -187,7 +187,8 @@ def build_meta(
                 continue
             original_hash = o_info['sha256']
             translated_hash = t_info['sha256']
-            status = file_status.get(rel) or (
+            prev_info = (previous or {}).get('files', {}).get(rel, {})
+            status = file_status.get(rel) or prev_info.get('status') or (
                 'success' if translated_hash != original_hash else 'unchanged'
             )
             item = {
@@ -202,7 +203,8 @@ def build_meta(
     else:
         original_rel_dir = None
         for rel, t_info in translated_entries.items():
-            status = file_status.get(rel, 'success')
+            prev_info = (previous or {}).get('files', {}).get(rel, {})
+            status = file_status.get(rel) or prev_info.get('status', 'success')
             files[rel] = {
                 'original_sha256': None,
                 'translated_sha256': t_info['sha256'],
