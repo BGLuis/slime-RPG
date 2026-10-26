@@ -493,6 +493,29 @@ class TestRPGMakerExtractorRefactor(unittest.TestCase):
         self.assertEqual(updated_choices[0], r"\picture[yes]")
         self.assertEqual(updated_choices[1], "Opção Dois")
 
+    def test_regex_patterns_precompiled_at_class_level(self):
+        """Verifica se re.compile só ocorre em nível de classe/módulo no RPGMakerExtractor (#30)."""
+        import ast
+        import os
+
+        extractor_path = os.path.join(
+            os.path.dirname(__file__), "..", "src", "extractor", "rpgmaker", "RPGMakerExtractor.py"
+        )
+        with open(extractor_path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+
+        nested_compiles = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for subnode in ast.walk(node):
+                    if isinstance(subnode, ast.Call):
+                        func = subnode.func
+                        if (isinstance(func, ast.Attribute) and func.attr == 'compile' and
+                                isinstance(func.value, ast.Name) and func.value.id == 're'):
+                            nested_compiles.append((node.name, subnode.lineno))
+
+        self.assertEqual(nested_compiles, [], f"re.compile encontrado dentro de métodos: {nested_compiles}")
+
 if __name__ == '__main__':
     unittest.main()
 

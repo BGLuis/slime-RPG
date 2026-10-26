@@ -254,19 +254,25 @@ class RPGMakerExtractor(BaseExtractor):
 
         return None
 
-    def get_mask_patterns(self, file_name=None, data=None):
-        p_format_codes = re.compile(r'\\[A-Za-z]+\s*\[[^\]]*\]', re.IGNORECASE)
-        p_condition = _BalancedConditionPattern()
-        game_keys = ['variables', 'switches', 'party', 'actors', 'player', 'map', 'system', 'screen', 'timer', 'message', 'temp', 'troop', 'interpreter']
-        p_game = re.compile(r'\$game(?:' + '|'.join(game_keys) + r')\b', re.IGNORECASE)
-        p_bracket_vars = re.compile(r'!?(?<!\\)(?<![a-zA-Z0-9_])[A-Za-z]{1,2}\s*\[\s*\d+\s*\]', re.IGNORECASE)
-        p_boolean_literals = _CodeOnlyPattern(re.compile(r'\b(?:true|false|null|undefined|NaN)\b', re.IGNORECASE))
-        p_operators = _CodeOnlyPattern(re.compile(r'(?:&&|\|\||>=|<=|!==|===|!=|==)'))
-        p_dollar_camel = re.compile(r'\$\s*[a-z]+[A-Z][a-zA-Z]*')
-        p_html_tags = re.compile(r'</?[a-zA-Z][a-zA-Z0-9]*(?:\s+[^>]*)?/?>', re.IGNORECASE)
-        p_technical_values = re.compile(r'^(?:Yes|No|OK|Cancel|end|start|stop|play|pause|nochannel|channel)$', re.IGNORECASE)
+    _GAME_KEYS = ['variables', 'switches', 'party', 'actors', 'player', 'map', 'system', 'screen', 'timer', 'message', 'temp', 'troop', 'interpreter']
+    _P_FORMAT_CODES = re.compile(r'\\[A-Za-z]+\s*\[[^\]]*\]', re.IGNORECASE)
+    _P_CONDITION = _BalancedConditionPattern()
+    _P_GAME = re.compile(r'\$game(?:' + '|'.join(_GAME_KEYS) + r')\b', re.IGNORECASE)
+    _P_BRACKET_VARS = re.compile(r'!?(?<!\\)(?<![a-zA-Z0-9_])[A-Za-z]{1,2}\s*\[\s*\d+\s*\]', re.IGNORECASE)
+    _P_BOOLEAN_LITERALS = _CodeOnlyPattern(re.compile(r'\b(?:true|false|null|undefined|NaN)\b', re.IGNORECASE))
+    _P_OPERATORS = _CodeOnlyPattern(re.compile(r'(?:&&|\|\||>=|<=|!==|===|!=|==)'))
+    _P_DOLLAR_CAMEL = re.compile(r'\$\s*[a-z]+[A-Z][a-zA-Z]*')
+    _P_HTML_TAGS = re.compile(r'</?[a-zA-Z][a-zA-Z0-9]*(?:\s+[^>]*)?/?>', re.IGNORECASE)
+    _P_TECHNICAL_VALUES = re.compile(r'^(?:Yes|No|OK|Cancel|end|start|stop|play|pause|nochannel|channel)$', re.IGNORECASE)
 
-        return [p_format_codes, p_condition, p_game, p_bracket_vars, p_boolean_literals, p_operators, p_dollar_camel, p_html_tags, p_technical_values]
+    _DEFAULT_MASK_PATTERNS = [
+        _P_FORMAT_CODES, _P_CONDITION, _P_GAME, _P_BRACKET_VARS,
+        _P_BOOLEAN_LITERALS, _P_OPERATORS, _P_DOLLAR_CAMEL,
+        _P_HTML_TAGS, _P_TECHNICAL_VALUES
+    ]
+
+    def get_mask_patterns(self, file_name=None, data=None):
+        return list(self._DEFAULT_MASK_PATTERNS)
 
     @staticmethod
     def ignore_text(text):
@@ -316,11 +322,13 @@ class RPGMakerExtractor(BaseExtractor):
         insert_commands_tree(data, translated_data, 'Troops', self.insert_text_map_item)
 
     _attributes_find = [r'name', r'note', r'profile', r'description', r'nickname', r'message\d{1}']
+    _attributes_find_compiled = [re.compile(p) for p in _attributes_find]
     _attributes_system_find = ['armorTypes', 'equipTypes', 'gameTitle', 'currencyUnit', 'skillTypes', 'terms', 'elements', 'weaponTypes']
     # Tags de nota do tipo <Desc: ...>, <Help: ...>, <InfoAlgumaCoisa: ...>. O grupo 1
     # precisa capturar só o nome da tag (sem o "<"), pois insert_text_object o reusa
     # para reconstruir a tag original.
     _note_tag_pattern = re.compile(r'<(Desc|Help|Text|Profile|Message|Info[^:>]*):\s*([^>]+)>', re.IGNORECASE)
+    _NOTE_TAG_INSERT_PATTERN = re.compile(r'(<(Desc|Help|Text|Profile|Message|Info[^:>]*)\s*:\s*)([^>]+)(>)', re.IGNORECASE)
 
     def extract_text_object(self, data):
         text = []
@@ -330,7 +338,7 @@ class RPGMakerExtractor(BaseExtractor):
             if item and isinstance(item, dict) and item.get('name', '') != '':
                 obj = {'id': item.get('id')}
                 for key, val in item.items():
-                    if any(re.match(pattern, key) for pattern in self._attributes_find):
+                    if any(pattern.match(key) for pattern in self._attributes_find_compiled):
                         if key == 'note' and val and isinstance(val, str):
                             matches = self._note_tag_pattern.findall(val)
                             if matches:
@@ -353,9 +361,14 @@ class RPGMakerExtractor(BaseExtractor):
                 continue
             if 'note' in texts and isinstance(texts['note'], dict):
                 original_note = target_item.get('note', '')
-                for tag, new_content in texts['note'].items():
-                    pattern = re.compile(fr'(<{re.escape(tag)}\s*:\s*)([^>]+)(>)', re.IGNORECASE)
-                    original_note = pattern.sub(lambda m: f"{m.group(1)}{new_content}{m.group(3)}", original_note)
+                note_items = texts['note']
+                lower_notes = {k.lower(): v for k, v in note_items.items()}
+                def _replace_tag(m):
+                    tag_name = m.group(2).lower()
+                    if tag_name in lower_notes:
+                        return f"{m.group(1)}{lower_notes[tag_name]}{m.group(4)}"
+                    return m.group(0)
+                original_note = self._NOTE_TAG_INSERT_PATTERN.sub(_replace_tag, original_note)
                 target_item['note'] = original_note
                 texts['note'] = original_note
             target_item.update(texts)
@@ -387,14 +400,25 @@ class RPGMakerExtractor(BaseExtractor):
                                     sub_v[i] = data[key][sub_k][i]
                 data[key] = value
 
+    _MAP_FILENAME_PATTERN = re.compile(r'Map\d{3,}')
+    _COMMON_EVENTS_PATTERN = re.compile(r'CommonEvents')
+    _TROOPS_PATTERN = re.compile(r'Troops')
+    _SYSTEM_PATTERN = re.compile(r'System')
+    _OBJECT_PATTERNS = [re.compile(p) for p in [r'MapInfos', r'Weapons', r'Items', r'Skills', r'States', r'Enemies', r'Actors', r'Armors', r'Classes']]
+
+    _EXTRACT_MAP_CONFIG = [
+        {"file_patterns": [_MAP_FILENAME_PATTERN], "extractor_name": "extract_text_map", "insert_name": "insert_text_map"},
+        {"file_patterns": [_COMMON_EVENTS_PATTERN], "extractor_name": "extract_text_common_events", "insert_name": "insert_text_common_events"},
+        {"file_patterns": [_TROOPS_PATTERN], "extractor_name": "extract_text_troops", "insert_name": "insert_text_troops"},
+        {"file_patterns": _OBJECT_PATTERNS, "extractor_name": "extract_text_object", "insert_name": "insert_text_object"},
+        {"file_patterns": [_SYSTEM_PATTERN], "extractor_name": "extract_text_System", "insert_name": "insert_text_System"}
+    ]
+
     @property
     def extract_map(self):
         return [
-            {"file_patterns": [r'Map\d{3,}'], "extractor": self.extract_text_map, "insert": self.insert_text_map},
-            {"file_patterns": [r'CommonEvents'], "extractor": self.extract_text_common_events, "insert": self.insert_text_common_events},
-            {"file_patterns": [r'Troops'], "extractor": self.extract_text_troops, "insert": self.insert_text_troops},
-            {"file_patterns": [r'MapInfos', r'Weapons', r'Items', r'Skills', r'States', r'Enemies', r'Actors', r'Armors', r'Classes'], "extractor": self.extract_text_object, "insert": self.insert_text_object},
-            {"file_patterns": [r'System'], "extractor": self.extract_text_System, "insert": self.insert_text_System}
+            {"file_patterns": item["file_patterns"], "extractor": getattr(self, item["extractor_name"]), "insert": getattr(self, item["insert_name"])}
+            for item in self._EXTRACT_MAP_CONFIG
         ]
 
     NON_TRANSLATABLE_FILES = {
@@ -408,22 +432,22 @@ class RPGMakerExtractor(BaseExtractor):
         base_name = os.path.basename(file_name)
         if base_name in self.NON_TRANSLATABLE_FILES:
             return False
-        return any(re.search(p, base_name) for item in self.extract_map for p in item['file_patterns'])
+        return any(p.search(base_name) for item in self._EXTRACT_MAP_CONFIG for p in item['file_patterns'])
 
     def extract_text(self, file_name, new_json):
         if not self.is_translatable_file(file_name):
             return None
-        for item in self.extract_map:
-            if any(re.search(p, file_name) for p in item['file_patterns']):
-                return item['extractor'](new_json)
+        for item in self._EXTRACT_MAP_CONFIG:
+            if any(p.search(file_name) for p in item['file_patterns']):
+                return getattr(self, item['extractor_name'])(new_json)
         return None
 
     def update_json(self, file_name, new_json, new_data):
         if hasattr(new_json, '__dict__'):
             new_json._is_dirty = True
-        for item in self.extract_map:
-            if any(re.search(p, file_name) for p in item['file_patterns']):
-                item['insert'](new_json, new_data)
+        for item in self._EXTRACT_MAP_CONFIG:
+            if any(p.search(file_name) for p in item['file_patterns']):
+                getattr(self, item['insert_name'])(new_json, new_data)
                 return new_json
         return new_json
 
@@ -502,7 +526,7 @@ class RPGMakerExtractor(BaseExtractor):
                 segments=segments,
             )
 
-        if re.search(r'Map\d{3,}', base_name):
+        if cls._MAP_FILENAME_PATTERN.search(base_name):
             extracted = inst.extract_text_map(copy.deepcopy(data))
             events_col = data.get('events') if isinstance(data, dict) else []
             if mode == 'extract':
@@ -536,7 +560,7 @@ class RPGMakerExtractor(BaseExtractor):
                     inst.insert_text_map(data, filtered_events)
                 return data
 
-        if re.search(r'CommonEvents', base_name):
+        if cls._COMMON_EVENTS_PATTERN.search(base_name):
             extracted = inst.extract_text_common_events(copy.deepcopy(data))
             if mode == 'extract':
                 for ev in extracted:
@@ -562,7 +586,7 @@ class RPGMakerExtractor(BaseExtractor):
                     inst.insert_text_common_events(data, filtered_events)
                 return data
 
-        if re.search(r'Troops', base_name):
+        if cls._TROOPS_PATTERN.search(base_name):
             extracted = inst.extract_text_troops(copy.deepcopy(data))
             if mode == 'extract':
                 for tr in extracted:
@@ -595,7 +619,7 @@ class RPGMakerExtractor(BaseExtractor):
                     inst.insert_text_troops(data, filtered_troops)
                 return data
 
-        if re.search(r'System', base_name):
+        if cls._SYSTEM_PATTERN.search(base_name):
             extracted = inst.extract_text_System(data)
             if mode == 'extract':
                 for key, value in extracted.items():
@@ -733,13 +757,44 @@ class RPGMakerExtractor(BaseExtractor):
                 inst.insert_text_object(data, modified_objs)
             return data
 
-    @staticmethod
-    def fix_text_translate(texts, original_texts=None):
+    _FORMAT_CODES_PATTERN = re.compile(r'(?<!\\)\\([A-Za-z]+)(?:\s*(\[[^\]]*\]))?', re.IGNORECASE)
+    _FORMAT_UPPER = {'c', 'v', 'i', 'ce', 'm', 'n', 'p', 'g'}
+
+    _COMPILED_CORRECTIONS = [
+        (re.compile(r'\\\s+'), r'\\'),
+        (re.compile(r'\bif\s*\(', re.IGNORECASE), 'if('),
+        (re.compile(r'"\s+"'), '""'),
+        (re.compile(r'\\n\s+'), r'\\n'),
+        (re.compile(r'\s*_\s*'), '_'),
+        (re.compile(r'<\s*>'), '<>'),
+        (re.compile(r'\$\s+'), '$'),
+        (re.compile(r'>\s*='), '>='),
+        (re.compile(r'<\s*='), '<='),
+        (re.compile(r'!\s*='), '!='),
+        (re.compile(r'=\s*='), '=='),
+    ]
+
+    _BOOLEAN_CORRECTIONS = [
+        (re.compile(r'\b(?:verdadeiro|verdadeira|verdadero|verdadera|vrai|vraie)\b', re.IGNORECASE), 'true'),
+        (re.compile(r'\b(?:falso|falsa|faux|fausse)\b', re.IGNORECASE), 'false'),
+        (re.compile(r'\b(?:nulo|nula|nul)\b', re.IGNORECASE), 'null'),
+        (re.compile(r'\b(?:indefinido|indéfini)\b', re.IGNORECASE), 'undefined'),
+    ]
+
+    _GAME_OBJECTS = {k: k.capitalize() for k in ['variables', 'switches', 'party', 'actors', 'player', 'map', 'system', 'screen', 'timer', 'message', 'temp', 'troop', 'interpreter']}
+    _GAME_PATTERN = re.compile(r'\$game(' + '|'.join(_GAME_OBJECTS.keys()) + r')\b', re.IGNORECASE)
+    _PROPERTY_PATTERN = re.compile(r'\.([_a-zA-Z][_a-zA-Z0-9]*)(?=[\[\(\.]|\s|$)')
+    _CODE_PATTERN = re.compile(r'(\$game\s*[a-zA-Z]+(?:\s*\.\s*[_a-zA-Z][_a-zA-Z0-9]*(?:\s*\[\s*[^\\\]]+\s*\])?)*|\$\s*[a-z]+[A-Z][a-zA-Z]*|!(?<!\\)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\]|(?<!\\)(?<!!)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\])', re.IGNORECASE)
+
+    _WHITESPACE_PATTERN = re.compile(r'\s+')
+    _QUOTE_SPLIT_PATTERN = re.compile(r'(\'.*?\'|".*?")')
+    _OCTAL_LEADING_ZERO_PATTERN = re.compile(r'\b0+([1-9]\d*)\b')
+    _OCTAL_MULTI_ZERO_PATTERN = re.compile(r'\b00+\b')
+
+    @classmethod
+    def fix_text_translate(cls, texts, original_texts=None):
         texts_list = TextsUtils.dictToList(texts)
         original_list = TextsUtils.dictToList(original_texts) if original_texts else None
-
-        _format_codes_pattern = re.compile(r'(?<!\\)\\([A-Za-z]+)(?:\s*(\[[^\]]*\]))?', re.IGNORECASE)
-        _format_upper = {'c', 'v', 'i', 'ce', 'm', 'n', 'p', 'g'}
 
         def _fix_format_code(m):
             code = m.group(1)
@@ -749,30 +804,9 @@ class RPGMakerExtractor(BaseExtractor):
                 return m.group(0)
             if code_lower in ("name", "nome"):
                 return f"\\NAME{arg}"
-            if code_lower in _format_upper:
+            if code_lower in cls._FORMAT_UPPER:
                 return f"\\{code.upper()}{arg}"
             return f"\\{code.lower()}{arg}"
-
-        _compiled_patterns = [
-            (re.compile(r'\\\s+'), r'\\'), (re.compile(r'(?i)\bif\s*\('), 'if('),
-            (re.compile(r'"\s+"'), '""'), (re.compile(r'\\n\s+'), r'\\n'),
-            (re.compile(r'\s*_\s*'), '_'), (re.compile(r'<\s*>'), '<>'),
-            (re.compile(r'\$\s+'), '$'), (re.compile(r'>\s*='), '>='),
-            (re.compile(r'<\s*='), '<='), (re.compile(r'!\s*='), '!='),
-            (re.compile(r'=\s*='), '=='),
-        ]
-
-        boolean_corrections = {
-            r'\b(?:verdadeiro|verdadeira|verdadero|verdadera|vrai|vraie)\b': 'true',
-            r'\b(?:falso|falsa|faux|fausse)\b': 'false',
-            r'\b(?:nulo|nula|nul)\b': 'null',
-            r'\b(?:indefinido|indéfini)\b': 'undefined',
-        }
-
-        _game_objects = {k: k.capitalize() for k in ['variables', 'switches', 'party', 'actors', 'player', 'map', 'system', 'screen', 'timer', 'message', 'temp', 'troop', 'interpreter']}
-        _game_pattern = re.compile(r'\$game(' + '|'.join(_game_objects.keys()) + r')\b', re.IGNORECASE)
-        _property_pattern = re.compile(r'\.([_a-zA-Z][_a-zA-Z0-9]*)(?=[\[\(\.]|\s|$)')
-        _code_pattern = re.compile(r'(\$game\s*[a-zA-Z]+(?:\s*\.\s*[_a-zA-Z][_a-zA-Z0-9]*(?:\s*\[\s*[^\\\]]+\s*\])?)*|\$\s*[a-z]+[A-Z][a-zA-Z]*|!(?<!\\)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\]|(?<!\\)(?<!!)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\])', re.IGNORECASE)
 
         for i, text in enumerate(texts_list):
             if not isinstance(text, str):
@@ -781,34 +815,34 @@ class RPGMakerExtractor(BaseExtractor):
             ref_text = original_text if original_text is not None else text
             is_code = RPGTextFilters.is_technical_or_code(ref_text)
 
-            text = _format_codes_pattern.sub(_fix_format_code, text)
+            text = cls._FORMAT_CODES_PATTERN.sub(_fix_format_code, text)
 
             if is_code:
                 # Sanitizar aspas tipográficas (smart quotes) para aspas ASCII padrão apenas em código (#37)
                 text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
-                for pattern, repl in _compiled_patterns:
+                for pattern, repl in cls._COMPILED_CORRECTIONS:
                     text = pattern.sub(repl, text)
 
-                for pattern, replacement in boolean_corrections.items():
-                    text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+                for pattern, replacement in cls._BOOLEAN_CORRECTIONS:
+                    text = pattern.sub(replacement, text)
 
                 if original_text:
-                    original_codes = {re.sub(r'\s+', '', m.group(0)).lower(): m.group(0) for m in _code_pattern.finditer(original_text)}
+                    original_codes = {cls._WHITESPACE_PATTERN.sub('', m.group(0)).lower(): m.group(0) for m in cls._CODE_PATTERN.finditer(original_text)}
                     def restore_code(match):
                         code = match.group(0)
-                        key = re.sub(r'\s+', '', code).lower()
-                        return original_codes.get(key, re.sub(r'\s+', '', code))
-                    text = _code_pattern.sub(restore_code, text)
+                        key = cls._WHITESPACE_PATTERN.sub('', code).lower()
+                        return original_codes.get(key, cls._WHITESPACE_PATTERN.sub('', code))
+                    text = cls._CODE_PATTERN.sub(restore_code, text)
 
-                text = _game_pattern.sub(lambda m: f'$game{_game_objects.get(m.group(1).lower(), m.group(1))}', text)
+                text = cls._GAME_PATTERN.sub(lambda m: f'$game{cls._GAME_OBJECTS.get(m.group(1).lower(), m.group(1))}', text)
                 if not original_text:
-                    text = _property_pattern.sub(lambda m: '.' + m.group(1).lower() if m.group(1).isupper() or (len(m.group(1)) > 1 and m.group(1)[0].isupper() and '_' in m.group(1)) else m.group(0), text)
+                    text = cls._PROPERTY_PATTERN.sub(lambda m: '.' + m.group(1).lower() if m.group(1).isupper() or (len(m.group(1)) > 1 and m.group(1)[0].isupper() and '_' in m.group(1)) else m.group(0), text)
 
                 try:
-                    parts = re.split(r'(\'.*?\'|".*?")', text)
+                    parts = cls._QUOTE_SPLIT_PATTERN.split(text)
                     for j in range(0, len(parts), 2):
-                        parts[j] = re.sub(r'\b0+([1-9]\d*)\b', r'\1', parts[j])
-                        parts[j] = re.sub(r'\b00+\b', '0', parts[j])
+                        parts[j] = cls._OCTAL_LEADING_ZERO_PATTERN.sub(r'\1', parts[j])
+                        parts[j] = cls._OCTAL_MULTI_ZERO_PATTERN.sub('0', parts[j])
                     text = ''.join(parts)
                 except Exception as e:
                     logging.warning(f'Erro ao sanitizar literais octais: {e}')
