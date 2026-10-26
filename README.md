@@ -98,6 +98,59 @@ slime --add-alias slx
   docker-compose up -d --build
   ```
 
+# 🎮 Game Metadata (.slime/meta.json)
+
+The tool manages translation lifecycle tracking through metadata stored in `.slime/meta.json` inside the game directory. This enables integrity checks, tracking game patches/updates, adopting legacy translations, and incremental translations.
+
+### Adopting a Pre-translated Game (`--adopt`)
+
+If you have a game that was already translated (or translated with an earlier version or external tool), you can adopt it so Slime tracks file integrity and enables incremental updates:
+
+```sh
+# Adopt a pre-translated RPG Maker game
+slime --adopt /path/to/translated_game --original /path/to/original_game -e RPGMaker
+
+# With language specifications
+slime --adopt /path/to/translated_game --original /path/to/original_game -e RPGMaker -s ja -d en
+```
+
+This scans both original and translated directories, calculates SHA-256 checksums, and creates `.slime/meta.json`.
+
+### Verifying Translation Integrity (`--verify-game`)
+
+Check whether translated files or original game files have been modified, updated, or corrupted:
+
+```sh
+# Verify translated files against recorded metadata
+slime --verify-game /path/to/translated_game
+
+# Verify against original game folder to detect game updates/patches
+slime --verify-game /path/to/translated_game --original /path/to/original_game
+```
+
+### Verification Status Codes
+
+When verifying game files, each file is classified into one of the following states:
+
+| Status Code | Description |
+| --- | --- |
+| `intact` | File matches recorded hashes and previous translation succeeded. |
+| `original_changed` | The original file has changed (e.g., game patch/update). Needs re-translation. |
+| `new` | A new file exists in the original game folder that was not recorded in metadata. |
+| `partial` | The file was previously only partially translated. |
+| `edited` | The translated file was modified locally after translation. |
+| `unchanged` | The file content is identical to the original (no translatable text changed). |
+| `original_missing` | The original file could not be found in the specified original folder. |
+| `translation_missing` | The translated file is missing in the translated game folder. |
+
+### Incremental Re-translation (`--incremental`)
+
+Combine metadata verification with incremental translation to only process files that changed or are new:
+
+```sh
+slime -i /path/to/game --incremental -e RPGMaker -t Google -s ja -d en
+```
+
 # ⚙️ Environment Variables
 The application uses environment variables for configuration. You can copy `.env.example` to `.env` and adjust the values.
 
