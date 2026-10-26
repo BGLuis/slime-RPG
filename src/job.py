@@ -85,6 +85,19 @@ class TranslationJob:
         if self.config.translator_config and hasattr(self.translator, 'apply_configuration'):
             self.translator.apply_configuration(self.config.translator_config)
 
+        # Propagação do nome do jogo para o tradutor e cache
+        game_name = None
+        if self.config.input_dir:
+            base = os.path.basename(os.path.abspath(self.config.input_dir))
+            if base.lower() in ('data', 'www', 'www/data') or not base:
+                base = os.path.basename(os.path.dirname(os.path.abspath(self.config.input_dir)))
+            game_name = base or 'default_game'
+        if game_name:
+            if hasattr(self.translator, 'game_name'):
+                self.translator.game_name = game_name
+            if hasattr(self.translator, 'cache') and self.translator.cache:
+                self.translator.cache.game = game_name
+
         # 2. Modo de operação
         if self.config.mode == 'content':
             if extractor is not None:

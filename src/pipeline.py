@@ -214,6 +214,7 @@ class CacheStoreStep(PipelineStep):
                 cache = context.translate_instance.cache
                 lang_src = getattr(context.translate_instance, 'lang_source', None)
                 lang_tgt = getattr(context.translate_instance, 'lang_target', None)
+                game = getattr(context.extractor, 'game_name', getattr(context.translate_instance, 'game_name', None))
                 pairs = [
                     (orig, fixed)
                     for orig, fixed in zip(context.pending_originals, context.fixed_pending)
@@ -222,7 +223,7 @@ class CacheStoreStep(PipelineStep):
                     and not (lang_src and lang_tgt and lang_src != lang_tgt and orig.strip() == fixed.strip())
                 ]
                 if hasattr(cache, 'store_many'):
-                    cache.store_many(pairs)
+                    cache.store_many(pairs, game=game)
                 else:
                     for orig, fixed in pairs:
                         cache[orig] = fixed

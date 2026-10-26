@@ -117,6 +117,18 @@ class BaseExtractor(ABC):
                 self.create_directory_if_not_exists(self.folderProcess)
 
         self.translate = translate
+        self.game_name = None
+        if workspace is not None and getattr(workspace, 'input_dir', None):
+            base = os.path.basename(os.path.abspath(workspace.input_dir))
+            if base.lower() in ('data', 'www', 'www/data') or not base:
+                base = os.path.basename(os.path.dirname(os.path.abspath(workspace.input_dir)))
+            self.game_name = base or 'default_game'
+        if self.translate and self.game_name:
+            if not getattr(self.translate, 'game_name', None):
+                self.translate.game_name = self.game_name
+            if hasattr(self.translate, 'cache') and self.translate.cache:
+                self.translate.cache.game = self.game_name
+
         self._threads_status_map = {}
         self.file_translation_stats = {}
         self.threads_status_lock = threading.Lock()
@@ -214,7 +226,19 @@ class BaseExtractor(ABC):
 
     def prepare(self):
         """Hook executado antes do processamento de arquivos (ex: descompactação de contêineres)."""
-        pass
+        if not getattr(self, 'game_name', None):
+            folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
+            norm = os.path.abspath(folder_input)
+            base = os.path.basename(norm)
+            if base.lower() in ('data', 'www', 'www/data') or not base:
+                base = os.path.basename(os.path.dirname(norm))
+            self.game_name = base or 'default_game'
+        if self.translate:
+            if not getattr(self.translate, 'game_name', None):
+                self.translate.game_name = self.game_name
+            if hasattr(self.translate, 'cache') and self.translate.cache:
+                self.translate.cache.game = self.game_name
+
 
     @staticmethod
     @abstractmethod
@@ -872,6 +896,7 @@ class BaseExtractor(ABC):
 
         def _dispatch():
             prescan_ex = concurrent.futures.ThreadPoolExecutor(max_workers=scan_workers)
+            pending_files = []
             try:
                 scan_futures = {
                     prescan_ex.submit(self._prescan_file, file, folder_input): file
@@ -893,15 +918,53 @@ class BaseExtractor(ABC):
                         with self._dispatch_lock:
                             self.fast_futures.append(fut)
                     else:
-                        if entry:
-                            _rel, data, raw_text, _fname = entry
-                            fut = self.executor.submit(self.process_file, file, data=data, raw_text=raw_text)
+                        pending_files.append((file, entry))
+
+                if pending_files:
+                    try:
+                        from src.translate.TranslationEngine import TranslationEngine
+                        from src.extractor.Segment import Segment
+                        import src.utils.TextsUtils as TextsUtils
+
+                        engine = TranslationEngine(
+                            provider=self.translate,
+                            memory=getattr(self.translate, 'cache', None),
+                            game=getattr(self, 'game_name', None),
+                        )
+                        files_segments = {}
+                        for f, ent in pending_files:
+                            if ent:
+                                _r, _d, rtext, fn = ent
+                            else:
+                                fn = os.path.basename(f)
+                                try:
+                                    _, _d = self.extract_files(f)
+                                    rtext = self.extract_text(fn, _d) if _d is not None else None
+                                except Exception:
+                                    rtext = None
+                            if rtext:
+                                strings = [s for s in TextsUtils.dictToList(rtext) if isinstance(s, str) and s.strip()]
+                                files_segments[f] = [
+                                    Segment(id=f"{fn}#{idx}", source=s, context={'kind': 'dialogue'})
+                                    for idx, s in enumerate(strings)
+                                ]
+
+                        if files_segments:
+                            engine.translate_segments_across_files(files_segments)
+                    except Exception as e:
+                        logging.debug(f"Cross-file engine translation fallback to per-file: {e}")
+
+                    for f, ent in pending_files:
+                        if ent:
+                            _rel, data, raw_text, _fname = ent
+                            fut = self.executor.submit(self.process_file, f, data=data, raw_text=raw_text)
                         else:
-                            fut = self.executor.submit(self.process_file, file)
+                            fut = self.executor.submit(self.process_file, f)
                         with self._dispatch_lock:
                             self.futures.append(fut)
             finally:
                 prescan_ex.shutdown(wait=True)
+
 
         self._dispatch_thread = threading.Thread(target=_dispatch, name='prescan-dispatch', daemon=True)
         self._dispatch_thread.start()

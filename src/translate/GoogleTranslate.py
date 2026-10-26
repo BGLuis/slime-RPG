@@ -4,6 +4,7 @@ import threading
 import requests
 from requests.adapters import HTTPAdapter
 from src.translate.BaseTranslate import BaseTranslate
+from src.translate.Provider import Capabilities
 from deep_translator import GoogleTranslator
 import src.utils.TextsUtils as TextsUtils
 from src.factory import register_translator
@@ -36,6 +37,15 @@ def _is_rate_limit_exception(e) -> bool:
 @register_translator("google", aliases=["googleTraslator", "googleTranslator", "google_translator"])
 class GoogleTranslate(BaseTranslate):
     agent = 'google'
+    id = 'google'
+    capabilities = Capabilities(
+        max_request_chars=5000,
+        max_items=None,
+        native_batch=False,
+        tag_handling=None,
+        glossary=False,
+        context=False,
+    )
     # Evita inconsistências em lotes com o cliente HTTP compartilhado.
     MAX_REQUESTS_SIMULTANEOUSLY = 4
     USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
@@ -44,6 +54,23 @@ class GoogleTranslate(BaseTranslate):
     _last_request_time = 0.0
     _rate_lock = threading.Lock()
     _MIN_REQUEST_INTERVAL = 0.2  # Pacing suave para requisições diretas
+
+    @classmethod
+    def _get_concurrency_limit(cls):
+        base_limit = cls.MAX_REQUESTS_SIMULTANEOUSLY
+        try:
+            import os
+            from src.services.ProxyManager import ProxyManager
+            pm = ProxyManager.get_instance()
+            if pm.enabled and pm.direct_blocked:
+                pool_size = pm.get_pool_size()
+                if pool_size > 0:
+                    req_per_proxy = int(os.environ.get('REQUESTS_PER_PROXY', '1'))
+                    base_limit = max(cls.MAX_REQUESTS_SIMULTANEOUSLY, min(16, pool_size * req_per_proxy))
+        except Exception:
+            pass
+        return base_limit
+
 
     @classmethod
     def _rate_limit(cls):
@@ -256,15 +283,14 @@ class GoogleTranslate(BaseTranslate):
         if proxy_mgr.direct_blocked and not proxy_mgr.enabled:
             raise ProviderRateLimited("IP direto bloqueado pela Google (HTTP 429) e pool de proxies desativado. Ative proxies ou use VPN.")
 
-        for attempt in range(5):
-            try:
-                res = self._translate_gtx(text)
-                if res:
-                    return res
-            except Exception as e:
-                if isinstance(e, ProviderRateLimited) and proxy_mgr.direct_blocked and not proxy_mgr.enabled:
-                    raise
-                logging.debug(f"GTX falhou tentativa {attempt+1}/5 para '{text[:30]}...': {e}")
+        try:
+            res = self._translate_gtx(text)
+            if res:
+                return res
+        except Exception as e:
+            if isinstance(e, ProviderRateLimited) and proxy_mgr.direct_blocked and not proxy_mgr.enabled:
+                raise
+            logging.debug(f"GTX falhou para '{text[:30]}...': {e}")
 
         if proxy_mgr.direct_blocked and not proxy_mgr.enabled:
             raise ProviderRateLimited("IP direto bloqueado pela Google (HTTP 429) e pool de proxies desativado. Ative proxies ou use VPN.")
@@ -291,61 +317,36 @@ class GoogleTranslate(BaseTranslate):
             return []
 
         import re
-        max_retries = 3
-        last_error = None
+        try:
+            list_join = self.delimiter.join(texts)
+            translate_str = self._translate_raw(list_join)
+            if not translate_str:
+                raise ProviderUnavailable("Empty translation received")
+            translate_list = translate_str.split(self.delimiter)
 
-        for attempt in range(max_retries):
-            try:
-                list_join = self.delimiter.join(texts)
-                translate_str = self._translate_raw(list_join)
-                if not translate_str:
-                    raise ProviderUnavailable("Empty translation received")
-                translate_list = translate_str.split(self.delimiter)
+            # Se o delimitador foi ligeiramente alterado por espaços/tags pelo provedor:
+            if len(translate_list) != len(texts) and '<span>' in self.delimiter:
+                alt_list = re.split(r'\s*<span[^>]*>\s*</span>\s*', translate_str)
+                if len(alt_list) == len(texts):
+                    translate_list = alt_list
 
-                # Se o delimitador foi ligeiramente alterado por espaços/tags pelo provedor:
-                if len(translate_list) != len(texts) and '<span>' in self.delimiter:
-                    alt_list = re.split(r'\s*<span[^>]*>\s*</span>\s*', translate_str)
-                    if len(alt_list) == len(texts):
-                        translate_list = alt_list
+            # Se o delimitador for alterado pelo provedor, o batch pode ficar desalinhado.
+            # Fallback sequencial sem abrir pool interno que fura o limite de concorrência:
+            if len(translate_list) != len(texts):
+                safe_results = [self._translate_raw(t) for t in texts]
+                return safe_results
 
-                # Se o delimitador for alterado pelo provedor, o batch pode ficar desalinhado.
-                # Nessa situação, traduzimos item a item para manter mapeamento correto.
-                if len(translate_list) != len(texts):
-                    from concurrent.futures import ThreadPoolExecutor
-                    with ThreadPoolExecutor(max_workers=5) as executor:
-                        safe_results = list(executor.map(self._translate_raw, texts))
-                    return safe_results
+            return translate_list
+        except Exception as e:
+            is_429 = _is_rate_limit_exception(e)
+            from src.services.ProxyManager import ProxyManager
+            pm = ProxyManager.get_instance()
+            if is_429 and not pm.enabled:
+                logging.error("❌ IP direto bloqueado por limite de requisições (HTTP 429) e o pool de proxies está DESATIVADO.")
+                raise ProviderRateLimited(
+                    "IP bloqueado por limite de requisições (HTTP 429) e o pool de proxies está desativado. "
+                    "Conecte sua VPN (ex: ProtonVPN) ou reative o pool de proxies no menu para continuar."
+                ) from e
+            raise
 
-                return translate_list
-            except Exception as e:
-                last_error = e
-                is_429 = _is_rate_limit_exception(e)
-                from src.services.ProxyManager import ProxyManager
-                pm = ProxyManager.get_instance()
 
-                # Se o IP direto foi bloqueado com 429 e o usuário desativou o pool de proxies:
-                if is_429 and not pm.enabled:
-                    logging.error("❌ IP direto bloqueado por limite de requisições (HTTP 429) e o pool de proxies está DESATIVADO.")
-                    raise ProviderRateLimited(
-                        "IP bloqueado por limite de requisições (HTTP 429) e o pool de proxies está desativado. "
-                        "Conecte sua VPN (ex: ProtonVPN) ou reative o pool de proxies no menu para continuar."
-                    ) from e
-
-                if attempt < max_retries - 1:
-                    if pm.direct_blocked or is_429:
-                        wait_time = 0.5 * (attempt + 1)
-                    else:
-                        wait_time = (5.0 * (attempt + 1)) if is_429 else (1.5 * (attempt + 1))
-                    logging.warning(f"Tentativa {attempt + 1}/{max_retries} falhou ({e}). Aguardando {wait_time}s...")
-                    time.sleep(wait_time)
-                else:
-                    logging.error(f"Esgotadas {max_retries} tentativas para o lote. Propagando erro: {last_error}")
-                    raise last_error
-
-    def translator(self, texts, progress_callback=None):
-        treated_text = TextsUtils.dictToList(texts)
-        self.preprocess_text(treated_text)
-        translate_text = self.translate_batch(treated_text, progress_callback)
-        self.postprocess_text(translate_text)
-        TextsUtils.interactive_item(texts, translate_text)
-        return texts
