@@ -98,6 +98,59 @@ slime --add-alias slx
   docker-compose up -d --build
   ```
 
+# 🎮 Game Metadata (.slime/meta.json)
+
+A ferramenta gerencia o ciclo de vida da tradução por meio de metadados armazenados em `.slime/meta.json` dentro da pasta do jogo. Isso possibilita verificação de integridade, detecção de patches/atualizações do jogo original, adoção de traduções legadas e retradução incremental.
+
+### Adotando um Jogo Já Traduzido (`--adopt`)
+
+Se você já possui um jogo traduzido (seja por versões anteriores ou ferramentas externas), é possível adotá-lo para que o Slime registre os hashes e permita atualizações incrementais:
+
+```sh
+# Adotar um jogo traduzido de RPG Maker
+slime --adopt /caminho/jogo_traduzido --original /caminho/jogo_original -e RPGMaker
+
+# Especificando idiomas de origem e destino
+slime --adopt /caminho/jogo_traduzido --original /caminho/jogo_original -e RPGMaker -s ja -d pt
+```
+
+O comando analisa as pastas original e traduzida, calcula os hashes SHA-256 de cada arquivo e gera `.slime/meta.json`.
+
+### Verificando a Integridade da Tradução (`--verify-game`)
+
+Verifique se os arquivos traduzidos ou originais foram alterados, corrompidos ou atualizados por novos patches:
+
+```sh
+# Conferir arquivos traduzidos contra o metadado registrado
+slime --verify-game /caminho/jogo_traduzido
+
+# Conferir contra a pasta original para detectar atualizações/patches do jogo
+slime --verify-game /caminho/jogo_traduzido --original /caminho/jogo_original
+```
+
+### Códigos de Status da Verificação
+
+Ao verificar os arquivos do jogo, cada item é classificado em um dos seguintes estados:
+
+| Código de Status | Descrição |
+| --- | --- |
+| `intact` | O arquivo corresponde aos hashes registrados e foi traduzido com sucesso. |
+| `original_changed` | O arquivo original foi alterado (ex: patch/atualização do jogo). Requer retradução. |
+| `new` | Arquivo novo detectado na pasta original que não constava nos metadados. |
+| `partial` | O arquivo foi traduzido apenas parcialmente em execuções anteriores. |
+| `edited` | O arquivo traduzido foi editado manualmente após a tradução. |
+| `unchanged` | O conteúdo do arquivo é idêntico ao original (sem textos traduzíveis alterados). |
+| `original_missing` | O arquivo original não foi encontrado na pasta de origem especificada. |
+| `translation_missing` | O arquivo traduzido não foi encontrado na pasta de destino. |
+
+### Retradução Incremental (`--incremental`)
+
+Você pode combinar a verificação de metadados com o modo incremental para processar apenas arquivos alterados ou novos:
+
+```sh
+slime -i /caminho/do/jogo --incremental -e RPGMaker -t Google -s ja -d pt
+```
+
 # ⚙️ Variáveis de Ambiente
 O projeto utiliza um arquivo `.env.example` como base. Você pode copiá-lo para `.env` e ajustar os valores.
 

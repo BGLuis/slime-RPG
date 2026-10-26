@@ -64,7 +64,15 @@ class CacheLookupStep(PipelineStep):
         switch_eng = getattr(context.translate_instance, 'switch_engine', False) or getattr(cache, 'switch_engine', False)
         if hasattr(cache, 'lookup_many'):
             translatable = [s for s in all_strings if isinstance(s, str) and s.strip()]
-            hits = cache.lookup_many(translatable, switch_engine=switch_eng) if translatable else {}
+            if not translatable:
+                hits = {}
+            elif switch_eng:
+                try:
+                    hits = cache.lookup_many(translatable, switch_engine=switch_eng)
+                except TypeError:
+                    hits = cache.lookup_many(translatable)
+            else:
+                hits = cache.lookup_many(translatable)
             for i, s in enumerate(all_strings):
                 if not isinstance(s, str) or not s.strip():
                     context.cached_positions[i] = s
