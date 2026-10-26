@@ -250,9 +250,18 @@ class CacheStoreStep(PipelineStep):
         if getattr(context, 'all_cached', False):
             return context
 
+        is_offline = (
+            getattr(context, 'memory_only', False)
+            or getattr(context, 'offline', False)
+            or getattr(context.extractor, 'memory_only', False)
+            or getattr(context.extractor, 'offline', False)
+            or getattr(context.translate_instance, 'memory_only', False)
+            or getattr(context.translate_instance, 'offline', False)
+        )
+
         if hasattr(context, 'fixed_pending') and context.fixed_pending:
-            # 1. Salvar no cache apenas textos limpos e finalizados (texto original -> texto traduzido e corrigido)
-            if context.translate_instance and hasattr(context.translate_instance, 'cache'):
+            # 1. Salvar no cache apenas textos limpos e finalizados (se não estiver em modo offline)
+            if not is_offline and context.translate_instance and hasattr(context.translate_instance, 'cache'):
                 cache = context.translate_instance.cache
                 lang_src = getattr(context.translate_instance, 'lang_source', None)
                 lang_tgt = getattr(context.translate_instance, 'lang_target', None)

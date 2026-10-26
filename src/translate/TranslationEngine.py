@@ -249,7 +249,7 @@ class TranslationEngine:
                         for s, trans in zip(b, res):
                             translated_map[s.source] = trans
 
-            if self.memory and hasattr(self.memory, 'store_many'):
+            if not self.memory_only and self.memory and hasattr(self.memory, 'store_many'):
                 storable = [
                     (s, trans) for s, trans in translated_map.items()
                     if s in unique_uncached and trans is not None

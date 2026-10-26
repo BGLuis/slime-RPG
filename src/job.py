@@ -81,6 +81,19 @@ class TranslationJob:
             self.translator = translator
         else:
             self.translator = TranslatorFactory.create(self.config.translator_name)
+
+        # Propagação do nome do jogo para o tradutor e cache antes de carregar cache/idioma
+        game_name = None
+        if self.config.input_dir:
+            base = os.path.basename(os.path.abspath(self.config.input_dir))
+            if base.lower() in ('data', 'www', 'www/data') or not base:
+                base = os.path.basename(os.path.dirname(os.path.abspath(self.config.input_dir)))
+            game_name = base or 'default_game'
+        if game_name:
+            setattr(self.translator, 'game_name', game_name)
+            if hasattr(self.translator, 'cache') and self.translator.cache:
+                self.translator.cache.game = game_name
+
         if hasattr(self.translator, 'change_language'):
             self.translator.change_language(self.config.lang_source, self.config.lang_target)
 
@@ -94,19 +107,6 @@ class TranslationJob:
         # Configurações dinâmicas do tradutor
         if self.config.translator_config and hasattr(self.translator, 'apply_configuration'):
             self.translator.apply_configuration(self.config.translator_config)
-
-        # Propagação do nome do jogo para o tradutor e cache
-        game_name = None
-        if self.config.input_dir:
-            base = os.path.basename(os.path.abspath(self.config.input_dir))
-            if base.lower() in ('data', 'www', 'www/data') or not base:
-                base = os.path.basename(os.path.dirname(os.path.abspath(self.config.input_dir)))
-            game_name = base or 'default_game'
-        if game_name:
-            if hasattr(self.translator, 'game_name'):
-                self.translator.game_name = game_name
-            if hasattr(self.translator, 'cache') and self.translator.cache:
-                self.translator.cache.game = game_name
 
         # 2. Modo de operação
         if self.config.mode == 'content':
@@ -252,10 +252,13 @@ class TranslationJob:
                             GameMetadata.STATE_ORIGINAL_CHANGED,
                             GameMetadata.STATE_NEW,
                             GameMetadata.STATE_PARTIAL,
+                            GameMetadata.STATE_TRANSLATION_MISSING,
                         )
                     }
                     self.extractor.target_files = target_files
                     log(f"Modo incremental: {len(target_files)} arquivo(s) precisam de tradução", 'cyan')
+            else:
+                log("Aviso: Nenhum metadado (.slime/meta.json) encontrado. Executando tradução completa.", 'yellow')
 
         log(_i18n.tr('log_processing_files'), 'green')
 

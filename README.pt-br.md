@@ -151,6 +151,22 @@ Você pode combinar a verificação de metadados com o modo incremental para pro
 slime -i /caminho/do/jogo --incremental -e RPGMaker -t Google -s ja -d pt
 ```
 
+### Reaplicação Offline (`--memory-only` / `--offline`)
+
+Reaplique traduções existentes diretamente da memória de tradução local sem realizar requisições de rede. Textos sem tradução no cache são preservados no idioma de origem sem envenenar o cache:
+
+```sh
+slime -i /caminho/do/jogo --memory-only -e RPGMaker -t Google -s ja -d pt
+```
+
+### Troca de Motor (`--switch-engine`)
+
+Troque de motor de tradução preservando edições manuais (segmentos com status `reviewed` e `locked`), ignorando traduções de máquina (`machine`) provenientes de outros motores:
+
+```sh
+slime -i /caminho/do/jogo --switch-engine -e RPGMaker -t DeepL -s ja -d pt
+```
+
 # ⚙️ Variáveis de Ambiente
 O projeto utiliza um arquivo `.env.example` como base. Você pode copiá-lo para `.env` e ajustar os valores.
 

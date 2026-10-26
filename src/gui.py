@@ -281,6 +281,7 @@ class TranslationGUI(QMainWindow):
         vbox_dir.addLayout(dir_row)
 
         self.metadata_indicator = QLabel("")
+        self.metadata_indicator.setWordWrap(True)
         self.metadata_indicator.setStyleSheet(
             "color: #4ec9b0; font-size: 11px; font-weight: bold; padding: 2px 0px;"
         )

@@ -982,8 +982,14 @@ class BaseExtractor(ABC):
                             if hasattr(self.translate, '_session_translations'):
                                 self.translate._session_translations = session_trans
 
+                            is_offline = (
+                                getattr(self, 'memory_only', False)
+                                or getattr(self, 'offline', False)
+                                or getattr(self.translate, 'memory_only', False)
+                                or getattr(self.translate, 'offline', False)
+                            )
                             cache = getattr(self.translate, 'cache', None)
-                            if cache and hasattr(cache, 'store_many') and to_store_cache:
+                            if not is_offline and cache and hasattr(cache, 'store_many') and to_store_cache:
                                 cache.store_many(to_store_cache, game=getattr(self, 'game_name', None))
                     except Exception as e:
                         logging.debug(f"Cross-file engine translation fallback to per-file: {e}")

@@ -280,9 +280,12 @@ class TranslationMemory:
         params = [self.src_lang, self.tgt_lang, h]
         clauses = ["src_lang=?", "tgt_lang=?", "source_hash=?"]
 
-        if eff_switch and eff_prefer:
-            clauses.append("(status IN ('locked', 'reviewed') OR engine=?)")
-            params.append(eff_prefer)
+        if eff_switch:
+            if eff_prefer:
+                clauses.append("(status IN ('locked', 'reviewed') OR engine=?)")
+                params.append(eff_prefer)
+            else:
+                clauses.append("status IN ('locked', 'reviewed')")
         elif not eff_reuse and eff_prefer:
             clauses.append("engine=?")
             params.append(eff_prefer)
@@ -312,7 +315,10 @@ class TranslationMemory:
         try:
             candidates = self.fuzzy_candidates(text, limit=5)
             for cand in candidates:
-                if eff_switch and cand.get('status') not in ('locked', 'reviewed'):
+                if eff_switch:
+                    if cand.get('status') not in ('locked', 'reviewed') and (not eff_prefer or cand.get('engine') != eff_prefer):
+                        continue
+                elif not eff_reuse and eff_prefer and cand.get('engine') != eff_prefer:
                     continue
                 if normalize_source(cand['source']) == norm:
                     return cand['target']
@@ -351,9 +357,12 @@ class TranslationMemory:
 
         extra_where = []
         extra_where_params = []
-        if eff_switch and eff_prefer:
-            extra_where.append("(status IN ('locked', 'reviewed') OR engine=?)")
-            extra_where_params.append(eff_prefer)
+        if eff_switch:
+            if eff_prefer:
+                extra_where.append("(status IN ('locked', 'reviewed') OR engine=?)")
+                extra_where_params.append(eff_prefer)
+            else:
+                extra_where.append("status IN ('locked', 'reviewed')")
         elif not eff_reuse and eff_prefer:
             extra_where.append("engine=?")
             extra_where_params.append(eff_prefer)
@@ -404,7 +413,10 @@ class TranslationMemory:
             try:
                 candidates = self.fuzzy_candidates(t, limit=5)
                 for cand in candidates:
-                    if eff_switch and cand.get('status') not in ('locked', 'reviewed'):
+                    if eff_switch:
+                        if cand.get('status') not in ('locked', 'reviewed') and (not eff_prefer or cand.get('engine') != eff_prefer):
+                            continue
+                    elif not eff_reuse and eff_prefer and cand.get('engine') != eff_prefer:
                         continue
                     if normalize_source(cand['source']) == norm:
                         result[t] = cand['target']
@@ -500,10 +512,10 @@ class TranslationMemory:
     def fuzzy_candidates(self, text, limit=5):
         """Sugestões por similaridade textual (FTS5), nunca aplicadas automaticamente."""
         rows = self._get_read_connection().execute(
-            """SELECT segment.source, segment.target, segment.status FROM segment_fts
+            """SELECT segment.source, segment.target, segment.status, segment.engine FROM segment_fts
                JOIN segment ON segment.id = segment_fts.rowid
                WHERE segment_fts.source MATCH ? AND segment.src_lang=? AND segment.tgt_lang=?
                LIMIT ?""",
             (normalize_source(text), self.src_lang, self.tgt_lang, limit),
         ).fetchall()
-        return [{'source': r[0], 'target': r[1], 'status': r[2]} for r in rows]
+        return [{'source': r[0], 'target': r[1], 'status': r[2], 'engine': r[3]} for r in rows]

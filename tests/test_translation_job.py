@@ -1,3 +1,4 @@
+import os
 import pytest
 
 from src.job import JobConfig, TranslationJob
@@ -576,3 +577,232 @@ def test_incremental_updates_metadata(tmp_path):
 
     expected_new_hash = GameMetadata.sha256_file(str(trans_dir / "changed.json"))
     assert updated_meta["files"]["changed.json"]["translated_sha256"] == expected_new_hash
+
+
+def test_offline_mode_does_not_poison_cache_with_fixed_text(tmp_path):
+    import json
+    from src.extractor.JsonExtractor import JsonExtractor
+    from src.translate.TranslationMemory import TranslationMemory
+
+    input_dir = tmp_path / "game_offline_no_poison"
+    input_dir.mkdir()
+    (input_dir / "test.json").write_text(json.dumps({"dialogue": "Hello world"}), encoding="utf-8")
+
+    db_path = str(tmp_path / "offline_clean.db")
+    TranslationMemory._reset_pools()
+    tm = TranslationMemory(db_path, "en", "pt", engine="clean_engine")
+
+    class MutatingOfflineTranslator:
+        agent = "clean_engine"
+        name = "clean_engine"
+        lang_source = "en"
+        lang_target = "pt"
+
+        def __init__(self, cache):
+            self.cache = cache
+            self.memory_only = True
+            self.offline = True
+
+        def translate_batch(self, batch, callback=None):
+            raise AssertionError("Network attempted in offline mode!")
+
+        def translator(self, text, callback=None):
+            raise AssertionError("Network attempted in offline mode!")
+
+        def change_language(self, s, t):
+            self.lang_source = s
+            self.lang_target = t
+
+        def save_cache(self):
+            pass
+
+    translator = MutatingOfflineTranslator(tm)
+    cfg = JobConfig(
+        extractor_name="json",
+        translator_name="clean_engine",
+        lang_source="en",
+        lang_target="pt",
+        input_dir=str(input_dir),
+        memory_only=True,
+        backup=False,
+        verify=False,
+    )
+    with Workspace(str(input_dir)) as ws:
+        extractor = JsonExtractor(translator, workspace=ws)
+        # Even if fix_text_translate mutates the text, offline mode must never store it in cache
+        orig_fix = extractor.fix_text_translate
+        extractor.fix_text_translate = lambda texts, origs: [t + " [mutated]" for t in texts]
+
+        job = TranslationJob(cfg, workspace=ws, extractor=extractor, translator=translator)
+        success = job.run(is_interactive=False)
+        assert success is True
+
+    # TranslationMemory must NOT contain "Hello world"
+    assert tm.lookup("Hello world") is None
+
+
+def test_incremental_restores_missing_translation(tmp_path):
+    import json
+    from src.extractor.JsonExtractor import JsonExtractor
+    from src.services import GameMetadata
+
+    orig_dir = tmp_path / "orig_missing"
+    orig_dir.mkdir()
+    trans_dir = tmp_path / "trans_missing"
+    trans_dir.mkdir()
+
+    (orig_dir / "file1.json").write_text(json.dumps({"dialogue": "One"}), encoding="utf-8")
+    (orig_dir / "file2.json").write_text(json.dumps({"dialogue": "Two"}), encoding="utf-8")
+    (trans_dir / "file1.json").write_text(json.dumps({"dialogue": "Um"}), encoding="utf-8")
+    (trans_dir / "file2.json").write_text(json.dumps({"dialogue": "Dois"}), encoding="utf-8")
+
+    meta = GameMetadata.build_meta(
+        str(trans_dir), str(orig_dir), ["json"],
+        origin=GameMetadata.ORIGIN_JOB,
+        extractor="json",
+        translator="MockTranslator",
+        lang_source="en",
+        lang_target="pt",
+    )
+    GameMetadata.save_meta(str(trans_dir), meta)
+
+    # Simulate missing translated file (accidental deletion or disk loss)
+    (trans_dir / "file2.json").unlink()
+
+    processed_files = []
+
+    class RestoringTranslator:
+        agent = "RestoreTrans"
+        name = "RestoreTrans"
+        lang_source = "en"
+        lang_target = "pt"
+        cache = {}
+
+        def translate_batch(self, batch, callback=None):
+            return [f"Tr-{s}" for s in batch]
+
+        def translator(self, text, callback=None):
+            return f"Tr-{text}"
+
+        def change_language(self, s, t):
+            pass
+
+        def save_cache(self):
+            pass
+
+    translator = RestoringTranslator()
+    cfg = JobConfig(
+        extractor_name="json",
+        translator_name="Google",
+        lang_source="en",
+        lang_target="pt",
+        input_dir=str(orig_dir),
+        output_dir=str(trans_dir),
+        incremental=True,
+        backup=False,
+        verify=False,
+    )
+    with Workspace(str(orig_dir), output_dir=str(trans_dir)) as ws:
+        extractor = JsonExtractor(translator, workspace=ws)
+        orig_pf = extractor.process_file
+
+        def tracking_pf(file, *args, **kwargs):
+            processed_files.append(os.path.basename(str(file)))
+            return orig_pf(file, *args, **kwargs)
+
+        extractor.process_file = tracking_pf
+        job = TranslationJob(cfg, workspace=ws, extractor=extractor, translator=translator)
+        success = job.run(is_interactive=False)
+        assert success is True
+
+    assert "file1.json" not in processed_files
+    assert "file2.json" in processed_files
+    assert (trans_dir / "file2.json").exists()
+
+
+def test_game_name_propagated_and_survives_change_language(tmp_path):
+    from src.translate.GoogleTranslate import GoogleTranslate
+    from src.translate.TranslationMemory import TranslationMemory
+
+    game_dir = tmp_path / "MyEpicGame"
+    game_dir.mkdir()
+
+    TranslationMemory._reset_pools()
+    translator = GoogleTranslate(lang_source="en", lang_target="pt")
+
+    cfg = JobConfig(
+        mode="filenames",
+        translator_name="Google",
+        lang_source="en",
+        lang_target="pt",
+        input_dir=str(game_dir),
+        backup=False,
+        verify=False,
+    )
+    with Workspace(str(game_dir)) as ws:
+        job = TranslationJob(cfg, workspace=ws, translator=translator)
+        assert getattr(job.translator, "game_name", None) == "MyEpicGame"
+        assert getattr(job.translator.cache, "game", None) == "MyEpicGame"
+
+        # After change_language, cache should still know its game
+        job.translator.change_language("ja", "pt")
+        assert getattr(job.translator.cache, "game", None) == "MyEpicGame"
+
+
+def test_run_extraction_process_passes_lifecycle_flags(tmp_path, monkeypatch):
+    from main import run_extraction_process
+
+    game_dir = tmp_path / "game_run"
+    game_dir.mkdir()
+
+    class FakeExt:
+        name = "FakeExt"
+        files_types = ["json"]
+        folderInput = str(game_dir)
+        folderProcess = str(game_dir)
+        folderOutput = str(game_dir)
+        memory_only = True
+        switch_engine = True
+        incremental = True
+        observers = []
+
+        def init_folder(self): pass
+        def process_files(self): pass
+        def import_files(self): pass
+
+    class FakeTrans:
+        agent = "FakeTrans"
+        lang_source = "en"
+        lang_target = "pt"
+        memory_only = True
+        switch_engine = True
+
+        def change_language(self, s, t): pass
+        def save_cache(self): pass
+
+    captured_configs = []
+    from src import job
+
+    orig_init = job.TranslationJob.__init__
+
+    def mock_init(self, job_config, *args, **kwargs):
+        captured_configs.append(job_config)
+        orig_init(self, job_config, *args, **kwargs)
+
+    monkeypatch.setattr(job.TranslationJob, "__init__", mock_init)
+
+    ext = FakeExt()
+    trans = FakeTrans()
+
+    res = run_extraction_process(
+        ext, trans, str(game_dir), "en",
+        backup=False, verify=False, is_interactive=False,
+        memory_only=True, switch_engine=True, incremental=True
+    )
+    assert res is True
+    assert len(captured_configs) == 1
+    cfg = captured_configs[0]
+    assert cfg.memory_only is True
+    assert cfg.switch_engine is True
+    assert cfg.incremental is True
+

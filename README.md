@@ -151,6 +151,22 @@ Combine metadata verification with incremental translation to only process files
 slime -i /path/to/game --incremental -e RPGMaker -t Google -s ja -d en
 ```
 
+### Offline Reapplication (`--memory-only` / `--offline`)
+
+Reapply existing translations directly from local translation memory without making network calls. Missed segments remain in original source text without modifying the cache:
+
+```sh
+slime -i /path/to/game --memory-only -e RPGMaker -t Google -s ja -d en
+```
+
+### Engine Switching (`--switch-engine`)
+
+Switch translation engines while preserving reviewed and locked segments, ignoring machine translations from other engines:
+
+```sh
+slime -i /path/to/game --switch-engine -e RPGMaker -t DeepL -s ja -d en
+```
+
 # ⚙️ Environment Variables
 The application uses environment variables for configuration. You can copy `.env.example` to `.env` and adjust the values.
 

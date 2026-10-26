@@ -505,3 +505,37 @@ def test_switch_engine_preserves_reviewed(tmp_path):
     assert tm_deepl.lookup('Quit') == 'Sair Bloqueado'
     res = tm_deepl.lookup_many(['Save', 'Quit'])
     assert res == {'Save': 'Salvar Revisado', 'Quit': 'Sair Bloqueado'}
+
+
+def test_switch_engine_without_prefer_engine_ignores_machine(tmp_path):
+    db_file = str(tmp_path / 'switch_eng_no_prefer.db')
+    TranslationMemory._reset_pools()
+    tm_google = TranslationMemory(db_file, 'en', 'pt', engine='google')
+    tm_google.store('Hello', 'Ola Google', status='machine')
+    tm_google.store('Save', 'Salvar Revisado', status='reviewed')
+
+    TranslationMemory._reset_pools()
+    tm_none = TranslationMemory(db_file, 'en', 'pt', engine=None, switch_engine=True)
+    assert tm_none.lookup('Hello') is None
+    assert tm_none.lookup_many(['Hello']) == {}
+    assert tm_none.lookup('Save') == 'Salvar Revisado'
+    assert tm_none.lookup_many(['Save']) == {'Save': 'Salvar Revisado'}
+
+
+def test_switch_engine_fuzzy_allows_same_engine_machine(tmp_path):
+    db_file = str(tmp_path / 'switch_eng_fuzzy.db')
+    TranslationMemory._reset_pools()
+    tm_google = TranslationMemory(db_file, 'en', 'pt', engine='google')
+    tm_google.store('Old   engine   text', 'Old Engine Machine', status='machine')
+
+    tm_deepl = TranslationMemory(db_file, 'en', 'pt', engine='deepl', switch_engine=True)
+    tm_deepl.store('Hello   world', 'Ola mundo Deepl', status='machine')
+
+    # Same engine machine match via normalized whitespace should succeed
+    assert tm_deepl.lookup('Hello world') == 'Ola mundo Deepl'
+    assert tm_deepl.lookup_many(['Hello world']) == {'Hello world': 'Ola mundo Deepl'}
+
+    # Other engine machine match via normalized whitespace must be rejected
+    assert tm_deepl.lookup('Old engine text') is None
+    assert tm_deepl.lookup_many(['Old engine text']) == {}
+
