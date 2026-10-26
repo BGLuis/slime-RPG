@@ -5,7 +5,7 @@ from src.extractor.Segment import Segment
 class EventCommandStrategy:
     """Classe base unificada para estratégias de extração e inserção de comandos de evento (RPG Maker, WOLF RPG, etc.)."""
 
-    kind: str = "dialogue"
+    kind: Optional[str] = None
 
     def extract(self, item: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Any:
         return None
@@ -24,7 +24,10 @@ class EventCommandStrategy:
         if not val:
             return []
         raw_code = item.get("code") if isinstance(item, dict) else None
-        base_ctx = {"file": file_name, "code": raw_code, "kind": self.kind}
+        resolved_kind = (context and context.get("kind")) or getattr(self, "kind", None)
+        if not resolved_kind:
+            raise ValueError(f"Strategy {type(self).__name__} requires an explicit 'kind'")
+        base_ctx = {"file": file_name, "code": raw_code, "kind": resolved_kind}
         if context:
             base_ctx.update(context)
 

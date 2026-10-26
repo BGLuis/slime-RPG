@@ -83,7 +83,7 @@ class Segment:
     def __post_init__(self) -> None:
         ctx_data = dict(self.context) if isinstance(self.context, (dict, Mapping)) else {}
         if not ctx_data.get("kind"):
-            ctx_data["kind"] = "dialogue"
+            raise ValueError("Segment requires an explicit 'kind' in context")
         cons_data = dict(self.constraints) if isinstance(self.constraints, (dict, Mapping)) else {}
         object.__setattr__(self, "context", SegmentContext(ctx_data))
         object.__setattr__(self, "constraints", SegmentContext(cons_data))

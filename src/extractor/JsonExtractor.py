@@ -282,11 +282,16 @@ class JsonExtractor(BaseExtractor):
                         out[k] = _walk(v, child_ptr)
                     elif isinstance(v, str):
                         seg_id = f"{base_name}#{child_ptr}"
+                        k_lower = str(k).lower()
+                        if k_lower in ('name', 'title', 'label', 'caption', 'header', 'id', 'category'):
+                            item_kind = 'menu'
+                        else:
+                            item_kind = 'dialogue'
                         if mode == 'extract':
                             segments.append(Segment(
                                 id=seg_id,
                                 source=v,
-                                context={'file': base_name, 'pointer': child_ptr, 'key': k, 'kind': 'dialogue'},
+                                context={'file': base_name, 'pointer': child_ptr, 'key': k, 'kind': item_kind},
                             ))
                         else:
                             new_v = translations.get(seg_id, v)

@@ -434,10 +434,10 @@ class CSVExtractor(BaseExtractor):
                     r_idx = int(m.group(1))
                     col = m.group(2)
                     seg_id = f"{base_name}#row:{r_idx}/col:{col}"
-                    ctx = {'file': base_name, 'row': r_idx, 'column': col, 'kind': 'dialogue'}
+                    ctx = {'file': base_name, 'row': r_idx, 'column': col, 'kind': 'db'}
                 else:
                     seg_id = f"{base_name}#{key}"
-                    ctx = {'file': base_name, 'key': key, 'kind': 'dialogue'}
+                    ctx = {'file': base_name, 'key': key, 'kind': 'db'}
                 segments.append(Segment(id=seg_id, source=val, context=ctx))
             return segments
 
