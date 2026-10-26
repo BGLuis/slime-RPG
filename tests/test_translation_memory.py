@@ -431,3 +431,50 @@ def test_base_translate_save_cache_calls_flush(tmp_path, monkeypatch):
     gt.cache.flush = mock_flush
     gt.save_cache()
     mock_flush.assert_called_once()
+
+
+def test_game_segment(tmp_path):
+    import sqlite3
+    from src.translate.TranslationMemory import source_hash
+    db_file = str(tmp_path / 'game_seg.db')
+    TranslationMemory._reset_pools()
+    tm = TranslationMemory(db_file, 'en', 'pt', engine='google', game='GameA')
+    tm.store('Hello', 'Ola')
+
+    conn = sqlite3.connect(db_file)
+    rows = conn.execute("SELECT game, source_hash FROM game_segment").fetchall()
+    conn.close()
+
+    assert len(rows) == 1
+    assert rows[0] == ('GameA', source_hash('Hello'))
+
+
+def test_game_segment_multi(tmp_path):
+    import sqlite3
+    from src.translate.TranslationMemory import source_hash
+    db_file = str(tmp_path / 'game_seg_multi.db')
+    TranslationMemory._reset_pools()
+
+    tm_a = TranslationMemory(db_file, 'en', 'pt', engine='google', game='GameA')
+    tm_a.store('Attack', 'Ataque')
+
+    TranslationMemory._reset_pools()
+    tm_b = TranslationMemory(db_file, 'en', 'pt', engine='google', game='GameB')
+    tm_b.store('Attack', 'Ataque')
+
+    h = source_hash('Attack')
+    conn = sqlite3.connect(db_file)
+    rows = conn.execute("SELECT game, source_hash FROM game_segment WHERE source_hash=?", (h,)).fetchall()
+    conn.close()
+
+    assert len(rows) == 2
+    games = {r[0] for r in rows}
+    assert games == {'GameA', 'GameB'}
+
+    # Test link_game_segments
+    tm_b.link_game_segments('GameC', [h])
+    conn = sqlite3.connect(db_file)
+    rows = conn.execute("SELECT game, source_hash FROM game_segment WHERE source_hash=?", (h,)).fetchall()
+    conn.close()
+    assert len(rows) == 3
+    assert {r[0] for r in rows} == {'GameA', 'GameB', 'GameC'}
