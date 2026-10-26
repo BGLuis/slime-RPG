@@ -109,6 +109,11 @@ O projeto utiliza um arquivo `.env.example` como base. Você pode copiá-lo para
 | `OLLAMA_CONTEXT_FUNCTION` | Contexto de função customizado para a IA (opcional) | - |
 | `OLLAMA_CONTEXT_ADDITIONAL`| Contexto adicional customizado para a IA (opcional) | - |
 
+# 📚 Documentação
+- [Arquitetura do Sistema](ARCHITECTURE.md) - Padrões de projeto, fluxo de pipeline e concorrência (em inglês).
+- [Visão de Produto & Compatibilidade](PRODUCT.md) - Escopo, motores de jogos atendidos e casos de uso (em inglês).
+- [Guia de Códigos de Eventos RPG Maker](docs/engines/rpg_maker.md) - Especificação completa de comandos e códigos de formatação.
+
 # 🤝 Contribuidores
  <a href="https://github.com/bgluis/extractor-and-translation/graphs/contributors">
    <img src="https://contrib.rocks/image?repo=bgluis/extractor-and-translation"/>

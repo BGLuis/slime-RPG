@@ -109,6 +109,11 @@ The application uses environment variables for configuration. You can copy `.env
 | `OLLAMA_CONTEXT_FUNCTION` | Custom function context for the prompt (optional) | - |
 | `OLLAMA_CONTEXT_ADDITIONAL`| Additional context for the prompt (optional) | - |
 
+# 📚 Documentation
+- [System Architecture](ARCHITECTURE.md) - Design patterns, pipeline flow, and technical contracts.
+- [Product Vision & Roadmap](PRODUCT.md) - Scope, supported game engines, and features.
+- [RPG Maker Event Codes Reference](docs/engines/rpg_maker.md) - Complete opcode and format codes specification.
+
 # 🤝 Contributors
  <a href="https://github.com/bgluis/extractor-and-translation/graphs/contributors">
    <img src="https://contrib.rocks/image?repo=bgluis/extractor-and-translation"/>
