@@ -216,6 +216,12 @@ Atalhos/abreviações de terminal disponíveis:
                         help='Modo de operação: traduzir conteúdo de arquivos (content) ou nomes de arquivos (filenames)')
     parser.add_argument('--keep-original', action='store_true',
                         help='No modo filenames, manter o arquivo original e criar uma cópia traduzida')
+    parser.add_argument('--memory-only', '--offline', dest='memory_only', action='store_true',
+                        help='Reaplicar traduções exclusivamente da memória de tradução, sem chamadas de rede')
+    parser.add_argument('--switch-engine', action='store_true',
+                        help='Trocar motor de tradução preservando apenas segmentos revisados e bloqueados')
+    parser.add_argument('--incremental', action='store_true',
+                        help='Retraduzir apenas arquivos novos ou alterados com base no metadado do jogo (.slime/meta.json)')
 
     parser.add_argument('--adopt', metavar='PASTA_TRADUZIDA',
                         help='Registra o metadado de um jogo já traduzido (requer --original e -e)')
@@ -500,7 +506,10 @@ def run_filename_translation_workflow(args, translators):
         synopsis=args.synopsis,
         keep_original=keep_original,
         input_dir=input_dir,
-        output_dir=args.output
+        output_dir=args.output,
+        memory_only=getattr(args, 'memory_only', False),
+        switch_engine=getattr(args, 'switch_engine', False),
+        incremental=getattr(args, 'incremental', False)
     )
     ws = Workspace(input_dir, output_dir=args.output)
     job = TranslationJob(job_config, workspace=ws)
@@ -648,7 +657,10 @@ def run_workflow(args):
         verify=not args.no_verify,
         input_dir=input_dir,
         output_dir=args.output,
-        is_interactive=is_interactive
+        is_interactive=is_interactive,
+        memory_only=getattr(args, 'memory_only', False),
+        switch_engine=getattr(args, 'switch_engine', False),
+        incremental=getattr(args, 'incremental', False)
     )
     ws = Workspace(input_dir, output_dir=args.output)
     job = TranslationJob(job_config, workspace=ws)
@@ -657,7 +669,8 @@ def run_workflow(args):
 
 def run_extraction_process(extractor, translate, input_dir, lang_source, output_dir=None,
                            backup=True, verify=True, is_interactive=True,
-                           gui_signals=None, gui_verify_callback=None):
+                           gui_signals=None, gui_verify_callback=None,
+                           memory_only=False, switch_engine=False, incremental=False):
     """Run the main extraction and translation process"""
     from src.workspace import Workspace
     from src.job import JobConfig, TranslationJob
@@ -666,6 +679,23 @@ def run_extraction_process(extractor, translate, input_dir, lang_source, output_
     if ws is None:
         ws = Workspace(input_dir, output_dir=output_dir)
         extractor.workspace = ws
+
+    mem_only = (
+        memory_only
+        or getattr(translate, 'memory_only', False)
+        or getattr(translate, 'offline', False)
+        or getattr(extractor, 'memory_only', False)
+        or getattr(extractor, 'offline', False)
+    )
+    sw_engine = (
+        switch_engine
+        or getattr(translate, 'switch_engine', False)
+        or getattr(extractor, 'switch_engine', False)
+    )
+    inc = (
+        incremental
+        or getattr(extractor, 'incremental', False)
+    )
 
     job_config = JobConfig(
         mode='content',
@@ -677,7 +707,10 @@ def run_extraction_process(extractor, translate, input_dir, lang_source, output_
         verify=verify,
         input_dir=input_dir,
         output_dir=output_dir,
-        is_interactive=is_interactive
+        is_interactive=is_interactive,
+        memory_only=mem_only,
+        switch_engine=sw_engine,
+        incremental=inc,
     )
     job = TranslationJob(
         job_config,

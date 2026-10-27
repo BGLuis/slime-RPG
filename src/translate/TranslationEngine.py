@@ -48,6 +48,10 @@ class TranslationEngine:
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
+        self.memory_only = (
+            getattr(provider, 'memory_only', False)
+            or getattr(provider, 'offline', False)
+        )
 
         if max_concurrent_requests is not None:
             self.max_concurrent_requests = max_concurrent_requests
@@ -205,11 +209,13 @@ class TranslationEngine:
 
         cache_hits: Dict[str, str] = {}
         if self.memory and hasattr(self.memory, 'lookup_many'):
+            switch_eng = getattr(self.provider, 'switch_engine', False) or getattr(self.memory, 'switch_engine', False)
             cache_hits = self.memory.lookup_many(
                 all_sources,
                 prefer_engine=self.prefer_engine,
                 scope=self.scope,
                 reuse_other_engines=self.reuse_other_engines,
+                switch_engine=switch_eng,
             )
 
         unique_uncached = list(dict.fromkeys(s for s in all_sources if s not in cache_hits))
@@ -223,22 +229,27 @@ class TranslationEngine:
         translated_map = dict(cache_hits)
 
         if batches:
-            max_workers = min(self.max_concurrent_requests, len(batches))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_batch = {
-                    executor.submit(self._execute_single_batch, b, ctx): b
-                    for b in batches
-                }
-                for fut in as_completed(future_to_batch):
-                    b = future_to_batch[fut]
-                    try:
-                        res = fut.result()
-                    except Exception:
-                        res = [s.source for s in b]
-                    for s, trans in zip(b, res):
-                        translated_map[s.source] = trans
+            if self.memory_only:
+                for b in batches:
+                    for s in b:
+                        translated_map[s.source] = s.source
+            else:
+                max_workers = min(self.max_concurrent_requests, len(batches))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_batch = {
+                        executor.submit(self._execute_single_batch, b, ctx): b
+                        for b in batches
+                    }
+                    for fut in as_completed(future_to_batch):
+                        b = future_to_batch[fut]
+                        try:
+                            res = fut.result()
+                        except Exception:
+                            res = [s.source for s in b]
+                        for s, trans in zip(b, res):
+                            translated_map[s.source] = trans
 
-            if self.memory and hasattr(self.memory, 'store_many'):
+            if not self.memory_only and self.memory and hasattr(self.memory, 'store_many'):
                 storable = [
                     (s, trans) for s, trans in translated_map.items()
                     if s in unique_uncached and trans is not None

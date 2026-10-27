@@ -35,6 +35,15 @@ END;
 CREATE TRIGGER IF NOT EXISTS segment_ad AFTER DELETE ON segment BEGIN
     INSERT INTO segment_fts(segment_fts, rowid, source) VALUES('delete', old.id, old.source);
 END;
+
+CREATE TABLE IF NOT EXISTS game_segment (
+    game TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(game, source_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_game_segment_game ON game_segment(game);
+CREATE INDEX IF NOT EXISTS idx_game_segment_hash ON game_segment(source_hash);
 """
 
 
@@ -112,6 +121,7 @@ class TranslationMemory:
         prefer_engine=None,
         scope='global',
         reuse_other_engines=True,
+        switch_engine=False,
     ):
         self.db_path = db_path
         self.src_lang = src_lang
@@ -124,7 +134,12 @@ class TranslationMemory:
         )
         self.scope = scope
         self.reuse_other_engines = reuse_other_engines
+        self.switch_engine = switch_engine
         self._conn, self._lock = self._get_shared_connection(db_path)
+
+    def __deepcopy__(self, memo):
+        memo[id(self)] = self
+        return self
 
     @classmethod
     def migrate_engine_names(cls, conn):
@@ -252,33 +267,40 @@ class TranslationMemory:
     # é 999; versões novas usam 32766). 900 deixa folga para os 2 params fixos.
     _LOOKUP_MANY_CHUNK = 900
 
-    def lookup(self, text, prefer_engine=None, scope=None, reuse_other_engines=None):
+    def lookup(self, text, prefer_engine=None, scope=None, reuse_other_engines=None, switch_engine=None):
         eff_prefer = (
             self.ENGINE_MIGRATION_MAP.get(prefer_engine.lower(), prefer_engine.lower())
             if prefer_engine is not None else self.prefer_engine
         )
         eff_scope = scope if scope is not None else self.scope
         eff_reuse = reuse_other_engines if reuse_other_engines is not None else self.reuse_other_engines
+        eff_switch = switch_engine if switch_engine is not None else getattr(self, 'switch_engine', False)
 
         h = source_hash(text)
         params = [self.src_lang, self.tgt_lang, h]
         clauses = ["src_lang=?", "tgt_lang=?", "source_hash=?"]
 
-        if not eff_reuse and eff_prefer:
+        if eff_switch:
+            if eff_prefer:
+                clauses.append("(status IN ('locked', 'reviewed') OR engine=?)")
+                params.append(eff_prefer)
+            else:
+                clauses.append("status IN ('locked', 'reviewed')")
+        elif not eff_reuse and eff_prefer:
             clauses.append("engine=?")
             params.append(eff_prefer)
 
         if eff_scope == 'game' and self.game:
-            clauses.append("(game=? OR game IS NULL)")
-            params.append(self.game)
+            clauses.append("(game=? OR game IS NULL OR source_hash IN (SELECT source_hash FROM game_segment WHERE game=?))")
+            params.extend([self.game, self.game])
 
         order_clauses = [_STATUS_RANK]
         if eff_prefer:
             order_clauses.append("CASE WHEN engine=? THEN 0 ELSE 1 END")
             params.append(eff_prefer)
         if self.game:
-            order_clauses.append("CASE WHEN game=? THEN 0 ELSE 1 END")
-            params.append(self.game)
+            order_clauses.append("CASE WHEN (game=? OR source_hash IN (SELECT source_hash FROM game_segment WHERE game=?)) THEN 0 ELSE 1 END")
+            params.extend([self.game, self.game])
         order_clauses.append("updated_at DESC")
 
         sql = f"""SELECT target FROM segment
@@ -293,6 +315,11 @@ class TranslationMemory:
         try:
             candidates = self.fuzzy_candidates(text, limit=5)
             for cand in candidates:
+                if eff_switch:
+                    if cand.get('status') not in ('locked', 'reviewed') and (not eff_prefer or cand.get('engine') != eff_prefer):
+                        continue
+                elif not eff_reuse and eff_prefer and cand.get('engine') != eff_prefer:
+                    continue
                 if normalize_source(cand['source']) == norm:
                     return cand['target']
         except Exception:
@@ -300,7 +327,7 @@ class TranslationMemory:
 
         return None
 
-    def lookup_many(self, texts, prefer_engine=None, scope=None, reuse_other_engines=None):
+    def lookup_many(self, texts, prefer_engine=None, scope=None, reuse_other_engines=None, switch_engine=None):
         """Equivalente em lote de `lookup()`.
 
         Retorna {texto_original: target} apenas para os textos encontrados. Respeita
@@ -314,6 +341,7 @@ class TranslationMemory:
         )
         eff_scope = scope if scope is not None else self.scope
         eff_reuse = reuse_other_engines if reuse_other_engines is not None else self.reuse_other_engines
+        eff_switch = switch_engine if switch_engine is not None else getattr(self, 'switch_engine', False)
 
         wanted = {}  # source_hash -> primeiro texto original visto
         for t in texts:
@@ -329,12 +357,18 @@ class TranslationMemory:
 
         extra_where = []
         extra_where_params = []
-        if not eff_reuse and eff_prefer:
+        if eff_switch:
+            if eff_prefer:
+                extra_where.append("(status IN ('locked', 'reviewed') OR engine=?)")
+                extra_where_params.append(eff_prefer)
+            else:
+                extra_where.append("status IN ('locked', 'reviewed')")
+        elif not eff_reuse and eff_prefer:
             extra_where.append("engine=?")
             extra_where_params.append(eff_prefer)
         if eff_scope == 'game' and self.game:
-            extra_where.append("(game=? OR game IS NULL)")
-            extra_where_params.append(self.game)
+            extra_where.append("(game=? OR game IS NULL OR source_hash IN (SELECT source_hash FROM game_segment WHERE game=?))")
+            extra_where_params.extend([self.game, self.game])
 
         order_clauses = ["source_hash", _STATUS_RANK]
         order_params = []
@@ -342,8 +376,8 @@ class TranslationMemory:
             order_clauses.append("CASE WHEN engine=? THEN 0 ELSE 1 END")
             order_params.append(eff_prefer)
         if self.game:
-            order_clauses.append("CASE WHEN game=? THEN 0 ELSE 1 END")
-            order_params.append(self.game)
+            order_clauses.append("CASE WHEN (game=? OR source_hash IN (SELECT source_hash FROM game_segment WHERE game=?)) THEN 0 ELSE 1 END")
+            order_params.extend([self.game, self.game])
         order_clauses.append("updated_at DESC")
 
         for i in range(0, len(hashes), chunk):
@@ -379,6 +413,11 @@ class TranslationMemory:
             try:
                 candidates = self.fuzzy_candidates(t, limit=5)
                 for cand in candidates:
+                    if eff_switch:
+                        if cand.get('status') not in ('locked', 'reviewed') and (not eff_prefer or cand.get('engine') != eff_prefer):
+                            continue
+                    elif not eff_reuse and eff_prefer and cand.get('engine') != eff_prefer:
+                        continue
                     if normalize_source(cand['source']) == norm:
                         result[t] = cand['target']
                         break
@@ -399,11 +438,17 @@ class TranslationMemory:
             if isinstance(text, str) and isinstance(translated, str) and text.strip() == translated.strip():
                 return
         now = time.strftime('%Y-%m-%dT%H:%M:%S')
+        eff_game = game if game is not None else self.game
         with self._lock:
             self._conn.execute(
                 _UPSERT_SQL,
                 self._segment_row(text, translated, status, context, now, game=game),
             )
+            if eff_game and isinstance(text, str) and text.strip():
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO game_segment (game, source_hash, created_at) VALUES (?, ?, ?)",
+                    (eff_game, source_hash(text), now),
+                )
             self._conn.commit()
 
     def store_many(self, pairs, status='machine', context=None, allow_identity=False, game=None):
@@ -416,16 +461,42 @@ class TranslationMemory:
         idiomas de origem e destino forem distintos (evita envenenar o cache com fallbacks).
         """
         now = time.strftime('%Y-%m-%dT%H:%M:%S')
-        rows = [
-            self._segment_row(s, t, status, context, now, game=game)
-            for s, t in pairs
+        eff_game = game if game is not None else self.game
+        valid_pairs = [
+            (s, t) for s, t in pairs
             if isinstance(s, str) and s.strip() and t is not None
             and (allow_identity or not (status == 'machine' and self.src_lang != self.tgt_lang and s.strip() == t.strip()))
         ]
+        if not valid_pairs:
+            return
+        rows = [
+            self._segment_row(s, t, status, context, now, game=game)
+            for s, t in valid_pairs
+        ]
+        with self._lock:
+            self._conn.executemany(_UPSERT_SQL, rows)
+            if eff_game:
+                unique_hashes = {source_hash(s) for s, _ in valid_pairs}
+                game_rows = [(eff_game, h, now) for h in unique_hashes]
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO game_segment (game, source_hash, created_at) VALUES (?, ?, ?)",
+                    game_rows,
+                )
+            self._conn.commit()
+
+    def link_game_segments(self, game_name, source_hashes):
+        """Associa retroativamente uma lista de source_hashes a um jogo na tabela game_segment."""
+        if not game_name or not source_hashes:
+            return
+        now = time.strftime('%Y-%m-%dT%H:%M:%S')
+        rows = [(game_name, h, now) for h in set(source_hashes) if h]
         if not rows:
             return
         with self._lock:
-            self._conn.executemany(_UPSERT_SQL, rows)
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO game_segment (game, source_hash, created_at) VALUES (?, ?, ?)",
+                rows,
+            )
             self._conn.commit()
 
     def lock_term(self, source_text, translated_text):
@@ -439,10 +510,10 @@ class TranslationMemory:
     def fuzzy_candidates(self, text, limit=5):
         """Sugestões por similaridade textual (FTS5), nunca aplicadas automaticamente."""
         rows = self._get_read_connection().execute(
-            """SELECT segment.source, segment.target, segment.status FROM segment_fts
+            """SELECT segment.source, segment.target, segment.status, segment.engine FROM segment_fts
                JOIN segment ON segment.id = segment_fts.rowid
                WHERE segment_fts.source MATCH ? AND segment.src_lang=? AND segment.tgt_lang=?
                LIMIT ?""",
             (normalize_source(text), self.src_lang, self.tgt_lang, limit),
         ).fetchall()
-        return [{'source': r[0], 'target': r[1], 'status': r[2]} for r in rows]
+        return [{'source': r[0], 'target': r[1], 'status': r[2], 'engine': r[3]} for r in rows]

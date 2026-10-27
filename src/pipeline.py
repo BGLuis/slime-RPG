@@ -61,9 +61,18 @@ class CacheLookupStep(PipelineStep):
         # Um único lookup em lote (TranslationMemory.lookup_many) em vez de 2
         # queries por string sob um lock global. Dublês de teste que usam um dict
         # puro caem no fallback item-a-item.
+        switch_eng = getattr(context.translate_instance, 'switch_engine', False) or getattr(cache, 'switch_engine', False)
         if hasattr(cache, 'lookup_many'):
             translatable = [s for s in all_strings if isinstance(s, str) and s.strip()]
-            hits = cache.lookup_many(translatable) if translatable else {}
+            if not translatable:
+                hits = {}
+            elif switch_eng:
+                try:
+                    hits = cache.lookup_many(translatable, switch_engine=switch_eng)
+                except TypeError:
+                    hits = cache.lookup_many(translatable)
+            else:
+                hits = cache.lookup_many(translatable)
             for i, s in enumerate(all_strings):
                 if not isinstance(s, str) or not s.strip():
                     context.cached_positions[i] = s
@@ -154,6 +163,33 @@ class TranslationStep(PipelineStep):
                 'status': 'process', 
                 'msg': "Processing file via Pipeline"
             })
+
+        is_offline = (
+            getattr(context, 'memory_only', False)
+            or getattr(context, 'offline', False)
+            or getattr(context.extractor, 'memory_only', False)
+            or getattr(context.extractor, 'offline', False)
+            or getattr(context.translate_instance, 'memory_only', False)
+            or getattr(context.translate_instance, 'offline', False)
+        )
+        if is_offline:
+            applied = len(getattr(context, 'cached_positions', {}))
+            skipped = len(getattr(context, 'pending_originals', []))
+            if hasattr(context, 'masked_pending') and context.masked_pending:
+                context.translated_pending = list(context.masked_pending)
+            elif hasattr(context, 'pending_originals') and context.pending_originals:
+                context.translated_pending = list(context.pending_originals)
+            else:
+                context.translated_pending = []
+            if context.extractor:
+                context.extractor.add_threads_status({
+                    'file': context.file_path_str,
+                    'status': 'process',
+                    'applied': applied,
+                    'skipped': skipped,
+                    'msg': f"Modo offline: {applied} aplicados, {skipped} ignorados"
+                })
+            return context
         
         if context.translate_instance:
             if hasattr(context, 'masked_pending') and context.masked_pending:
@@ -214,9 +250,18 @@ class CacheStoreStep(PipelineStep):
         if getattr(context, 'all_cached', False):
             return context
 
+        is_offline = (
+            getattr(context, 'memory_only', False)
+            or getattr(context, 'offline', False)
+            or getattr(context.extractor, 'memory_only', False)
+            or getattr(context.extractor, 'offline', False)
+            or getattr(context.translate_instance, 'memory_only', False)
+            or getattr(context.translate_instance, 'offline', False)
+        )
+
         if hasattr(context, 'fixed_pending') and context.fixed_pending:
-            # 1. Salvar no cache apenas textos limpos e finalizados (texto original -> texto traduzido e corrigido)
-            if context.translate_instance and hasattr(context.translate_instance, 'cache'):
+            # 1. Salvar no cache apenas textos limpos e finalizados (se não estiver em modo offline)
+            if not is_offline and context.translate_instance and hasattr(context.translate_instance, 'cache'):
                 cache = context.translate_instance.cache
                 lang_src = getattr(context.translate_instance, 'lang_source', None)
                 lang_tgt = getattr(context.translate_instance, 'lang_target', None)

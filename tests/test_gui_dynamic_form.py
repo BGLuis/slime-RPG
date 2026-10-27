@@ -125,3 +125,35 @@ def test_dynamic_config_extraction(gui_window):
     assert cfg["extractor_config"]["extra_notes"] == "Custom Note"
     assert cfg["translator_config"]["api_key"] == "minha_chave"
     assert cfg["translator_config"]["use_proxy"] is True
+
+
+def test_metadata_indicator(gui_window, tmp_path):
+    from src.services import GameMetadata
+    game_dir = tmp_path / "game_with_meta"
+    game_dir.mkdir()
+    (game_dir / "data.json").write_text("{}", encoding="utf-8")
+
+    meta = GameMetadata.build_meta(
+        str(game_dir), None, ["json"],
+        origin=GameMetadata.ORIGIN_JOB,
+        extractor="json",
+        translator="Google",
+        lang_source="en",
+        lang_target="pt",
+    )
+    GameMetadata.save_meta(str(game_dir), meta)
+
+    gui_window.auto_detect_game_type(str(game_dir))
+    assert gui_window.metadata_indicator.text() != ""
+    assert "Google" in gui_window.metadata_indicator.text()
+    assert "en" in gui_window.metadata_indicator.text()
+    assert "pt" in gui_window.metadata_indicator.text()
+
+
+def test_no_metadata_indicator(gui_window, tmp_path):
+    clean_dir = tmp_path / "clean_game"
+    clean_dir.mkdir()
+
+    gui_window.metadata_indicator.setText("Previous Status")
+    gui_window.auto_detect_game_type(str(clean_dir))
+    assert gui_window.metadata_indicator.text() == ""

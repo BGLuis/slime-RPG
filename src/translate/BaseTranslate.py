@@ -29,6 +29,7 @@ class BaseTranslate(ABC):
     CHAR_LIMIT_DECREMENT = 1000
     lang_source = 'en'
     lang_target = 'pt'
+    game_name = None
     cache_path_base = get_app_dir("data")
     MAX_REQUESTS_SIMULTANEOUSLY = 99
 

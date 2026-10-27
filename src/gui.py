@@ -279,6 +279,16 @@ class TranslationGUI(QMainWindow):
         self.btn_browse.clicked.connect(self.browse_directory)
         dir_row.addWidget(self.btn_browse)
         vbox_dir.addLayout(dir_row)
+
+        self.metadata_indicator = QLabel("")
+        self.metadata_indicator.setWordWrap(True)
+        self.metadata_indicator.setStyleSheet(
+            "color: #4ec9b0; font-size: 11px; font-weight: bold; padding: 2px 0px;"
+        )
+        self.metadata_indicator.setVisible(False)
+        self.metadata_label = self.metadata_indicator
+        vbox_dir.addWidget(self.metadata_indicator)
+
         config_layout.addLayout(vbox_dir)
 
         # Dynamic Questions Form Container
@@ -610,26 +620,47 @@ class TranslationGUI(QMainWindow):
     def auto_detect_game_type(self, dir_path):
         """Tenta adivinhar a pasta correta e o extrator com base na estrutura"""
         if not dir_path or not os.path.isdir(dir_path):
+            if hasattr(self, 'metadata_indicator'):
+                self.metadata_indicator.setText("")
+                self.metadata_indicator.setVisible(False)
             return
 
+        from src.services import GameMetadata
         from src.services.GameDetector import detect_game_environment
+
         detected = detect_game_environment(dir_path)
-        if not detected:
-            return
+        detected_path = dir_path
 
-        detected_path = detected['detected_path']
-        detected_extractor = detected.get('extractor')
+        if detected:
+            detected_path = detected['detected_path']
+            detected_extractor = detected.get('extractor')
 
-        # Atualizar a GUI se algo foi detectado
-        if detected_path != dir_path:
-            self.log(self.tr_('log_folder_adjusted', name=os.path.basename(detected_path)), "green")
-            self.dir_input.setText(detected_path)
+            # Atualizar a GUI se algo foi detectado
+            if detected_path != dir_path:
+                self.log(self.tr_('log_folder_adjusted', name=os.path.basename(detected_path)), "green")
+                self.dir_input.setText(detected_path)
 
-        if detected_extractor:
-            idx = self.extractor_combo.findText(detected_extractor)
-            if idx >= 0:
-                self.extractor_combo.setCurrentIndex(idx)
-                self.log(self.tr_('log_extractor_suggested', name=detected_extractor), "green")
+            if detected_extractor:
+                idx = self.extractor_combo.findText(detected_extractor)
+                if idx >= 0:
+                    self.extractor_combo.setCurrentIndex(idx)
+                    self.log(self.tr_('log_extractor_suggested', name=detected_extractor), "green")
+
+        meta = GameMetadata.load_meta(detected_path) or GameMetadata.load_meta(dir_path)
+        if meta:
+            engine = meta.get('translator') or meta.get('extractor') or 'desconhecido'
+            src = meta.get('lang_source') or 'auto'
+            tgt = meta.get('lang_target') or '?'
+            file_count = len(meta.get('files', {}))
+            status_text = f"Metadado: Motor: {engine} | {src} -> {tgt} | {file_count} arquivos registrados"
+            if hasattr(self, 'metadata_indicator'):
+                self.metadata_indicator.setText(status_text)
+                self.metadata_indicator.setVisible(True)
+            self.log(f"Metadado encontrado: {engine} ({src}->{tgt}), {file_count} arquivos registrados", "cyan")
+        else:
+            if hasattr(self, 'metadata_indicator'):
+                self.metadata_indicator.setText("")
+                self.metadata_indicator.setVisible(False)
 
     def log(self, message, color="white"):
         timestamp = time.strftime("%H:%M:%S")

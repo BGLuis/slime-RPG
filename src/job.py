@@ -24,6 +24,16 @@ class JobConfig:
     input_dir: Optional[str] = None
     output_dir: Optional[str] = None
     is_interactive: bool = False
+    memory_only: bool = False
+    offline: bool = False
+    switch_engine: bool = False
+    incremental: bool = False
+
+    def __post_init__(self):
+        if self.offline:
+            self.memory_only = True
+        elif self.memory_only:
+            self.offline = True
 
     def validate(self):
         if self.mode not in ('content', 'filenames'):
@@ -71,6 +81,19 @@ class TranslationJob:
             self.translator = translator
         else:
             self.translator = TranslatorFactory.create(self.config.translator_name)
+
+        # Propagação do nome do jogo para o tradutor e cache antes de carregar cache/idioma
+        game_name = None
+        if self.config.input_dir:
+            base = os.path.basename(os.path.abspath(self.config.input_dir))
+            if base.lower() in ('data', 'www', 'www/data') or not base:
+                base = os.path.basename(os.path.dirname(os.path.abspath(self.config.input_dir)))
+            game_name = base or 'default_game'
+        if game_name:
+            setattr(self.translator, 'game_name', game_name)
+            if hasattr(self.translator, 'cache') and self.translator.cache:
+                self.translator.cache.game = game_name
+
         if hasattr(self.translator, 'change_language'):
             self.translator.change_language(self.config.lang_source, self.config.lang_target)
 
@@ -84,19 +107,6 @@ class TranslationJob:
         # Configurações dinâmicas do tradutor
         if self.config.translator_config and hasattr(self.translator, 'apply_configuration'):
             self.translator.apply_configuration(self.config.translator_config)
-
-        # Propagação do nome do jogo para o tradutor e cache
-        game_name = None
-        if self.config.input_dir:
-            base = os.path.basename(os.path.abspath(self.config.input_dir))
-            if base.lower() in ('data', 'www', 'www/data') or not base:
-                base = os.path.basename(os.path.dirname(os.path.abspath(self.config.input_dir)))
-            game_name = base or 'default_game'
-        if game_name:
-            if hasattr(self.translator, 'game_name'):
-                self.translator.game_name = game_name
-            if hasattr(self.translator, 'cache') and self.translator.cache:
-                self.translator.cache.game = game_name
 
         # 2. Modo de operação
         if self.config.mode == 'content':
@@ -120,6 +130,18 @@ class TranslationJob:
                     self.extractor.add_observer(self._forward_extractor_event)
         else:
             self.fn_translator = FileNameTranslator(self.translator)
+
+        if getattr(self.config, 'memory_only', False):
+            setattr(self.translator, 'memory_only', True)
+            setattr(self.translator, 'offline', True)
+            if self.extractor:
+                setattr(self.extractor, 'memory_only', True)
+                setattr(self.extractor, 'offline', True)
+
+        if getattr(self.config, 'switch_engine', False):
+            setattr(self.translator, 'switch_engine', True)
+            if hasattr(self.translator, 'cache') and self.translator.cache:
+                setattr(self.translator.cache, 'switch_engine', True)
 
     def add_observer(self, callback):
         self.observers.append(callback)
@@ -206,6 +228,37 @@ class TranslationJob:
 
         if hasattr(self.extractor, 'init_folder'):
             self.extractor.init_folder()
+
+        if getattr(self.config, 'incremental', False):
+            from src.services import GameMetadata
+            meta_dir = (
+                self.workspace.output_dir
+                if GameMetadata.load_meta(self.workspace.output_dir)
+                else self.workspace.input_dir
+            )
+            meta = GameMetadata.load_meta(meta_dir)
+            if meta:
+                orig_dir = (
+                    self._backup_dir
+                    or GameMetadata.resolve_original_dir(meta_dir, meta)
+                    or (self.workspace.input_dir if not self.workspace.is_in_place else None)
+                )
+                report = GameMetadata.verify(meta_dir, orig_dir)
+                if report is not None:
+                    target_files = {
+                        item['file'].replace('\\', '/')
+                        for item in report
+                        if item.get('state') in (
+                            GameMetadata.STATE_ORIGINAL_CHANGED,
+                            GameMetadata.STATE_NEW,
+                            GameMetadata.STATE_PARTIAL,
+                            GameMetadata.STATE_TRANSLATION_MISSING,
+                        )
+                    }
+                    self.extractor.target_files = target_files
+                    log(f"Modo incremental: {len(target_files)} arquivo(s) precisam de tradução", 'cyan')
+            else:
+                log("Aviso: Nenhum metadado (.slime/meta.json) encontrado. Executando tradução completa.", 'yellow')
 
         log(_i18n.tr('log_processing_files'), 'green')
 
@@ -320,7 +373,15 @@ class TranslationJob:
             original_dir = self.workspace.input_dir
 
         if not original_dir or not os.path.isdir(original_dir):
-            original_dir = None
+            prev_meta = GameMetadata.load_meta(translated_dir)
+            if prev_meta:
+                resolved = GameMetadata.resolve_original_dir(translated_dir, prev_meta)
+                if resolved and os.path.isdir(resolved):
+                    original_dir = resolved
+                else:
+                    original_dir = None
+            else:
+                original_dir = None
 
         try:
             file_status = {
