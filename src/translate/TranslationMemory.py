@@ -476,10 +476,8 @@ class TranslationMemory:
         with self._lock:
             self._conn.executemany(_UPSERT_SQL, rows)
             if eff_game:
-                game_rows = [
-                    (eff_game, source_hash(s), now)
-                    for s, _ in valid_pairs
-                ]
+                unique_hashes = {source_hash(s) for s, _ in valid_pairs}
+                game_rows = [(eff_game, h, now) for h in unique_hashes]
                 self._conn.executemany(
                     "INSERT OR IGNORE INTO game_segment (game, source_hash, created_at) VALUES (?, ?, ?)",
                     game_rows,
