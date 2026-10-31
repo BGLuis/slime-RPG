@@ -60,6 +60,19 @@ class TestQuoteSanitizationAndMyMemory(unittest.TestCase):
         res = ScriptStrategy.insert_script_string(s, iter(extracted))
         self.assertEqual(res, "$gameMessage.add('Don\\'t go!')")
 
+    def test_fix_text_translate_preserves_quoted_octal_and_apostrophe(self):
+        from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
+        res = RPGMakerExtractor.fix_text_translate(["if(v[1] == 01) msg = 'Don\\'t open 007'"])
+        self.assertEqual(res, ["if(v[1] == 1) msg = 'Don\\'t open 007'"])
+
+    def test_base_extractor_sanitize_octal_preserves_quoted_apostrophe_and_octal(self):
+        from src.extractor.BaseExtractor import BaseExtractor
+        res1 = BaseExtractor.sanitize_octal_data("var x = 'Don\\'t open 007';")
+        self.assertEqual(res1, "var x = 'Don\\'t open 007';")
+        res2 = BaseExtractor.sanitize_octal_data('var a = "It\'s"; var x = 007; var b = "Don\'t";')
+        self.assertEqual(res2, 'var a = "It\'s"; var x = 7; var b = "Don\'t";')
+
 
 if __name__ == '__main__':
     unittest.main()
+
