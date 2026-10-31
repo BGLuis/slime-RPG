@@ -86,7 +86,7 @@ def test_json_extractor_cjk_escapes_and_ui_slash_pairs():
     for s in [r"\C[2]魔法の剣\C[0]", r"こんにちは\n世界", "Yes/No", "はい/いいえ", "Press Attack/Defend to choose your action.", "Choose sword and/or shield"]:
         assert JsonExtractor._is_translatable_string(s) is True, f"Expected True for {s!r}"
 
-    for s in ["img/pictures/hero.png", "audio/bgm/theme", "custom/folder/file", "some_folder/asset"]:
+    for s in ["img/pictures/hero.png", "audio/bgm/theme", "custom/folder/file", "some_folder/asset", r"img\pictures\hero", r"C:\Users\hero", r"data\Map001"]:
         assert JsonExtractor._is_translatable_string(s) is False, f"Expected False for {s!r}"
 
 

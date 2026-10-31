@@ -196,4 +196,31 @@ def test_show_text_strategy_insert_single_element_list():
     assert cmd2["parameters"][0] == "text: Alguma mensagem"
 
 
+def test_plugin_strategy_mz_drops_asset_name_keys():
+    from src.extractor.rpgmaker.RPGEventStrategy import PluginStrategyMZ
+    cmd = {
+        "code": 357,
+        "parameters": [
+            "Plugin", "cmd", "cmd",
+            {
+                "pictureName": "Actor1",
+                "faceName": "Hero",
+                "bgmName": "Battle",
+                "questTitle": "Find Sword",
+                "buttonLabel": "Attack",
+            }
+        ]
+    }
+    extracted = PluginStrategyMZ().extract(cmd)
+    assert extracted == {"questTitle": "Find Sword", "buttonLabel": "Attack"}
+
+
+def test_choice_branch_strategy_insert_does_not_overwrite_technical_label():
+    from src.extractor.rpgmaker.RPGEventStrategy import ChoiceBranchStrategy
+    c = {"code": 402, "parameters": [0, "$gameVariables.value(1)"]}
+    ChoiceBranchStrategy().insert(c, "Translated Label")
+    assert c["parameters"][1] == "$gameVariables.value(1)"
+
+
+
 

@@ -81,6 +81,21 @@ class TestQuoteSanitizationAndMyMemory(unittest.TestCase):
         res_fix = RPGMakerExtractor.fix_text_translate(["if(v[1] == 01) msg = `Don't open 007`"])
         self.assertEqual(res_fix, ["if(v[1] == 1) msg = `Don't open 007`"])
 
+    def test_if_statements_sanitization_and_technical_rejection(self):
+        from src.extractor.BaseExtractor import BaseExtractor
+        from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
+        from src.extractor.rpgmaker.RPGTextFilters import RPGTextFilters
+
+        self.assertTrue(RPGTextFilters.is_technical_or_code("if(v[1] == 1) x = 5;"))
+        self.assertTrue(RPGTextFilters.is_technical_or_code("if(a == 1) b = 007;"))
+
+        res_octal = BaseExtractor.sanitize_octal_data("if(v[1] == 1) x = 007;")
+        self.assertEqual(res_octal, "if(v[1] == 1) x = 7;")
+
+        res_fix = RPGMakerExtractor.fix_text_translate(["if(v[1] == 1) x = verdadeiro;"])
+        self.assertEqual(res_fix, ["if(v[1] == 1) x = true;"])
+
+
 
 if __name__ == '__main__':
     unittest.main()

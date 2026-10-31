@@ -160,8 +160,6 @@ class ChoiceBranchStrategy(EventStrategy):
             prefix, choice_text = RPGTextFilters.parse_choice_condition(raw_str)
             if not RPGTextFilters.is_technical_or_code(choice_text):
                 item['parameters'][1] = prefix + str(text).strip()
-            else:
-                item['parameters'][1] = str(text)
 
 class ScriptStrategy(EventStrategy):
     kind = "script"
@@ -424,12 +422,15 @@ class PluginStrategyMZ(EventStrategy):
     }
     
     TEXT_KEYS = {'text', 'message', 'description', 'title', 'name', 'label', 'tooltip', 'help', 'content', 'body'}
+    TEXT_SUFFIXES = {'text', 'message', 'description', 'title', 'label', 'tooltip', 'help', 'content', 'body'}
     _CJK_PATTERN = re.compile(r'[\u3040-\u9fff]')
 
     @classmethod
     def _is_text_key(cls, key: str) -> bool:
         k = key.lower()
-        return any(k == tk or k.endswith(tk) for tk in cls.TEXT_KEYS)
+        if k in cls.TEXT_KEYS:
+            return True
+        return any(k.endswith(sfx) for sfx in cls.TEXT_SUFFIXES)
 
     def _get_translatable_keys(self, params: dict):
         keys = []

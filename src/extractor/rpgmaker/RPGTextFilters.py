@@ -94,8 +94,8 @@ class RPGTextFilters:
                 return "", text
 
         rest = stripped[end_idx:]
-        # Se contiver '{', é uma instrução/bloco de código JS (ex: if(...) { ... }), não escolha
-        if rest.lstrip().startswith('{') or '{' in rest:
+        # Se contiver '{', terminar com ';' ou for statement/atribuição, é JS, não escolha
+        if rest.lstrip().startswith('{') or '{' in rest or rest.rstrip().endswith(';') or re.search(r'[\w$]\s*=[^=]', rest):
             return "", text
 
         ltrimmed = rest.lstrip()
@@ -154,7 +154,7 @@ class RPGTextFilters:
         # Se começar com condição inline de escolha (ex: show_if(v[1] == 1) Opção),
         # avalia apenas o corpo se existir.
         cond_prefix, choice_body = RPGTextFilters.parse_choice_condition(text)
-        if cond_prefix:
+        if cond_prefix and any(cond_prefix.lower().startswith(p) for p in ('show_if', 'hide_if')):
             if not choice_body:
                 return True
             return RPGTextFilters.is_technical_or_code(choice_body, context=context)

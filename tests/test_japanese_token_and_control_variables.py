@@ -192,6 +192,14 @@ class TestJapaneseTokenAndControlVariables(unittest.TestCase):
         expected = [r"\C[1]Vermelho\C[0] e \C[1]Azul\C[0]", r"\C[1]Vermelho\C[0] e \C[1]Azul\C[0]"]
         self.assertEqual(restored, expected)
 
+    def test_unrolling_does_not_break_earlier_segment_sharing_placeholder(self):
+        pats = RPGMakerExtractor(None).get_mask_patterns()
+        src = [r"\V[1] coins", r"show_if(\V[1] > 0) Buy"]
+        masked, mp = TextsUtils.mask_tokens_in_structure(src, pats)
+        translated = [masked[0].replace("coins", "moedas"), masked[1].replace("Buy", "Comprar")]
+        restored = TextsUtils.unmask_tokens_in_structure(translated, mp)
+        self.assertEqual(restored, [r"\V[1] moedas", r"show_if(\V[1] > 0) Comprar"])
+
     def test_wolf_ruby_with_nested_format_tags(self):
         from src.extractor.wolfrpg.WolfRPGExtractor import WolfRPGExtractor
         s1 = r"\r[kanji,\C[1]ruby\C[0]]"

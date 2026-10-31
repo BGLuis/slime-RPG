@@ -133,7 +133,7 @@ class JsonExtractor(BaseExtractor):
         p_unity_tags = re.compile(r'</?[a-zA-Z][a-zA-Z0-9=_\-#]*(?:\s+[^>]*)?/?>', re.IGNORECASE)
         return [p_format_codes, p_angle_codes, p_conditions, p_template_expr, p_game_expr, p_arrow_func, p_bracket_vars, p_printf, p_curly_vars, p_unity_tags]
 
-    _ESCAPE_CODE_PATTERN = re.compile(r'\\[A-Za-z]+(?:\s*\[[^\]]*\])?|\\[nrtfvbae0\\]')
+    _ESCAPE_CODE_PATTERN = re.compile(r'\\[A-Za-z]{1,4}\[[^\]]*\]|\\[nrtfvbae0\\]')
     _CJK_PATTERN = re.compile(r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]')
     _UI_SLASH_PAIR_PATTERN = re.compile(r'^[^\W\d_]+(?:\s*/\s*[^\W\d_]+)+$', re.UNICODE)
     _KNOWN_PATH_PREFIXES = re.compile(r'^(?:audio|img|image|images|pictures|graphic|graphics|sound|bgm|bgs|se|me|data|movies|system|fonts)[/\\]', re.IGNORECASE)
@@ -147,6 +147,13 @@ class JsonExtractor(BaseExtractor):
             return False
         if RPGTextFilters.is_technical_or_code(s):
             return False
+
+        if '/' in s or '\\' in s:
+            if cls._KNOWN_PATH_PREFIXES.match(s):
+                return False
+            if ' ' not in s and not cls._CJK_PATTERN.search(s):
+                if (s.count('/') + s.count('\\')) >= 2 or not cls._UI_SLASH_PAIR_PATTERN.match(s):
+                    return False
 
         clean = cls._ESCAPE_CODE_PATTERN.sub('', s).strip()
         if not clean:
