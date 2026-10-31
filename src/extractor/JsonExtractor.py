@@ -126,7 +126,7 @@ class JsonExtractor(BaseExtractor):
         p_template_expr = re.compile(r'\$\{[^}]*\}')
         p_game_expr = re.compile(r'\$game(?:Variables|Switches|Party|Actors|Player|Map|System|Screen)(?:\.[a-zA-Z0-9_]+(?:\([^)]*\))?)*', re.IGNORECASE)
         p_arrow_func = re.compile(r'^\s*\(?[a-zA-Z0-9_,\s]*\)?\s*=>.*$', re.DOTALL)
-        p_bracket_vars = re.compile(r'!?(?<!\\)(?<![a-zA-Z0-9_])[A-Za-z]{1,2}\s*\[\s*\d+\s*\]', re.IGNORECASE)
+        p_bracket_vars = re.compile(r'!?(?<!\\)(?<![A-Za-z0-9_])(?:[vVsS]|ss|sv)\[\s*\d+\s*\]')
         p_printf = re.compile(r'%[0-9]*\.?[0-9]*[sdfoxX]')
         p_curly_vars = re.compile(r'\{[a-zA-Z0-9_]+\}')
         p_unity_tags = re.compile(r'</?[a-zA-Z][a-zA-Z0-9=_\-#]*(?:\s+[^>]*)?/?>', re.IGNORECASE)

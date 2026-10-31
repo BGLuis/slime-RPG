@@ -35,12 +35,21 @@ class _MatchSpan:
 
 class _CodeOnlyPattern:
     """Wrapper de padrão regex que só casa quando o segmento inteiro é código técnico."""
+    _XTOK_RE = re.compile(r'__XTOK_\d+__')
+
     def __init__(self, regex: re.Pattern):
         self._regex = regex
         self.pattern = regex.pattern
 
     def _active(self, s: str) -> bool:
-        return isinstance(s, str) and RPGTextFilters.is_technical_or_code(s)
+        if not isinstance(s, str):
+            return False
+        if RPGTextFilters.is_technical_or_code(s):
+            return True
+        if '__XTOK_' in s:
+            probe = self._XTOK_RE.sub('$game', s)
+            return RPGTextFilters.is_technical_or_code(probe)
+        return False
 
     def finditer(self, s: str):
         if not self._active(s):
@@ -258,17 +267,16 @@ class RPGMakerExtractor(BaseExtractor):
     _P_FORMAT_CODES = re.compile(r'\\[A-Za-z]+\s*\[[^\]]*\]', re.IGNORECASE)
     _P_CONDITION = _BalancedConditionPattern()
     _P_GAME = re.compile(r'\$game(?:' + '|'.join(_GAME_KEYS) + r')\b', re.IGNORECASE)
-    _P_BRACKET_VARS = re.compile(r'!?(?<!\\)(?<![a-zA-Z0-9_])[A-Za-z]{1,2}\s*\[\s*\d+\s*\]', re.IGNORECASE)
+    _P_BRACKET_VARS = re.compile(r'!?(?<!\\)(?<![A-Za-z0-9_])(?:[vVsS]|ss|sv)\[\s*\d+\s*\]')
     _P_BOOLEAN_LITERALS = _CodeOnlyPattern(re.compile(r'\b(?:true|false|null|undefined|NaN)\b', re.IGNORECASE))
     _P_OPERATORS = _CodeOnlyPattern(re.compile(r'(?:&&|\|\||>=|<=|!==|===|!=|==)'))
     _P_DOLLAR_CAMEL = re.compile(r'\$\s*[a-z]+[A-Z][a-zA-Z]*')
     _P_HTML_TAGS = re.compile(r'</?[a-zA-Z][a-zA-Z0-9]*(?:\s+[^>]*)?/?>', re.IGNORECASE)
-    _P_TECHNICAL_VALUES = re.compile(r'^(?:Yes|No|OK|Cancel|end|start|stop|play|pause|nochannel|channel)$', re.IGNORECASE)
 
     _DEFAULT_MASK_PATTERNS = [
         _P_FORMAT_CODES, _P_CONDITION, _P_GAME, _P_BRACKET_VARS,
         _P_BOOLEAN_LITERALS, _P_OPERATORS, _P_DOLLAR_CAMEL,
-        _P_HTML_TAGS, _P_TECHNICAL_VALUES
+        _P_HTML_TAGS
     ]
 
     def get_mask_patterns(self, file_name=None, data=None):
