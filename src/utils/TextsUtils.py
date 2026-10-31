@@ -84,9 +84,11 @@ def mask_tokens_in_structure(obj, patterns, prefix="__XTOK_"):
     """
     mapping = MaskMap()
     counter = IntWrapper(0)
+    tokens_to_phs = {}
 
     def mask_string(s):
         original_s = s
+        used_in_str = set()
         # Aplica cada padrão em ordem; cada match vira um placeholder
         for pat in patterns:
             # Substituição via função para guardar o original
@@ -94,20 +96,30 @@ def mask_tokens_in_structure(obj, patterns, prefix="__XTOK_"):
                 orig = m.group(0)
                 # Não mascarar algo que já seja exatamente um único placeholder
                 if isinstance(orig, str) and orig.startswith(prefix) and orig.endswith("__") and orig in mapping:
+                    used_in_str.add(orig)
                     return orig
                 # Se orig engoliu placeholders previamente criados, desenrolar (unroll) usando mapping
                 if isinstance(orig, str) and prefix in orig:
-                    for ph in list(mapping.keys()):
+                    for ph, val in list(mapping.items()):
                         if ph in orig:
-                            orig = orig.replace(ph, mapping[ph])
-                            del mapping[ph]
+                            orig = orig.replace(ph, val)
+                            used_in_str.discard(ph)
+
+                # Reutilizar placeholder existente para o mesmo token idêntico, desde que não ocorra nesta mesma string
+                for candidate in tokens_to_phs.get(orig, []):
+                    if candidate not in used_in_str:
+                        used_in_str.add(candidate)
+                        return candidate
+
                 ph = _generate_placeholder(counter.get(), prefix)
                 counter.add(1)
                 # Garantir unicidade
-                while ph in mapping or ph in s:
+                while ph in mapping or ph in s or ph in used_in_str:
                     ph = _generate_placeholder(counter.get(), prefix)
                     counter.add(1)
                 mapping[ph] = orig
+                tokens_to_phs.setdefault(orig, []).append(ph)
+                used_in_str.add(ph)
                 return ph
 
             try:

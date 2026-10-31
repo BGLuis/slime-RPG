@@ -46,5 +46,58 @@ class TestQuoteSanitizationAndMyMemory(unittest.TestCase):
         self.assertEqual(res, expected)
 
 
+    def test_control_variables_escapes_apostrophes_in_single_quotes(self):
+        from src.extractor.rpgmaker.RPGEventStrategy import ControlVariablesStrategy
+        cmd = {"code": 122, "parameters": [1, 1, 0, 4, "'Hello'"]}
+        ControlVariablesStrategy().insert(cmd, ["It’s a d'água test"])
+        self.assertEqual(cmd["parameters"][4], "'It\\'s a d\\'água test'")
+        self.assertNotIn("It's", cmd["parameters"][4])
+
+    def test_script_strategy_roundtrip_escaped_apostrophe(self):
+        s = "$gameMessage.add('Don\\'t go!')"
+        extracted = ScriptStrategy.extract_script_string(s)
+        self.assertEqual(extracted, ["Don't go!"])
+        res = ScriptStrategy.insert_script_string(s, iter(extracted))
+        self.assertEqual(res, "$gameMessage.add('Don\\'t go!')")
+
+    def test_fix_text_translate_preserves_quoted_octal_and_apostrophe(self):
+        from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
+        res = RPGMakerExtractor.fix_text_translate(["if(v[1] == 01) msg = 'Don\\'t open 007'"])
+        self.assertEqual(res, ["if(v[1] == 1) msg = 'Don\\'t open 007'"])
+
+    def test_base_extractor_sanitize_octal_preserves_quoted_apostrophe_and_octal(self):
+        from src.extractor.BaseExtractor import BaseExtractor
+        res1 = BaseExtractor.sanitize_octal_data("var x = 'Don\\'t open 007';")
+        self.assertEqual(res1, "var x = 'Don\\'t open 007';")
+        res2 = BaseExtractor.sanitize_octal_data('var a = "It\'s"; var x = 007; var b = "Don\'t";')
+        self.assertEqual(res2, 'var a = "It\'s"; var x = 7; var b = "Don\'t";')
+
+    def test_template_literal_backtick_preservation(self):
+        from src.extractor.BaseExtractor import BaseExtractor
+        from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
+        res_octal = BaseExtractor.sanitize_octal_data("var x = `Don't open 007`; var y = 009;")
+        self.assertEqual(res_octal, "var x = `Don't open 007`; var y = 9;")
+
+        res_fix = RPGMakerExtractor.fix_text_translate(["if(v[1] == 01) msg = `Don't open 007`"])
+        self.assertEqual(res_fix, ["if(v[1] == 1) msg = `Don't open 007`"])
+
+    def test_if_statements_sanitization_and_technical_rejection(self):
+        from src.extractor.BaseExtractor import BaseExtractor
+        from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
+        from src.extractor.rpgmaker.RPGTextFilters import RPGTextFilters
+
+        self.assertTrue(RPGTextFilters.is_technical_or_code("if(v[1] == 1) x = 5;"))
+        self.assertTrue(RPGTextFilters.is_technical_or_code("if(a == 1) b = 007;"))
+
+        res_octal = BaseExtractor.sanitize_octal_data("if(v[1] == 1) x = 007;")
+        self.assertEqual(res_octal, "if(v[1] == 1) x = 7;")
+
+        res_fix = RPGMakerExtractor.fix_text_translate(["if(v[1] == 1) x = verdadeiro;"])
+        self.assertEqual(res_fix, ["if(v[1] == 1) x = true;"])
+
+
+
 if __name__ == '__main__':
     unittest.main()
+
+

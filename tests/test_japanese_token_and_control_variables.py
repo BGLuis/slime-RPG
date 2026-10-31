@@ -136,6 +136,82 @@ class TestJapaneseTokenAndControlVariables(unittest.TestCase):
             self.assertNotIn("__xtok_", str(v).lower())
         self.assertIn("Texto limpo", trans.cache)
 
+    def test_show_text_speaker_tag_and_plugin_strategy_mz(self):
+        from src.extractor.rpgmaker.RPGEventStrategy import ShowTextStrategy, PluginStrategyMZ
+        cmd_tag = {"code": 401, "parameters": ["<\\N[1]> Hello world!"]}
+        self.assertEqual(ShowTextStrategy().extract(cmd_tag), ["Hello world!"])
+
+        cmd_chapter = {"code": 401, "parameters": ["<Chapter 1>"]}
+        self.assertEqual(ShowTextStrategy().extract(cmd_chapter), ["Chapter 1"])
+
+        cmd_guard = {"code": 401, "parameters": ["<Guard> Halt!"]}
+        ShowTextStrategy().insert(cmd_guard, ["Guarda", "Alto!"])
+        self.assertEqual(cmd_guard["parameters"][0], "<Guarda> Alto!")
+
+        cmd_mz = {
+            "code": 357,
+            "parameters": [
+                "QuestSystem", "Start", "Start",
+                {"Text": "クエスト開始", "questTitle": "スライム討伐", "buttonLabel": "Inventory"}
+            ]
+        }
+        res_mz = PluginStrategyMZ().extract(cmd_mz)
+        self.assertEqual(list(res_mz.values()) if isinstance(res_mz, dict) else res_mz, ["クエスト開始", "スライム討伐", "Inventory"])
+
+    def test_wolf_ruby_not_masked_into_xtok(self):
+        from src.extractor.wolfrpg.WolfRPGExtractor import WolfRPGExtractor
+        raw = r"\r[魔法,まほう]を使う"
+        pats = WolfRPGExtractor(None).get_mask_patterns()
+        masked, mp = TextsUtils.mask_tokens_in_structure(raw, pats)
+        self.assertNotIn("__XTOK_0__", masked)
+        self.assertIn("魔法", masked)
+
+        unwrapped = WolfRPGExtractor.unwrap_ruby(raw)
+        self.assertEqual(unwrapped, "魔法を使う")
+        masked_unwrapped, mp2 = TextsUtils.mask_tokens_in_structure(unwrapped, pats)
+        self.assertEqual(masked_unwrapped, "魔法を使う")
+        self.assertEqual(len(mp2), 0)
+
+    def test_identical_tokens_reuse_placeholder_indices(self):
+        pats = RPGMakerExtractor(None).get_mask_patterns()
+        input_list = [r"\C[2]Attack\C[0]", r"\C[2]Attack\C[0]", r"\C[2]Attack\C[0]"]
+        masked, mp = TextsUtils.mask_tokens_in_structure(input_list, pats)
+        self.assertEqual(len(set(masked)), 1)
+        restored = TextsUtils.unmask_tokens_in_structure(masked, mp)
+        self.assertEqual(restored, input_list)
+
+    def test_repeated_tokens_in_single_string_preserves_translation(self):
+        pats = RPGMakerExtractor(None).get_mask_patterns()
+        s1 = r"\C[1]Red\C[0] and \C[1]Blue\C[0]"
+        s2 = r"\C[1]Red\C[0] and \C[1]Blue\C[0]"
+        input_list = [s1, s2]
+        masked, mp = TextsUtils.mask_tokens_in_structure(input_list, pats)
+        self.assertEqual(len(set(masked)), 1)
+        translated = [m.replace("Red", "Vermelho").replace("Blue", "Azul").replace("and", "e") for m in masked]
+        restored = TextsUtils.unmask_tokens_in_structure(translated, mp)
+        expected = [r"\C[1]Vermelho\C[0] e \C[1]Azul\C[0]", r"\C[1]Vermelho\C[0] e \C[1]Azul\C[0]"]
+        self.assertEqual(restored, expected)
+
+    def test_unrolling_does_not_break_earlier_segment_sharing_placeholder(self):
+        pats = RPGMakerExtractor(None).get_mask_patterns()
+        src = [r"\V[1] coins", r"show_if(\V[1] > 0) Buy"]
+        masked, mp = TextsUtils.mask_tokens_in_structure(src, pats)
+        translated = [masked[0].replace("coins", "moedas"), masked[1].replace("Buy", "Comprar")]
+        restored = TextsUtils.unmask_tokens_in_structure(translated, mp)
+        self.assertEqual(restored, [r"\V[1] moedas", r"show_if(\V[1] > 0) Comprar"])
+
+    def test_wolf_ruby_with_nested_format_tags(self):
+        from src.extractor.wolfrpg.WolfRPGExtractor import WolfRPGExtractor
+        s1 = r"\r[kanji,\C[1]ruby\C[0]]"
+        s2 = r"\r[\C[1]kanji\C[0],ruby]"
+        self.assertEqual(WolfRPGExtractor.unwrap_ruby(s1), "kanji")
+        self.assertEqual(WolfRPGExtractor.unwrap_ruby(s2), r"\C[1]kanji\C[0]")
+        fixed = WolfRPGExtractor.fix_text_translate([s1, s2])
+        self.assertEqual(fixed, ["kanji", r"\c[1]kanji\c[0]"])
+
 
 if __name__ == '__main__':
     unittest.main()
+
+
+

@@ -219,14 +219,27 @@ class WolfRPGExtractor(BaseExtractor):
         if "Empacotar" in repack_opt:
             self.repack_wolf = True
 
+    _RUBY_PART = r"(?:(?:\\[A-Za-z]+\[[^\]]*\])|[^,\]])+"
+    _RUBY_PATTERN = re.compile(rf'\\r\s*\[\s*({_RUBY_PART})\s*,\s*(?:(?:\\[A-Za-z]+\[[^\]]*\])|[^\]])+\s*\]', re.IGNORECASE)
+
+    @classmethod
+    def unwrap_ruby(cls, text):
+        """Desenrola tags de ruby \\r[kanji,ruby] -> kanji antes da tradução."""
+        if isinstance(text, str):
+            return cls._RUBY_PATTERN.sub(r'\1', text)
+        elif isinstance(text, list):
+            return [cls.unwrap_ruby(item) for item in text]
+        elif isinstance(text, dict):
+            return {k: cls.unwrap_ruby(v) for k, v in text.items()}
+        return text
+
     def get_mask_patterns(self, file_name=None, data=None):
         """Padrões regex de escape e códigos de controle do WOLF RPG."""
         p_control_codes = re.compile(r'\\[cCvVsS]\s*\[[^\]]*\]', re.IGNORECASE)
         p_self_vars = re.compile(r'\\(?:cself|self)\s*\[[^\]]*\]', re.IGNORECASE)
         p_font = re.compile(r'\\font\s*\[[^\]]*\]', re.IGNORECASE)
         p_wait_speed = re.compile(r'\\[wt]\s*\[[^\]]*\]', re.IGNORECASE)
-        p_ruby = re.compile(r'\\r\s*\[[^\]]*\]', re.IGNORECASE)
-        p_generic_tags = re.compile(r'\\[A-Za-z]{1,5}\s*\[[^\]]*\]', re.IGNORECASE)
+        p_generic_tags = re.compile(r'\\(?![rR]\s*\[)[A-Za-z]{1,5}\s*\[[^\]]*\]', re.IGNORECASE)
         p_html = re.compile(r'</?[a-zA-Z][a-zA-Z0-9]*(?:\s+[^>]*)?/?>', re.IGNORECASE)
         p_format_vars = re.compile(r'%[0-9]*[sdif]', re.IGNORECASE)
 
@@ -235,7 +248,6 @@ class WolfRPGExtractor(BaseExtractor):
             p_self_vars,
             p_font,
             p_wait_speed,
-            p_ruby,
             p_generic_tags,
             p_html,
             p_format_vars
@@ -302,7 +314,7 @@ class WolfRPGExtractor(BaseExtractor):
         if strategy:
             text = strategy.extract(cmd)
             if text:
-                return {"id": index, "text": text}
+                return {"id": index, "text": self.unwrap_ruby(text)}
         return {"id": index, "text": []}
 
     def _insert_cmd_item(self, cmd, list_item):
@@ -348,7 +360,10 @@ class WolfRPGExtractor(BaseExtractor):
 
     def _scan_name_lookup_types(self):
         folder_input = getattr(self, 'folderInput', self.__class__.folderInput)
+        if not folder_input or not os.path.exists(folder_input):
+            return None
         found = set()
+        scanned_count = 0
 
         def scan(commands):
             for cmd in commands:
@@ -363,15 +378,19 @@ class WolfRPGExtractor(BaseExtractor):
                 for filename in filenames:
                     path = os.path.join(root, filename)
                     if filename == 'CommonEvent.dat':
+                        scanned_count += 1
                         for event in WolfBinaryAdapter.load_file(path):
                             if event:
                                 scan(event.get('list', []))
                     elif filename.endswith('.mps'):
+                        scanned_count += 1
                         for event in WolfBinaryAdapter.load_file(path).get('events', []):
                             for page in (event or {}).get('pages', []):
                                 scan(page.get('list', []))
         except Exception as e:
             logging.warning(f"Não foi possível mapear buscas por nome no banco ({e}); mantendo nomes de dado intactos.")
+            return None
+        if scanned_count == 0:
             return None
         return found
 
@@ -390,7 +409,7 @@ class WolfRPGExtractor(BaseExtractor):
                     if keeps_names and val == datum_item.get('name'):
                         continue
                     if WolfTextFilters.is_translatable(val):
-                        translatable[str(s_idx)] = val
+                        translatable[str(s_idx)] = self.unwrap_ruby(val)
 
                 if translatable:
                     type_obj["data"].append({
@@ -442,7 +461,7 @@ class WolfRPGExtractor(BaseExtractor):
             return None
         title = data.get('title', '')
         if WolfTextFilters.is_translatable(title):
-            return {"title": title}
+            return {"title": self.unwrap_ruby(title)}
         return None
 
     def insert_text_gamedat(self, data, new_data):
@@ -473,7 +492,7 @@ class WolfRPGExtractor(BaseExtractor):
             if not stripped or stripped.startswith('/') or stripped.startswith('//'):
                 continue
             if WolfTextFilters.is_translatable(stripped):
-                results[str(idx)] = stripped
+                results[str(idx)] = self.unwrap_ruby(stripped)
 
         return {"lines": results} if results else None
 
@@ -718,7 +737,7 @@ class WolfRPGExtractor(BaseExtractor):
         # Regex para normalizar códigos de controle
         p_c_v_s = re.compile(r'\\\s*([cCsSvV])\s*\[\s*([^\]]*?)\s*\]')
         p_self = re.compile(r'\\\s*(cself|self)\s*\[\s*([^\]]*?)\s*\]', re.IGNORECASE)
-        p_ruby = re.compile(r'\\\s*r\s*\[\s*([^,\]]+)\s*,\s*([^\]]+)\s*\]', re.IGNORECASE)
+        p_ruby = re.compile(rf'\\\s*r\s*\[\s*({WolfRPGExtractor._RUBY_PART})\s*,\s*(?:(?:\\[A-Za-z]+\[[^\]]*\])|[^\]])+\s*\]', re.IGNORECASE)
         p_font = re.compile(r'\\\s*font\s*\[\s*([^\]]*?)\s*\]', re.IGNORECASE)
         p_escapes = re.compile(r'\\\s+([\\nrt])')
 

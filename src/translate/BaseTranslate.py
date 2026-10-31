@@ -238,6 +238,8 @@ class BaseTranslate(ABC):
     def translate_batch(self, texts, progress_callback=None):
         if texts is None:
             return None
+        if getattr(self, 'circuit_open', False):
+            return list(texts)
 
         # 1. Identify what needs to be translated vs what is cached / non-translatable
         translated_texts = [None] * len(texts)
@@ -368,6 +370,8 @@ class BaseTranslate(ABC):
     def translate(self, segments: list[Segment], ctx=None) -> list[str]:
         if not segments:
             return []
+        if getattr(self, 'circuit_open', False):
+            return [s.source if hasattr(s, 'source') else str(s) for s in segments]
         texts = [s.source if hasattr(s, 'source') else str(s) for s in segments]
         res = self._translate_single_batch(texts)
         return res if res is not None else texts

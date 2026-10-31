@@ -68,7 +68,7 @@ class TranslationEngine:
         self.failed_call_count = 0
         self.consecutive_failures = 0
         self.circuit_open = False
-        self.failure_threshold = 10
+        self.failure_threshold = max_retries
 
     def batch_segments(self, segments: List[Segment]) -> List[List[Segment]]:
         caps = getattr(self.provider, 'capabilities', None)
@@ -140,6 +140,8 @@ class TranslationEngine:
                     self.consecutive_failures += 1
                     if self.consecutive_failures >= self.failure_threshold:
                         self.circuit_open = True
+                        if self.provider is not None:
+                            setattr(self.provider, 'circuit_open', True)
 
                     if isinstance(e, (ProviderAuthError, ProviderRateLimited)):
                         raise

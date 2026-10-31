@@ -148,6 +148,24 @@ class BaseExtractor(ABC):
             self._folderProcess = ws.process_dir
             self._folderOutput = ws.output_dir
 
+    @property
+    def translation_memory(self):
+        return getattr(self.translate, 'cache', None)
+
+    @property
+    def _session_translations(self):
+        if hasattr(self.translate, '_session_translations'):
+            return self.translate._session_translations
+        if not hasattr(self, '_session_trans_store'):
+            self._session_trans_store = {}
+        return self._session_trans_store
+
+    @_session_translations.setter
+    def _session_translations(self, val):
+        if hasattr(self.translate, '_session_translations'):
+            self.translate._session_translations = val
+        self._session_trans_store = val
+
     def add_observer(self, callback):
         """Padrão Observer: Adiciona um ouvinte para receber eventos do Extrator"""
         self.observers.append(callback)
@@ -309,11 +327,13 @@ class BaseExtractor(ABC):
             res._csv_meta['is_dirty'] = res._csv_meta.get('is_dirty', False) or has_changes
         return res
 
+    _QUOTE_SPLIT_PATTERN = re.compile(r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`)""")
+    _OCTAL_LEADING_ZERO_PATTERN = re.compile(r"\b0+([0-9]+)\b")
+
     @classmethod
     def sanitize_octal_data(cls, data):
         """Sanitiza números com zeros à esquerda em trechos de código em estruturas de dados na memória."""
         from src.extractor.rpgmaker.RPGTextFilters import RPGTextFilters
-        num_leading_zero = re.compile(r"\b0+([0-9]+)\b")
 
         def walk(obj):
             if isinstance(obj, dict):
@@ -326,18 +346,11 @@ class BaseExtractor(ABC):
                 return obj
             elif isinstance(obj, str):
                 s = obj
-                if RPGTextFilters.is_technical_or_code(s) and num_leading_zero.search(s):
-                    def repl(m):
-                        start, end = m.start(), m.end()
-                        before = s[:start]
-                        after = s[end:]
-                        in_double = before.count('"') % 2 == 1 and after.count('"') % 2 == 1
-                        in_single = before.count("'") % 2 == 1 and after.count("'") % 2 == 1
-                        if in_double or in_single:
-                            return m.group(0)
-                        return m.group(1)
-
-                    return num_leading_zero.sub(repl, s)
+                if RPGTextFilters.is_technical_or_code(s) and cls._OCTAL_LEADING_ZERO_PATTERN.search(s):
+                    parts = cls._QUOTE_SPLIT_PATTERN.split(s)
+                    for j in range(0, len(parts), 2):
+                        parts[j] = cls._OCTAL_LEADING_ZERO_PATTERN.sub(r'\1', parts[j])
+                    return ''.join(parts)
                 return s
             return obj
 
@@ -486,7 +499,7 @@ class BaseExtractor(ABC):
                 re.compile(r'\\[A-Za-z]{1,3}\s*\[[^\]]*\]', re.IGNORECASE),
                 re.compile(r'\$game[a-zA-Z_]+\b', re.IGNORECASE),
                 re.compile(r'\$\s*[a-z]+[A-Z][a-zA-Z]*'),
-                re.compile(r'!?(?<!\\)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\]', re.IGNORECASE),
+                re.compile(r'!?(?<!\\)(?<![A-Za-z0-9_])(?:[vVsS]|ss|sv)\[\s*\d+\s*\]'),
             ]
 
         if isinstance(patterns, (list, tuple)):
@@ -937,6 +950,8 @@ class BaseExtractor(ABC):
                         )
                         files_segments = {}
                         file_mask_records = {}
+                        session_trans = self._session_translations
+                        tm = self.translation_memory
 
                         for f, ent in pending_files:
                             if ent:
@@ -952,18 +967,32 @@ class BaseExtractor(ABC):
                             if rtext:
                                 strings = [s for s in TextsUtils.dictToList(rtext) if isinstance(s, str) and s.strip()]
                                 if strings:
-                                    patterns = self._get_patterns(fn, _d)
-                                    masked_strings, mask_map = TextsUtils.mask_tokens_in_structure(strings, patterns)
-                                    file_mask_records[f] = (strings, masked_strings, mask_map, fn)
-                                    files_segments[f] = [
-                                        Segment(id=f"{fn}#{idx}", source=m_s, context={'kind': 'dialogue'})
-                                        for idx, m_s in enumerate(masked_strings)
-                                    ]
+                                    if tm and hasattr(tm, 'lookup_many'):
+                                        try:
+                                            cached_hits = tm.lookup_many(strings)
+                                            for orig, trans in cached_hits.items():
+                                                if orig.strip() != str(trans).strip():
+                                                    session_trans[orig] = trans
+                                        except Exception as e:
+                                            logging.debug(f"lookup_many error in _dispatch: {e}")
 
+                                    misses = [s for s in strings if s not in session_trans]
+                                    if misses:
+                                        patterns = self._get_patterns(fn, _d)
+                                        masked_strings, mask_map = TextsUtils.mask_tokens_in_structure(misses, patterns)
+                                        file_mask_records[f] = (misses, masked_strings, mask_map, fn)
+                                        files_segments[f] = [
+                                            Segment(id=f"{fn}#{idx}", source=m_s, context={'kind': 'dialogue'})
+                                            for idx, m_s in enumerate(masked_strings)
+                                        ]
+
+                        to_store_cache = []
                         if files_segments:
                             results_by_file = engine.translate_segments_across_files(files_segments)
-                            session_trans = getattr(self.translate, '_session_translations', {})
-                            to_store_cache = []
+                            if getattr(engine, 'circuit_open', False):
+                                if self.translate is not None:
+                                    setattr(self.translate, 'circuit_open', True)
+                                self.circuit_open = True
 
                             for f, (orig_strings, masked_strings, mask_map, fn) in file_mask_records.items():
                                 file_results = results_by_file.get(f, {})
@@ -975,23 +1004,27 @@ class BaseExtractor(ABC):
                                 fixed = self.fix_text_translate(unmasked, orig_strings) if hasattr(self, 'fix_text_translate') else unmasked
 
                                 for orig, trans in zip(orig_strings, fixed):
-                                    session_trans[orig] = trans
-                                    if orig.strip() != str(trans).strip() and "__xtok_" not in str(trans).lower():
-                                        to_store_cache.append((orig, trans))
+                                    if orig.strip() != str(trans).strip():
+                                        session_trans[orig] = trans
+                                        if "__xtok_" not in str(trans).lower():
+                                            to_store_cache.append((orig, trans))
 
-                            if hasattr(self.translate, '_session_translations'):
-                                self.translate._session_translations = session_trans
+                        self._session_translations = session_trans
 
-                            is_offline = (
-                                getattr(self, 'memory_only', False)
-                                or getattr(self, 'offline', False)
-                                or getattr(self.translate, 'memory_only', False)
-                                or getattr(self.translate, 'offline', False)
-                            )
-                            cache = getattr(self.translate, 'cache', None)
-                            if not is_offline and cache and hasattr(cache, 'store_many') and to_store_cache:
-                                cache.store_many(to_store_cache, game=getattr(self, 'game_name', None))
+                        is_offline = (
+                            getattr(self, 'memory_only', False)
+                            or getattr(self, 'offline', False)
+                            or getattr(self.translate, 'memory_only', False)
+                            or getattr(self.translate, 'offline', False)
+                        )
+                        cache = getattr(self.translate, 'cache', None)
+                        if not is_offline and cache and hasattr(cache, 'store_many') and to_store_cache:
+                            cache.store_many(to_store_cache, game=getattr(self, 'game_name', None))
                     except Exception as e:
+                        if 'engine' in locals() and getattr(engine, 'circuit_open', False):
+                            if self.translate is not None:
+                                setattr(self.translate, 'circuit_open', True)
+                            self.circuit_open = True
                         logging.debug(f"Cross-file engine translation fallback to per-file: {e}")
 
                     for f, ent in pending_files:

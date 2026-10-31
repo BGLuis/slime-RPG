@@ -204,3 +204,182 @@ def test_issue_38_lost_token_degrades_only_its_own_segment():
     restored = TextsUtils.unmask_tokens_in_structure(translated, mask_map)
     assert restored[0] == originals[0]
     assert restored[1] == "Segment 2 with \\C[2]preserved\\C[0]"
+
+
+def test_battle_manager_log_window_push_extraction_and_insertion():
+    from src.extractor.rpgmaker.RPGEventStrategy import ScriptStrategy
+    s = "BattleManager._logWindow.push('addText', 'Critical hit!')"
+    extracted = ScriptStrategy.extract_script_string(s)
+    assert extracted == ["Critical hit!"]
+    res = ScriptStrategy.insert_script_string(s, iter(["Golpe crítico!"]))
+    assert res == "BattleManager._logWindow.push('addText', 'Golpe crítico!')"
+
+
+def test_choice_condition_extraction_and_natural_language_parentheses():
+    from src.extractor.rpgmaker.RPGEventStrategy import ChoiceStrategy, ChoiceBranchStrategy
+    choice_strat = ChoiceStrategy()
+    branch_strat = ChoiceBranchStrategy()
+
+    cmd_choice = {"code": 102, "parameters": [["if(s[1]) Attack (Strong)"]]}
+    assert choice_strat.extract(cmd_choice) == ["Attack (Strong)"]
+
+    cmd_branch = {"code": 402, "parameters": [0, "if(s[1]) Attack (Strong)"]}
+    assert branch_strat.extract(cmd_branch) == "Attack (Strong)"
+
+    cmd_prose = {"code": 102, "parameters": [["If (you dare) fight", "Es (opcional) hablar"]]}
+    assert choice_strat.extract(cmd_prose) == ["If (you dare) fight", "Es (opcional) hablar"]
+
+
+def test_game_switches_masks_boolean_literals():
+    pats = RPGMakerExtractor(None).get_mask_patterns()
+    s = "$gameSwitches.setValue(1, true)"
+    masked, mp = TextsUtils.mask_tokens_in_structure(s, pats)
+    assert "$gameSwitches" in mp.values()
+    assert "true" in mp.values()
+
+
+def test_bracket_vars_leaves_prepositions_unmasked():
+    pats = RPGMakerExtractor(None).get_mask_patterns()
+    s = "Choose a [1] or v[2] in [3]"
+    masked, mp = TextsUtils.mask_tokens_in_structure(s, pats)
+    assert mp == {"__XTOK_0__": "v[2]"}
+    assert masked == "Choose a [1] or __XTOK_0__ in [3]"
+
+
+def test_fix_text_translate_preserves_quoted_prose_and_choice_condition_body():
+    # 1. Frases completas dentro de código não sofrem substituições booleanas
+    res1 = RPGMakerExtractor.fix_text_translate(['if(v[1] == 1) msg = "O rei verdadeiro nunca é falso"'])
+    assert res1 == ['if(v[1] == 1) msg = "O rei verdadeiro nunca é falso"']
+
+    # 2. Código fora de aspas tem verdadeiro -> true, mas dentro da string preserva
+    res2 = RPGMakerExtractor.fix_text_translate(['if(v[1] == verdadeiro) msg = "O rei verdadeiro"'])
+    assert res2 == ['if(v[1] == true) msg = "O rei verdadeiro"']
+
+    # 3. Condição show_if com prosa após a condição tem apenas a condição corrigida
+    res3 = RPGMakerExtractor.fix_text_translate(['show_if(v[1] == verdadeiro) Esta história é verdadeira e o contrato é nulo.'])
+    assert res3 == ['show_if(v[1] == true) Esta história é verdadeira e o contrato é nulo.']
+
+
+def test_dispatch_resolves_unmasked_segments_from_translation_memory_with_zero_calls(tmp_path):
+    import json
+    from src.translate.BaseTranslate import BaseTranslate
+    from src.translate.Provider import Capabilities
+
+    class CountingMockProvider(BaseTranslate):
+        agent = 'counting'
+        id = 'counting'
+        capabilities = Capabilities(max_request_chars=5000, max_items=None, native_batch=False)
+        MAX_REQUESTS_SIMULTANEOUSLY = 1
+
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.request_count = 0
+
+        def _translate_single_batch(self, texts):
+            self.request_count += 1
+            return [f"PT:{t}" for t in texts]
+
+    input_dir = tmp_path / "in_mem"
+    output_dir = tmp_path / "out_mem"
+    process_dir = tmp_path / "proc_mem"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    process_dir.mkdir()
+
+    provider = CountingMockProvider(lang_source="en", lang_target="pt")
+    provider.cache_path_base = str(tmp_path)
+    provider._load_cache_for_current_languages()
+
+    source = r"\C[2]Attack\C[0]"
+    target = r"\C[2]Ataque\C[0]"
+    provider.cache.store_many([(source, target)], game="test_mem_game")
+
+    extractor = RPGMakerExtractor(provider)
+    extractor.folderInput = str(input_dir)
+    extractor.folderOutput = str(output_dir)
+    extractor.folderProcess = str(process_dir)
+    extractor.game_name = "test_mem_game"
+
+    map_data = {
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 401, "indent": 0, "parameters": [source]},
+                            {"code": 0, "indent": 0, "parameters": []}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    (input_dir / "Map001.json").write_text(json.dumps(map_data))
+
+    extractor.process_files()
+    extractor.import_files()
+
+    assert provider.request_count == 0
+    out_data = json.loads((output_dir / "Map001.json").read_text())
+    assert out_data["events"][1]["pages"][0]["list"][0]["parameters"][0] == target
+
+
+def test_dispatch_leaves_untranslated_fallback_out_of_session_translations(tmp_path):
+    import json
+    from src.translate.BaseTranslate import BaseTranslate
+    from src.translate.Provider import Capabilities
+
+    class FallbackMockProvider(BaseTranslate):
+        agent = 'fallback'
+        id = 'fallback'
+        capabilities = Capabilities(max_request_chars=5000, max_items=None, native_batch=False)
+        MAX_REQUESTS_SIMULTANEOUSLY = 1
+
+        def _translate_single_batch(self, texts):
+            return list(texts)
+
+    input_dir = tmp_path / "in_fb"
+    output_dir = tmp_path / "out_fb"
+    process_dir = tmp_path / "proc_fb"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    process_dir.mkdir()
+
+    provider = FallbackMockProvider(lang_source="en", lang_target="pt")
+    provider.cache_path_base = str(tmp_path)
+    provider._load_cache_for_current_languages()
+
+    extractor = RPGMakerExtractor(provider)
+    extractor.folderInput = str(input_dir)
+    extractor.folderOutput = str(output_dir)
+    extractor.folderProcess = str(process_dir)
+
+    map_data = {
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 401, "indent": 0, "parameters": ["Failed text to translate"]},
+                            {"code": 0, "indent": 0, "parameters": []}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    (input_dir / "Map001.json").write_text(json.dumps(map_data))
+
+    extractor.process_files()
+    extractor.import_files()
+
+    assert "Failed text to translate" not in extractor._session_translations
+
+
+
+
+

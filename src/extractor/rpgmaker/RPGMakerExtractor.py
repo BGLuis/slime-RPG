@@ -35,12 +35,21 @@ class _MatchSpan:
 
 class _CodeOnlyPattern:
     """Wrapper de padrão regex que só casa quando o segmento inteiro é código técnico."""
+    _XTOK_RE = re.compile(r'__\s*XTOK[_\s]+[a-zA-Z0-9]+\s*__', re.IGNORECASE)
+
     def __init__(self, regex: re.Pattern):
         self._regex = regex
         self.pattern = regex.pattern
 
     def _active(self, s: str) -> bool:
-        return isinstance(s, str) and RPGTextFilters.is_technical_or_code(s)
+        if not isinstance(s, str):
+            return False
+        if RPGTextFilters.is_technical_or_code(s):
+            return True
+        if '__xtok_' in s.lower():
+            probe = self._XTOK_RE.sub('$game', s)
+            return RPGTextFilters.is_technical_or_code(probe)
+        return False
 
     def finditer(self, s: str):
         if not self._active(s):
@@ -258,17 +267,16 @@ class RPGMakerExtractor(BaseExtractor):
     _P_FORMAT_CODES = re.compile(r'\\[A-Za-z]+\s*\[[^\]]*\]', re.IGNORECASE)
     _P_CONDITION = _BalancedConditionPattern()
     _P_GAME = re.compile(r'\$game(?:' + '|'.join(_GAME_KEYS) + r')\b', re.IGNORECASE)
-    _P_BRACKET_VARS = re.compile(r'!?(?<!\\)(?<![a-zA-Z0-9_])[A-Za-z]{1,2}\s*\[\s*\d+\s*\]', re.IGNORECASE)
+    _P_BRACKET_VARS = re.compile(r'!?(?<!\\)(?<![A-Za-z0-9_])(?:[vVsS]|ss|sv)\[\s*\d+\s*\]')
     _P_BOOLEAN_LITERALS = _CodeOnlyPattern(re.compile(r'\b(?:true|false|null|undefined|NaN)\b', re.IGNORECASE))
     _P_OPERATORS = _CodeOnlyPattern(re.compile(r'(?:&&|\|\||>=|<=|!==|===|!=|==)'))
     _P_DOLLAR_CAMEL = re.compile(r'\$\s*[a-z]+[A-Z][a-zA-Z]*')
     _P_HTML_TAGS = re.compile(r'</?[a-zA-Z][a-zA-Z0-9]*(?:\s+[^>]*)?/?>', re.IGNORECASE)
-    _P_TECHNICAL_VALUES = re.compile(r'^(?:Yes|No|OK|Cancel|end|start|stop|play|pause|nochannel|channel)$', re.IGNORECASE)
 
     _DEFAULT_MASK_PATTERNS = [
         _P_FORMAT_CODES, _P_CONDITION, _P_GAME, _P_BRACKET_VARS,
         _P_BOOLEAN_LITERALS, _P_OPERATORS, _P_DOLLAR_CAMEL,
-        _P_HTML_TAGS, _P_TECHNICAL_VALUES
+        _P_HTML_TAGS
     ]
 
     def get_mask_patterns(self, file_name=None, data=None):
@@ -763,7 +771,6 @@ class RPGMakerExtractor(BaseExtractor):
     _COMPILED_CORRECTIONS = [
         (re.compile(r'\\\s+'), r'\\'),
         (re.compile(r'\bif\s*\(', re.IGNORECASE), 'if('),
-        (re.compile(r'"\s+"'), '""'),
         (re.compile(r'\\n\s+'), r'\\n'),
         (re.compile(r'\s*_\s*'), '_'),
         (re.compile(r'<\s*>'), '<>'),
@@ -787,7 +794,7 @@ class RPGMakerExtractor(BaseExtractor):
     _CODE_PATTERN = re.compile(r'(\$game\s*[a-zA-Z]+(?:\s*\.\s*[_a-zA-Z][_a-zA-Z0-9]*(?:\s*\[\s*[^\\\]]+\s*\])?)*|\$\s*[a-z]+[A-Z][a-zA-Z]*|!(?<!\\)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\]|(?<!\\)(?<!!)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\])', re.IGNORECASE)
 
     _WHITESPACE_PATTERN = re.compile(r'\s+')
-    _QUOTE_SPLIT_PATTERN = re.compile(r'(\'.*?\'|".*?")')
+    _QUOTE_SPLIT_PATTERN = re.compile(r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`)""")
     _OCTAL_LEADING_ZERO_PATTERN = re.compile(r'\b0+([1-9]\d*)\b')
     _OCTAL_MULTI_ZERO_PATTERN = re.compile(r'\b00+\b')
 
@@ -817,35 +824,45 @@ class RPGMakerExtractor(BaseExtractor):
 
             text = cls._FORMAT_CODES_PATTERN.sub(_fix_format_code, text)
 
-            if is_code:
-                # Sanitizar aspas tipográficas (smart quotes) para aspas ASCII padrão apenas em código (#37)
-                text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
-                for pattern, repl in cls._COMPILED_CORRECTIONS:
-                    text = pattern.sub(repl, text)
+            cond_prefix, prose_body = RPGTextFilters.parse_choice_condition(text)
+            has_condition = bool(cond_prefix and prose_body)
 
-                for pattern, replacement in cls._BOOLEAN_CORRECTIONS:
-                    text = pattern.sub(replacement, text)
+            if is_code or has_condition:
+                if has_condition:
+                    code_to_fix = cond_prefix
+                    preserved_suffix = prose_body
+                else:
+                    code_to_fix = text
+                    preserved_suffix = ""
 
+                original_codes = None
                 if original_text:
                     original_codes = {cls._WHITESPACE_PATTERN.sub('', m.group(0)).lower(): m.group(0) for m in cls._CODE_PATTERN.finditer(original_text)}
-                    def restore_code(match):
-                        code = match.group(0)
-                        key = cls._WHITESPACE_PATTERN.sub('', code).lower()
-                        return original_codes.get(key, cls._WHITESPACE_PATTERN.sub('', code))
-                    text = cls._CODE_PATTERN.sub(restore_code, text)
 
-                text = cls._GAME_PATTERN.sub(lambda m: f'$game{cls._GAME_OBJECTS.get(m.group(1).lower(), m.group(1))}', text)
-                if not original_text:
-                    text = cls._PROPERTY_PATTERN.sub(lambda m: '.' + m.group(1).lower() if m.group(1).isupper() or (len(m.group(1)) > 1 and m.group(1)[0].isupper() and '_' in m.group(1)) else m.group(0), text)
+                def restore_code(match):
+                    code = match.group(0)
+                    key = cls._WHITESPACE_PATTERN.sub('', code).lower()
+                    return original_codes.get(key, cls._WHITESPACE_PATTERN.sub('', code))
 
                 try:
-                    parts = cls._QUOTE_SPLIT_PATTERN.split(text)
+                    parts = cls._QUOTE_SPLIT_PATTERN.split(code_to_fix)
                     for j in range(0, len(parts), 2):
+                        # Sanitizar aspas tipográficas para aspas ASCII padrão apenas em código (#37, #65)
+                        parts[j] = parts[j].replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+                        for pattern, repl in cls._COMPILED_CORRECTIONS:
+                            parts[j] = pattern.sub(repl, parts[j])
+                        for pattern, replacement in cls._BOOLEAN_CORRECTIONS:
+                            parts[j] = pattern.sub(replacement, parts[j])
+                        if original_text and original_codes:
+                            parts[j] = cls._CODE_PATTERN.sub(restore_code, parts[j])
+                        parts[j] = cls._GAME_PATTERN.sub(lambda m: f'$game{cls._GAME_OBJECTS.get(m.group(1).lower(), m.group(1))}', parts[j])
+                        if not original_text:
+                            parts[j] = cls._PROPERTY_PATTERN.sub(lambda m: '.' + m.group(1).lower() if m.group(1).isupper() or (len(m.group(1)) > 1 and m.group(1)[0].isupper() and '_' in m.group(1)) else m.group(0), parts[j])
                         parts[j] = cls._OCTAL_LEADING_ZERO_PATTERN.sub(r'\1', parts[j])
                         parts[j] = cls._OCTAL_MULTI_ZERO_PATTERN.sub('0', parts[j])
-                    text = ''.join(parts)
+                    text = ''.join(parts) + preserved_suffix
                 except Exception as e:
-                    logging.warning(f'Erro ao sanitizar literais octais: {e}')
+                    logging.warning(f'Erro ao sanitizar código traduzido: {e}')
 
             texts_list[i] = text
 
