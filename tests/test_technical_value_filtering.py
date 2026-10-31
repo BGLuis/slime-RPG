@@ -38,3 +38,23 @@ def test_choice_mixed_list_keeps_everything_that_is_not_code():
     item = {"code": 102, "parameters": [["Attack", "Yes", "Run away"]]}
     extracted = ChoiceStrategy().extract(item)
     assert extracted == ["Attack", "Yes", "Run away"]
+
+
+def test_rpg_text_filters_narrowed_patterns():
+    translatable_prose = [
+        "$100 for this sword!",
+        "new game plus unlocked!",
+        "class change available",
+        "if (you want) rest here",
+        "show_if(v[1] == 1) Secret option",
+    ]
+    for s in translatable_prose:
+        assert RPGTextFilters.is_technical_or_code(s) is False, f"Expected False for {s}"
+
+    code_strings = [
+        "$gameSwitches.setValue(1, true)",
+        "if (v[1] == 1) { return; }",
+    ]
+    for s in code_strings:
+        assert RPGTextFilters.is_technical_or_code(s) is True, f"Expected True for {s}"
+

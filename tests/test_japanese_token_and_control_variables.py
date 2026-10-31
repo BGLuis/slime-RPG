@@ -136,6 +136,28 @@ class TestJapaneseTokenAndControlVariables(unittest.TestCase):
             self.assertNotIn("__xtok_", str(v).lower())
         self.assertIn("Texto limpo", trans.cache)
 
+    def test_show_text_speaker_tag_and_plugin_strategy_mz(self):
+        from src.extractor.rpgmaker.RPGEventStrategy import ShowTextStrategy, PluginStrategyMZ
+        cmd_tag = {"code": 401, "parameters": ["<\\N[1]> Hello world!"]}
+        self.assertEqual(ShowTextStrategy().extract(cmd_tag), ["Hello world!"])
+
+        cmd_chapter = {"code": 401, "parameters": ["<Chapter 1>"]}
+        self.assertEqual(ShowTextStrategy().extract(cmd_chapter), ["Chapter 1"])
+
+        cmd_guard = {"code": 401, "parameters": ["<Guard> Halt!"]}
+        ShowTextStrategy().insert(cmd_guard, ["Guarda", "Alto!"])
+        self.assertEqual(cmd_guard["parameters"][0], "<Guarda> Alto!")
+
+        cmd_mz = {
+            "code": 357,
+            "parameters": [
+                "QuestSystem", "Start", "Start",
+                {"Text": "クエスト開始", "questTitle": "スライム討伐", "buttonLabel": "Inventory"}
+            ]
+        }
+        res_mz = PluginStrategyMZ().extract(cmd_mz)
+        self.assertEqual(list(res_mz.values()) if isinstance(res_mz, dict) else res_mz, ["クエスト開始", "スライム討伐", "Inventory"])
+
 
 if __name__ == '__main__':
     unittest.main()

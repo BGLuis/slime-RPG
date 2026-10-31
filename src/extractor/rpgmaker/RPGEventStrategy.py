@@ -8,7 +8,7 @@ EventStrategy = EventCommandStrategy
 class ShowTextStrategy(EventStrategy):
     kind = "dialogue"
     _text_keys = ["icon:", "secret:", "title:", "name:", "text:", "message:", "text1:", "text2:", "secretText:", "id:"]
-    _title_pattern = re.compile(r'<([^<>]*)>|<<([^<>]*)>>')
+    _title_pattern = re.compile(r'^(?:<<([^<>]*)>>|<([^<>]*)>)(\s*)')
 
     def extract(self, item, context=None):
         params = item.get('parameters', [])
@@ -18,14 +18,19 @@ class ShowTextStrategy(EventStrategy):
             if code == 101 and i == 0:
                 continue
             if not RPGTextFilters.is_technical_or_code(param):
-                title_match = self._title_pattern.search(param)
+                title_match = self._title_pattern.match(param)
                 if title_match:
-                    groups = [group for group in title_match.groups() if group]
-                    if groups:
-                        title = groups[0]
-                        text = param[title_match.end():].strip()
-                        if text and not RPGTextFilters.is_technical_or_code(title):
+                    title = title_match.group(1) or title_match.group(2)
+                    text = param[title_match.end():].strip()
+                    title_is_code = RPGTextFilters.is_technical_or_code(title)
+                    if text:
+                        if not title_is_code and not RPGTextFilters.is_technical_or_code(text):
                             extracted.append([title, text])
+                        elif not RPGTextFilters.is_technical_or_code(text):
+                            extracted.append([text])
+                    else:
+                        if not title_is_code:
+                            extracted.append([title])
                 elif any(param.startswith(key) for key in self._text_keys):
                     remaining_text = param.split(":", 1)[-1].strip()
                     if not RPGTextFilters.is_technical_or_code(remaining_text) and \
@@ -41,34 +46,49 @@ class ShowTextStrategy(EventStrategy):
     def insert(self, item, text, context=None):
         if not text: return
         # Se 'text' for lista, pode ser [título, texto] ou vários parâmetros
-        # Para simplificar, vamos ver se temos o mesmo número de parâmetros que extraímos
-        
         params = item.get('parameters', [])
         code = item.get('code')
         if len(params) == 1:
-            # Lógica legada para Show Text / Titles
             iten_text = params[0]
-            new_text = text[1] if isinstance(text, list) and len(text) == 2 else text
-            
-            match = self._title_pattern.search(iten_text)
+            match = self._title_pattern.match(iten_text)
             if match:
+                space = match.group(3)
+                full_tag = iten_text[:match.end() - len(space)]
+                orig_title = match.group(1) or match.group(2)
                 orig_body = iten_text[match.end():].strip()
-                if str(new_text).strip() == orig_body:
-                    return
-                item['parameters'][0] = iten_text.replace(orig_body, str(new_text).strip())
+
+                if isinstance(text, list) and len(text) == 2:
+                    new_title = str(text[0]).strip()
+                    new_body = str(text[1]).strip()
+                    new_tag = full_tag.replace(orig_title, new_title, 1)
+                    item['parameters'][0] = f"{new_tag}{space}{new_body}"
+                elif isinstance(text, list) and len(text) == 1:
+                    new_val = str(text[0]).strip()
+                    if orig_body:
+                        item['parameters'][0] = f"{full_tag}{space}{new_val}"
+                    else:
+                        new_tag = full_tag.replace(orig_title, new_val, 1)
+                        item['parameters'][0] = f"{new_tag}{space}"
+                elif not isinstance(text, list):
+                    new_val = str(text).strip()
+                    if orig_body:
+                        item['parameters'][0] = f"{full_tag}{space}{new_val}"
+                    else:
+                        new_tag = full_tag.replace(orig_title, new_val, 1)
+                        item['parameters'][0] = f"{new_tag}{space}"
             elif any(iten_text.startswith(key) for key in self._text_keys):
                 iten_text_parts = iten_text.split(":", 1)
                 if len(iten_text_parts) > 1:
                     orig_rem = iten_text_parts[1].strip()
-                    if str(new_text) == orig_rem:
+                    new_val = text[1] if isinstance(text, list) and len(text) == 2 else text
+                    if str(new_val) == orig_rem:
                         return
-                    item['parameters'][0] = iten_text_parts[0] + ": " + str(new_text)
+                    item['parameters'][0] = iten_text_parts[0] + ": " + str(new_val)
             else:
-                item['parameters'][0] = str(new_text)
+                new_val = text[1] if isinstance(text, list) and len(text) == 2 else text
+                item['parameters'][0] = str(new_val)
         else:
             # Para comandos multi-parâmetros (122, 101, etc.)
-            # Precisamos encontrar QUAL parâmetro é texto.
-            # Como a extração pegou o primeiro que não era técnico, vamos fazer o mesmo na inserção.
             for i in range(len(params)):
                 if code == 101 and i == 0:
                     continue
@@ -78,7 +98,6 @@ class ShowTextStrategy(EventStrategy):
 
 class ChoiceStrategy(EventStrategy):
     kind = "choice"
-    _choice_condition_pattern = re.compile(r'^(?:if|show_if|hide_if|en|pt|ja|es|fr)\s*\(.*\)\s*', re.IGNORECASE)
 
     def extract(self, item, context=None):
         if not item.get('parameters'): return None
@@ -88,9 +107,8 @@ class ChoiceStrategy(EventStrategy):
         has_translatable = False
         extracted = []
         for choice in choices:
-            choice = choice.strip()
-            match = self._choice_condition_pattern.match(choice)
-            choice_text = choice[match.end():] if match else choice
+            choice_str = choice.text if hasattr(choice, 'text') else str(choice)
+            prefix, choice_text = RPGTextFilters.parse_choice_condition(choice_str)
             extracted.append(choice_text)
             if not RPGTextFilters.is_technical_or_code(choice_text):
                 has_translatable = True
@@ -104,18 +122,14 @@ class ChoiceStrategy(EventStrategy):
         
         final_list = []
         for orig, trans in zip(original_list, text):
-            orig_clean = orig.strip()
-            match = self._choice_condition_pattern.match(orig_clean)
-            choice_text = orig_clean[match.end():] if match else orig_clean
+            orig_str = orig.text if hasattr(orig, 'text') else str(orig)
+            prefix, choice_text = RPGTextFilters.parse_choice_condition(orig_str)
             if RPGTextFilters.is_technical_or_code(choice_text):
                 final_list.append(orig)
             elif str(trans).strip() == choice_text:
                 final_list.append(orig)
-            elif match:
-                prefix = match.group(0).rstrip()
-                final_list.append(prefix + str(trans).strip())
             else:
-                final_list.append(str(trans).strip())
+                final_list.append(prefix + str(trans).strip())
         item['parameters'][0] = final_list
 
 class ChoiceBranchStrategy(EventStrategy):
@@ -124,16 +138,23 @@ class ChoiceBranchStrategy(EventStrategy):
     def extract(self, item, context=None):
         params = item.get('parameters', [])
         if len(params) > 1:
-            text = params[1]
-            if not RPGTextFilters.is_technical_or_code(text):
-                return text
+            raw_text = params[1]
+            raw_str = raw_text.text if hasattr(raw_text, 'text') else str(raw_text)
+            prefix, choice_text = RPGTextFilters.parse_choice_condition(raw_str)
+            if not RPGTextFilters.is_technical_or_code(choice_text):
+                return choice_text
         return None
 
     def insert(self, item, text, context=None):
         if not text: return
         params = item.get('parameters', [])
         if len(params) > 1:
-            if not RPGTextFilters.is_technical_or_code(params[1]):
+            raw_text = params[1]
+            raw_str = raw_text.text if hasattr(raw_text, 'text') else str(raw_text)
+            prefix, choice_text = RPGTextFilters.parse_choice_condition(raw_str)
+            if not RPGTextFilters.is_technical_or_code(choice_text):
+                item['parameters'][1] = prefix + str(text).strip()
+            else:
                 item['parameters'][1] = str(text)
 
 class ScriptStrategy(EventStrategy):
@@ -397,36 +418,58 @@ class PluginStrategyMZ(EventStrategy):
     }
     
     TEXT_KEYS = {'text', 'message', 'description', 'title', 'name', 'label', 'tooltip', 'help', 'content', 'body'}
+    _CJK_PATTERN = re.compile(r'[\u3040-\u9fff]')
+
+    @classmethod
+    def _is_text_key(cls, key: str) -> bool:
+        k = key.lower()
+        return any(k == tk or k.endswith(tk) for tk in cls.TEXT_KEYS)
+
+    def _get_translatable_keys(self, params: dict):
+        keys = []
+        for key, val in params.items():
+            if key in self.TECHNICAL_KEYS:
+                continue
+            context = 'dialogue' if self._is_text_key(key) else 'param'
+            if isinstance(val, str) and not RPGTextFilters.is_technical_or_code(val, context=context):
+                if self._is_text_key(key) or ' ' in val or any(c in val for c in '.,;:!?　、。！？') or self._CJK_PATTERN.search(val):
+                    keys.append(key)
+        return keys
 
     def extract(self, item, context=None):
-        if len(item['parameters']) <= 3 or not isinstance(item['parameters'][3], dict):
+        params = item.get('parameters', [])
+        if len(params) <= 3 or not isinstance(params[3], dict):
             return None
         
-        params = item['parameters'][3]
-        extracted = {}
-        for key, val in params.items():
-            if key in self.TECHNICAL_KEYS: continue
-
-            # Chaves fora de TEXT_KEYS são valores de configuração (align, easing...), não
-            # diálogo: aqui "Start"/"Auto"/"Center" são técnicos e não devem ser extraídos.
-            context = 'dialogue' if key in self.TEXT_KEYS else 'param'
-            if isinstance(val, str) and not RPGTextFilters.is_technical_or_code(val, context=context):
-                if key in self.TEXT_KEYS or ' ' in val or any(c in val for c in '.,;:!?　、。！？'):
-                    extracted[key] = val
-        
-        if not extracted: return None
-        if len(extracted) == 1 and 'text' in extracted: return extracted['text']
+        dict_params = params[3]
+        keys = self._get_translatable_keys(dict_params)
+        if not keys:
+            return None
+        extracted = {k: dict_params[k] for k in keys}
+        if len(extracted) == 1 and next(iter(extracted)).lower() == 'text':
+            return next(iter(extracted.values()))
         return extracted
 
     def insert(self, item, text, context=None):
-        if not text: return
-        params = item['parameters'][3]
+        if not text:
+            return
+        params = item.get('parameters', [])
+        if len(params) <= 3 or not isinstance(params[3], dict):
+            return
+        dict_params = params[3]
         if isinstance(text, dict):
             for key, val in text.items():
-                if key in params:
-                    params[key] = val
-        elif isinstance(text, str) and 'text' in params:
-            params['text'] = text
+                if key in dict_params:
+                    dict_params[key] = val
+        elif isinstance(text, list):
+            keys = self._get_translatable_keys(dict_params)
+            for k, val in zip(keys, text):
+                dict_params[k] = val
+        elif isinstance(text, str):
+            keys = self._get_translatable_keys(dict_params)
+            target_key = next((k for k in keys if k.lower() == 'text'), keys[0] if keys else None)
+            if target_key:
+                dict_params[target_key] = text
 
 class PluginStrategyMV(EventStrategy):
     kind = "script"
