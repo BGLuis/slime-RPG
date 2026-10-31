@@ -8,12 +8,13 @@ class WolfTextFilters:
         '.txt', '.csv', '.dat', '.mps', '.wolf', '.project'
     )
 
-    # Padrões técnicos
+    # Padrões técnicos: apenas literais de código e formatos de identificadores/caminhos
     _TECHNICAL_PATTERNS = [
-        re.compile(r'^(?:Yes|No|OK|Cancel|True|False|None|null|nil)$', re.IGNORECASE),
-        re.compile(r'^(?:start|stop|play|pause|end|loop|exit|return)$', re.IGNORECASE),
-        re.compile(r'^[A-Za-z0-9_\-\.\/\\]+$'), # Identificadores simples/caminhos sem espaços
+        re.compile(r'^(?:true|false|null|nil|none)$', re.IGNORECASE),
         re.compile(r'^(?:System|Graphic|Picture|Sound|BGM|BGS|SE|MapData|BasicData|Chara|ChipSet)[/\\]', re.IGNORECASE),
+        re.compile(r'^[A-Za-z0-9]*_[A-Za-z0-9_]*$'),  # Identificador com underscore (ex: se_attack_01, ev_flag)
+        re.compile(r'^(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*\d)[A-Za-z0-9]+$'),  # Identificador alfanumérico (ex: bgm02, se01)
+        re.compile(r'^[A-Za-z0-9_\-\.]*[/\\]+[A-Za-z0-9_\-\.\/\\]*$'),  # Caminhos com barras (ex: bgm/battle.ogg)
     ]
 
     # Expressões com operadores lógicos/aritméticos ou chamadas de código
@@ -51,6 +52,10 @@ class WolfTextFilters:
         for pattern in cls._CODE_PATTERNS:
             if pattern.match(cleaned):
                 return True
+
+        # Se for par de UI como Yes/No ou Attack/Defend, não é técnico
+        if re.match(r'^[^\W\d_]+(?:\s*/\s*[^\W\d_]+)+$', cleaned, re.UNICODE):
+            return False
 
         # Se for identificador simples curto (ex: "SE_01", "bgm02", "ev_flag")
         if len(cleaned) <= 24 and any(p.match(cleaned) for p in cls._TECHNICAL_PATTERNS):

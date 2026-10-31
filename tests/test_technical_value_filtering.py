@@ -70,3 +70,24 @@ def test_mask_patterns_preserve_ui_words():
     assert len(mp) == 0
 
 
+def test_wolf_text_filters_single_words_and_technical_identifiers():
+    from src.extractor.wolfrpg.WolfTextFilters import WolfTextFilters
+
+    for w in ["Attack", "Potion", "Yes", "No", "Wait."]:
+        assert WolfTextFilters.is_translatable(w) is True, f"Expected True for {w!r}"
+
+    for w in ["true", "false", "null", "se_attack_01", "bgm/battle.ogg"]:
+        assert WolfTextFilters.is_translatable(w) is False, f"Expected False for {w!r}"
+
+
+def test_json_extractor_cjk_escapes_and_ui_slash_pairs():
+    from src.extractor.JsonExtractor import JsonExtractor
+
+    for s in [r"\C[2]魔法の剣\C[0]", r"こんにちは\n世界", "Yes/No", "はい/いいえ"]:
+        assert JsonExtractor._is_translatable_string(s) is True, f"Expected True for {s!r}"
+
+    for s in ["img/pictures/hero.png", "audio/bgm/theme"]:
+        assert JsonExtractor._is_translatable_string(s) is False, f"Expected False for {s!r}"
+
+
+

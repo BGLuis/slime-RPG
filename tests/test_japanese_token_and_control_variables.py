@@ -158,6 +158,21 @@ class TestJapaneseTokenAndControlVariables(unittest.TestCase):
         res_mz = PluginStrategyMZ().extract(cmd_mz)
         self.assertEqual(list(res_mz.values()) if isinstance(res_mz, dict) else res_mz, ["クエスト開始", "スライム討伐", "Inventory"])
 
+    def test_wolf_ruby_not_masked_into_xtok(self):
+        from src.extractor.wolfrpg.WolfRPGExtractor import WolfRPGExtractor
+        raw = r"\r[魔法,まほう]を使う"
+        pats = WolfRPGExtractor(None).get_mask_patterns()
+        masked, mp = TextsUtils.mask_tokens_in_structure(raw, pats)
+        self.assertNotIn("__XTOK_0__", masked)
+        self.assertIn("魔法", masked)
+
+        unwrapped = WolfRPGExtractor.unwrap_ruby(raw)
+        self.assertEqual(unwrapped, "魔法を使う")
+        masked_unwrapped, mp2 = TextsUtils.mask_tokens_in_structure(unwrapped, pats)
+        self.assertEqual(masked_unwrapped, "魔法を使う")
+        self.assertEqual(len(mp2), 0)
+
 
 if __name__ == '__main__':
     unittest.main()
+
