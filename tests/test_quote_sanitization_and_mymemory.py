@@ -46,5 +46,20 @@ class TestQuoteSanitizationAndMyMemory(unittest.TestCase):
         self.assertEqual(res, expected)
 
 
+    def test_control_variables_escapes_apostrophes_in_single_quotes(self):
+        from src.extractor.rpgmaker.RPGEventStrategy import ControlVariablesStrategy
+        cmd = {"code": 122, "parameters": [1, 1, 0, 4, "'Hello'"]}
+        ControlVariablesStrategy().insert(cmd, ["It’s a d'água test"])
+        self.assertEqual(cmd["parameters"][4], "'It\\'s a d\\'água test'")
+        self.assertNotIn("It's", cmd["parameters"][4])
+
+    def test_script_strategy_roundtrip_escaped_apostrophe(self):
+        s = "$gameMessage.add('Don\\'t go!')"
+        extracted = ScriptStrategy.extract_script_string(s)
+        self.assertEqual(extracted, ["Don't go!"])
+        res = ScriptStrategy.insert_script_string(s, iter(extracted))
+        self.assertEqual(res, "$gameMessage.add('Don\\'t go!')")
+
+
 if __name__ == '__main__':
     unittest.main()
