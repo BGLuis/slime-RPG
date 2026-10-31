@@ -214,3 +214,19 @@ def test_battle_manager_log_window_push_extraction_and_insertion():
     res = ScriptStrategy.insert_script_string(s, iter(["Golpe crítico!"]))
     assert res == "BattleManager._logWindow.push('addText', 'Golpe crítico!')"
 
+
+def test_choice_condition_extraction_and_natural_language_parentheses():
+    from src.extractor.rpgmaker.RPGEventStrategy import ChoiceStrategy, ChoiceBranchStrategy
+    choice_strat = ChoiceStrategy()
+    branch_strat = ChoiceBranchStrategy()
+
+    cmd_choice = {"code": 102, "parameters": [["if(s[1]) Attack (Strong)"]]}
+    assert choice_strat.extract(cmd_choice) == ["Attack (Strong)"]
+
+    cmd_branch = {"code": 402, "parameters": [0, "if(s[1]) Attack (Strong)"]}
+    assert branch_strat.extract(cmd_branch) == "Attack (Strong)"
+
+    cmd_prose = {"code": 102, "parameters": [["If (you dare) fight", "Es (opcional) hablar"]]}
+    assert choice_strat.extract(cmd_prose) == ["If (you dare) fight", "Es (opcional) hablar"]
+
+
