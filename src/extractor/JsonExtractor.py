@@ -1,6 +1,7 @@
 import copy
 import logging
 import os
+import re
 from src.extractor.BaseExtractor import BaseExtractor, _ClassOrInstanceMethod
 from src.extractor.Segment import Segment, copy_preserving_metadata
 from src.extractor.FormatAdapter import JsonFormatAdapter
@@ -132,8 +133,13 @@ class JsonExtractor(BaseExtractor):
         p_unity_tags = re.compile(r'</?[a-zA-Z][a-zA-Z0-9=_\-#]*(?:\s+[^>]*)?/?>', re.IGNORECASE)
         return [p_format_codes, p_angle_codes, p_conditions, p_template_expr, p_game_expr, p_arrow_func, p_bracket_vars, p_printf, p_curly_vars, p_unity_tags]
 
-    @staticmethod
-    def _is_translatable_string(text: str) -> bool:
+    _ESCAPE_CODE_PATTERN = re.compile(r'\\[A-Za-z]+(?:\s*\[[^\]]*\])?|\\[nrtfvbae0\\]')
+    _CJK_PATTERN = re.compile(r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]')
+    _UI_SLASH_PAIR_PATTERN = re.compile(r'^[^\W\d_]+(?:\s*/\s*[^\W\d_]+)+$', re.UNICODE)
+    _KNOWN_PATH_PREFIXES = re.compile(r'^(?:audio|img|image|images|pictures|graphic|graphics|sound|bgm|bgs|se|me|data|movies|system|fonts)[/\\]', re.IGNORECASE)
+
+    @classmethod
+    def _is_translatable_string(cls, text: str) -> bool:
         if not isinstance(text, str):
             return False
         s = text.strip()
@@ -141,11 +147,23 @@ class JsonExtractor(BaseExtractor):
             return False
         if RPGTextFilters.is_technical_or_code(s):
             return False
-        lower = s.lower()
-        if any(lower.endswith(ext) for ext in JsonExtractor.FILE_EXTENSIONS):
+
+        clean = cls._ESCAPE_CODE_PATTERN.sub('', s).strip()
+        if not clean:
             return False
-        if ' ' not in s and ('/' in s or '\\' in s):
+
+        lower = clean.lower()
+        if any(lower.endswith(ext) for ext in cls.FILE_EXTENSIONS):
             return False
+
+        if '/' in clean or '\\' in clean:
+            if not cls._CJK_PATTERN.search(clean):
+                if cls._KNOWN_PATH_PREFIXES.match(clean):
+                    return False
+                if (clean.count('/') + clean.count('\\')) >= 2:
+                    return False
+                if not cls._UI_SLASH_PAIR_PATTERN.match(clean):
+                    return False
         return True
 
     def extract_text(self_or_file, file_name_or_data, maybe_data=None):
