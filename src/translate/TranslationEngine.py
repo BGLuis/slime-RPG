@@ -140,6 +140,8 @@ class TranslationEngine:
                     self.consecutive_failures += 1
                     if self.consecutive_failures >= self.failure_threshold:
                         self.circuit_open = True
+                        if self.provider is not None:
+                            setattr(self.provider, 'circuit_open', True)
 
                     if isinstance(e, (ProviderAuthError, ProviderRateLimited)):
                         raise

@@ -84,6 +84,7 @@ def mask_tokens_in_structure(obj, patterns, prefix="__XTOK_"):
     """
     mapping = MaskMap()
     counter = IntWrapper(0)
+    tokens_to_phs = {}
 
     def mask_string(s):
         original_s = s
@@ -101,6 +102,15 @@ def mask_tokens_in_structure(obj, patterns, prefix="__XTOK_"):
                         if ph in orig:
                             orig = orig.replace(ph, mapping[ph])
                             del mapping[ph]
+                            for tok, phs in list(tokens_to_phs.items()):
+                                if ph in phs:
+                                    phs.remove(ph)
+
+                # Reutilizar placeholder existente para o mesmo token idêntico, desde que não ocorra nesta mesma string
+                for candidate in tokens_to_phs.get(orig, []):
+                    if candidate not in s:
+                        return candidate
+
                 ph = _generate_placeholder(counter.get(), prefix)
                 counter.add(1)
                 # Garantir unicidade
@@ -108,6 +118,7 @@ def mask_tokens_in_structure(obj, patterns, prefix="__XTOK_"):
                     ph = _generate_placeholder(counter.get(), prefix)
                     counter.add(1)
                 mapping[ph] = orig
+                tokens_to_phs.setdefault(orig, []).append(ph)
                 return ph
 
             try:

@@ -260,5 +260,126 @@ def test_fix_text_translate_preserves_quoted_prose_and_choice_condition_body():
     assert res3 == ['show_if(v[1] == true) Esta história é verdadeira e o contrato é nulo.']
 
 
+def test_dispatch_resolves_unmasked_segments_from_translation_memory_with_zero_calls(tmp_path):
+    import json
+    from src.translate.BaseTranslate import BaseTranslate
+    from src.translate.Provider import Capabilities
+
+    class CountingMockProvider(BaseTranslate):
+        agent = 'counting'
+        id = 'counting'
+        capabilities = Capabilities(max_request_chars=5000, max_items=None, native_batch=False)
+        MAX_REQUESTS_SIMULTANEOUSLY = 1
+
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.request_count = 0
+
+        def _translate_single_batch(self, texts):
+            self.request_count += 1
+            return [f"PT:{t}" for t in texts]
+
+    input_dir = tmp_path / "in_mem"
+    output_dir = tmp_path / "out_mem"
+    process_dir = tmp_path / "proc_mem"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    process_dir.mkdir()
+
+    provider = CountingMockProvider(lang_source="en", lang_target="pt")
+    provider.cache_path_base = str(tmp_path)
+    provider._load_cache_for_current_languages()
+
+    source = r"\C[2]Attack\C[0]"
+    target = r"\C[2]Ataque\C[0]"
+    provider.cache.store_many([(source, target)], game="test_mem_game")
+
+    extractor = RPGMakerExtractor(provider)
+    extractor.folderInput = str(input_dir)
+    extractor.folderOutput = str(output_dir)
+    extractor.folderProcess = str(process_dir)
+    extractor.game_name = "test_mem_game"
+
+    map_data = {
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 401, "indent": 0, "parameters": [source]},
+                            {"code": 0, "indent": 0, "parameters": []}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    (input_dir / "Map001.json").write_text(json.dumps(map_data))
+
+    extractor.process_files()
+    extractor.import_files()
+
+    assert provider.request_count == 0
+    out_data = json.loads((output_dir / "Map001.json").read_text())
+    assert out_data["events"][1]["pages"][0]["list"][0]["parameters"][0] == target
+
+
+def test_dispatch_leaves_untranslated_fallback_out_of_session_translations(tmp_path):
+    import json
+    from src.translate.BaseTranslate import BaseTranslate
+    from src.translate.Provider import Capabilities
+
+    class FallbackMockProvider(BaseTranslate):
+        agent = 'fallback'
+        id = 'fallback'
+        capabilities = Capabilities(max_request_chars=5000, max_items=None, native_batch=False)
+        MAX_REQUESTS_SIMULTANEOUSLY = 1
+
+        def _translate_single_batch(self, texts):
+            return list(texts)
+
+    input_dir = tmp_path / "in_fb"
+    output_dir = tmp_path / "out_fb"
+    process_dir = tmp_path / "proc_fb"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    process_dir.mkdir()
+
+    provider = FallbackMockProvider(lang_source="en", lang_target="pt")
+    provider.cache_path_base = str(tmp_path)
+    provider._load_cache_for_current_languages()
+
+    extractor = RPGMakerExtractor(provider)
+    extractor.folderInput = str(input_dir)
+    extractor.folderOutput = str(output_dir)
+    extractor.folderProcess = str(process_dir)
+
+    map_data = {
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 401, "indent": 0, "parameters": ["Failed text to translate"]},
+                            {"code": 0, "indent": 0, "parameters": []}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    (input_dir / "Map001.json").write_text(json.dumps(map_data))
+
+    extractor.process_files()
+    extractor.import_files()
+
+    assert "Failed text to translate" not in extractor._session_translations
+
+
+
 
 
