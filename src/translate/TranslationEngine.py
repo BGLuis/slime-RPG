@@ -68,7 +68,7 @@ class TranslationEngine:
         self.failed_call_count = 0
         self.consecutive_failures = 0
         self.circuit_open = False
-        self.failure_threshold = 10
+        self.failure_threshold = max_retries
 
     def batch_segments(self, segments: List[Segment]) -> List[List[Segment]]:
         caps = getattr(self.provider, 'capabilities', None)
