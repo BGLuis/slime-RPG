@@ -123,13 +123,15 @@ def test_per_item_fallback_never_exceeds_concurrency_ceiling():
     assert engine.peak_concurrency <= provider.MAX_REQUESTS_SIMULTANEOUSLY
 
 
-def test_always_failing_provider_in_full_extractor_run_calls_le_5(tmp_path):
+def test_always_failing_provider_in_full_extractor_run_calls_le_5(tmp_path, monkeypatch):
     """
     Acceptance criterion: Across a full extractor run (multi-file),
     an always-failing provider never exceeds <= 5 calls per batch/job.
     """
     from src.extractor.JsonExtractor import JsonExtractor
     from src.translate.BaseTranslate import BaseTranslate
+
+    monkeypatch.setattr("src.translate.TranslationEngine.time.sleep", lambda _s: None)
 
     class FailingExtractorProvider(BaseTranslate):
         agent = "failing_extractor"

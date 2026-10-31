@@ -166,3 +166,31 @@ def test_pyproject_toml_configuration():
 
     # Callable console script
     assert callable(main.main)
+
+
+def test_requirements_txt_covers_pyproject_dependencies():
+    import os
+    import re
+    import tomllib
+
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root_dir, "pyproject.toml"), "rb") as f:
+        pyproject = tomllib.load(f)
+
+    with open(os.path.join(root_dir, "requirements.txt"), encoding="utf-8") as f:
+        req_lines = [
+            line.strip()
+            for line in f
+            if line.strip() and not line.strip().startswith("#")
+        ]
+
+    def pkg_name(spec):
+        return re.split(r"[<>=!~\[\s]", spec, maxsplit=1)[0].strip().lower().replace("_", "-")
+
+    req_pkgs = {pkg_name(line) for line in req_lines}
+    pyproject_deps = list(pyproject["project"].get("dependencies", []))
+    for extra_deps in pyproject["project"].get("optional-dependencies", {}).values():
+        pyproject_deps.extend(extra_deps)
+
+    missing = {pkg_name(dep) for dep in pyproject_deps} - req_pkgs
+    assert not missing, f"Pacotes em pyproject.toml ausentes de requirements.txt: {sorted(missing)}"

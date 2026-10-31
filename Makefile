@@ -149,7 +149,7 @@ test:
 # Lint "critico": só falha para bugs de fato (nome indefinido, erro de sintaxe,
 # etc. - a mesma classe do bug do 'sys' não importado). Roda em segundos e é
 # seguro deixar bloqueante (pre-commit/CI).
-LINT_TARGETS := src main.py
+LINT_TARGETS := src main.py tests
 FLAKE8 := $(shell [ -f "$(VENV_DIR)/bin/flake8" ] && echo "$(VENV_DIR)/bin/flake8" || echo "flake8")
 
 lint:
