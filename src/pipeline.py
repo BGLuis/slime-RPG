@@ -171,6 +171,8 @@ class TranslationStep(PipelineStep):
             or getattr(context.extractor, 'offline', False)
             or getattr(context.translate_instance, 'memory_only', False)
             or getattr(context.translate_instance, 'offline', False)
+            or getattr(context.translate_instance, 'circuit_open', False)
+            or getattr(context.extractor, 'circuit_open', False)
         )
         if is_offline:
             applied = len(getattr(context, 'cached_positions', {}))
@@ -257,6 +259,8 @@ class CacheStoreStep(PipelineStep):
             or getattr(context.extractor, 'offline', False)
             or getattr(context.translate_instance, 'memory_only', False)
             or getattr(context.translate_instance, 'offline', False)
+            or getattr(context.translate_instance, 'circuit_open', False)
+            or getattr(context.extractor, 'circuit_open', False)
         )
 
         if hasattr(context, 'fixed_pending') and context.fixed_pending:

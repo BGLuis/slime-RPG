@@ -172,7 +172,16 @@ class TestJapaneseTokenAndControlVariables(unittest.TestCase):
         self.assertEqual(masked_unwrapped, "魔法を使う")
         self.assertEqual(len(mp2), 0)
 
+    def test_identical_tokens_reuse_placeholder_indices(self):
+        pats = RPGMakerExtractor(None).get_mask_patterns()
+        input_list = [r"\C[2]Attack\C[0]", r"\C[2]Attack\C[0]", r"\C[2]Attack\C[0]"]
+        masked, mp = TextsUtils.mask_tokens_in_structure(input_list, pats)
+        self.assertEqual(len(set(masked)), 1)
+        restored = TextsUtils.unmask_tokens_in_structure(masked, mp)
+        self.assertEqual(restored, input_list)
+
 
 if __name__ == '__main__':
     unittest.main()
+
 
