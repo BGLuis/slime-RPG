@@ -204,3 +204,13 @@ def test_issue_38_lost_token_degrades_only_its_own_segment():
     restored = TextsUtils.unmask_tokens_in_structure(translated, mask_map)
     assert restored[0] == originals[0]
     assert restored[1] == "Segment 2 with \\C[2]preserved\\C[0]"
+
+
+def test_battle_manager_log_window_push_extraction_and_insertion():
+    from src.extractor.rpgmaker.RPGEventStrategy import ScriptStrategy
+    s = "BattleManager._logWindow.push('addText', 'Critical hit!')"
+    extracted = ScriptStrategy.extract_script_string(s)
+    assert extracted == ["Critical hit!"]
+    res = ScriptStrategy.insert_script_string(s, iter(["Golpe crítico!"]))
+    assert res == "BattleManager._logWindow.push('addText', 'Golpe crítico!')"
+

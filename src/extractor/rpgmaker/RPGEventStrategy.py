@@ -147,9 +147,16 @@ class ScriptStrategy(EventStrategy):
 
     # SAFELIST: Só extrair de funções conhecidas
     SAFE_FUNCTIONS = [
-        re.compile(r"(?:\$gameMessage\.add|BattleManager\._logWindow\.push\('addText',|this\.addCommand|this\.setHelpWindowText|TickerManager\.show)\s*\(\s*(['\"])((?:\\.|(?!\1).)*)\1", re.IGNORECASE),
+        re.compile(r"(?:\$gameMessage\.add|this\.addCommand|this\.setHelpWindowText|TickerManager\.show)\s*\(\s*(['\"])((?:\\.|(?!\1).)*)\1", re.IGNORECASE),
+        re.compile(r"BattleManager\._logWindow\.push\s*\(\s*(?:['\"])addText(?:['\"])\s*,\s*(['\"])((?:\\.|(?!\1).)*)\1\s*\)", re.IGNORECASE),
         re.compile(r"(?:mes|text)\s*=\s*(['\"])((?:\\.|(?!\1).)*)\1", re.IGNORECASE)
     ]
+
+    @classmethod
+    def _unescape_quotes(cls, text):
+        if not isinstance(text, str):
+            return text
+        return re.sub(r'(?<!\\)\\(["\'])', r'\1', text)
 
     @classmethod
     def extract_script_string(cls, script_content):
@@ -159,8 +166,8 @@ class ScriptStrategy(EventStrategy):
         extracted = []
         # 1. $gameScreen.OriginalMessage("nome", "mensagem", tipo, pos)
         for match in cls._om_pattern.finditer(script_content):
-            name = match.group(2)
-            msg = match.group(4)
+            name = cls._unescape_quotes(match.group(2))
+            msg = cls._unescape_quotes(match.group(4))
             if not RPGTextFilters.is_technical_or_code(name):
                 extracted.append(name)
             if not RPGTextFilters.is_technical_or_code(msg):
@@ -169,7 +176,7 @@ class ScriptStrategy(EventStrategy):
         # 2. Funções seguras de parâmetro único
         for pattern in cls.SAFE_FUNCTIONS:
             for match in pattern.finditer(script_content):
-                text = match.group(2)
+                text = cls._unescape_quotes(match.group(2))
                 if not RPGTextFilters.is_technical_or_code(text):
                     extracted.append(text)
 
@@ -211,6 +218,8 @@ class ScriptStrategy(EventStrategy):
         escaped = escaped.replace('\u2028', r'\u2028').replace('\u2029', r'\u2029')
         if quote_char == "'":
             escaped = escaped.replace(r'\"', '"').replace("'", r"\'")
+        elif quote_char == '`':
+            escaped = escaped.replace(r'\"', '"').replace('`', r'\`')
         return escaped
 
     @classmethod
@@ -223,20 +232,28 @@ class ScriptStrategy(EventStrategy):
             def replacer_om(m):
                 q1, name = m.group(1), m.group(2)
                 q2, msg = m.group(3), m.group(4)
-                new_name = name
-                new_msg = msg
-                if not RPGTextFilters.is_technical_or_code(name):
+                unescaped_name = cls._unescape_quotes(name)
+                unescaped_msg = cls._unescape_quotes(msg)
+                new_name = unescaped_name
+                new_msg = unescaped_msg
+                if not RPGTextFilters.is_technical_or_code(unescaped_name):
                     try:
                         new_name = str(next(text_iter))
                     except StopIteration:
-                        new_name = name
-                if not RPGTextFilters.is_technical_or_code(msg):
+                        new_name = unescaped_name
+                if not RPGTextFilters.is_technical_or_code(unescaped_msg):
                     try:
                         new_msg = str(next(text_iter))
                     except StopIteration:
-                        new_msg = msg
-                new_name = cls._sanitize_script_param(new_name, q1, original_text=name)
-                new_msg = cls._sanitize_script_param(new_msg, q2, original_text=msg)
+                        new_msg = unescaped_msg
+                if new_name == unescaped_name:
+                    new_name = name
+                else:
+                    new_name = cls._sanitize_script_param(new_name, q1, original_text=unescaped_name)
+                if new_msg == unescaped_msg:
+                    new_msg = msg
+                else:
+                    new_msg = cls._sanitize_script_param(new_msg, q2, original_text=unescaped_msg)
                 prefix_call = m.group(0)[:m.start(1) - m.start(0)]
                 return f"{prefix_call}{q1}{new_name}{q1}, {q2}{new_msg}{q2}"
 
@@ -246,7 +263,8 @@ class ScriptStrategy(EventStrategy):
         for pattern in cls.SAFE_FUNCTIONS:
             if pattern.search(script_content):
                 def replacer(m):
-                    target_text = m.group(2)
+                    raw_target = m.group(2)
+                    target_text = cls._unescape_quotes(raw_target)
                     quote_char = m.group(1)
                     if RPGTextFilters.is_technical_or_code(target_text):
                         return m.group(0)
@@ -254,7 +272,10 @@ class ScriptStrategy(EventStrategy):
                         next_text = str(next(text_iter))
                     except StopIteration:
                         next_text = target_text
-                    next_text = cls._sanitize_script_param(next_text, quote_char, original_text=target_text)
+                    if next_text == target_text:
+                        next_text = raw_target
+                    else:
+                        next_text = cls._sanitize_script_param(next_text, quote_char, original_text=target_text)
                     return m.group(0)[:m.start(2) - m.start(0)] + next_text + m.group(0)[m.end(2) - m.start(0):]
 
                 script_content = pattern.sub(replacer, script_content)
@@ -474,6 +495,7 @@ class ControlVariablesStrategy(EventStrategy):
            (trimmed.startswith("'") and trimmed.endswith("'") and len(trimmed) >= 2) or \
            (trimmed.startswith('`') and trimmed.endswith('`') and len(trimmed) >= 2):
             inner = trimmed[1:-1]
+            inner = ScriptStrategy._unescape_quotes(inner)
             if not RPGTextFilters.is_technical_or_code(inner):
                 return inner
             return None
@@ -488,30 +510,29 @@ class ControlVariablesStrategy(EventStrategy):
             return
 
         orig_val = params[4] if isinstance(params[4], str) else ""
-        text_str = str(text)
-        # Sanitizar aspas tipográficas (smart quotes) imediatamente
-        text_str = text_str.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+        if isinstance(text, list):
+            text_str = str(text[0]) if text else ""
+        else:
+            text_str = str(text)
 
         trimmed = orig_val.strip().rstrip(';')
         has_semicolon = orig_val.strip().endswith(';')
 
-        if trimmed.startswith('"') and trimmed.endswith('"') and len(trimmed) >= 2:
-            quote = '"'
+        if (trimmed.startswith('"') and trimmed.endswith('"') and len(trimmed) >= 2) or \
+           (trimmed.startswith("'") and trimmed.endswith("'") and len(trimmed) >= 2) or \
+           (trimmed.startswith('`') and trimmed.endswith('`') and len(trimmed) >= 2):
+            quote = trimmed[0]
+            # Sanitizar aspas tipográficas (smart quotes) imediatamente
+            text_str = text_str.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
             inner = text_str.strip()
             if inner.startswith(quote) and inner.endswith(quote) and len(inner) >= 2:
                 inner = inner[1:-1]
-            params[4] = f'{quote}{inner}{quote}' + (';' if has_semicolon else '')
-        elif trimmed.startswith("'") and trimmed.endswith("'") and len(trimmed) >= 2:
-            quote = "'"
-            inner = text_str.strip()
-            if inner.startswith(quote) and inner.endswith(quote) and len(inner) >= 2:
-                inner = inner[1:-1]
-            params[4] = f'{quote}{inner}{quote}' + (';' if has_semicolon else '')
-        elif trimmed.startswith('`') and trimmed.endswith('`') and len(trimmed) >= 2:
-            quote = '`'
-            inner = text_str.strip()
-            if inner.startswith(quote) and inner.endswith(quote) and len(inner) >= 2:
-                inner = inner[1:-1]
-            params[4] = f'{quote}{inner}{quote}' + (';' if has_semicolon else '')
+            orig_inner = trimmed[1:-1]
+            orig_unescaped = ScriptStrategy._unescape_quotes(orig_inner)
+            if inner == orig_unescaped:
+                sanitized = orig_inner
+            else:
+                sanitized = ScriptStrategy._sanitize_script_param(inner, quote, original_text=orig_unescaped)
+            params[4] = f'{quote}{sanitized}{quote}' + (';' if has_semicolon else '')
         else:
             params[4] = text_str
