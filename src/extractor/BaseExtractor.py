@@ -486,7 +486,7 @@ class BaseExtractor(ABC):
                 re.compile(r'\\[A-Za-z]{1,3}\s*\[[^\]]*\]', re.IGNORECASE),
                 re.compile(r'\$game[a-zA-Z_]+\b', re.IGNORECASE),
                 re.compile(r'\$\s*[a-z]+[A-Z][a-zA-Z]*'),
-                re.compile(r'!?(?<!\\)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\]', re.IGNORECASE),
+                re.compile(r'!?(?<!\\)(?<![A-Za-z0-9_])(?:[vVsS]|ss|sv)\[\s*\d+\s*\]'),
             ]
 
         if isinstance(patterns, (list, tuple)):

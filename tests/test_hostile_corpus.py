@@ -230,3 +230,20 @@ def test_choice_condition_extraction_and_natural_language_parentheses():
     assert choice_strat.extract(cmd_prose) == ["If (you dare) fight", "Es (opcional) hablar"]
 
 
+def test_game_switches_masks_boolean_literals():
+    pats = RPGMakerExtractor(None).get_mask_patterns()
+    s = "$gameSwitches.setValue(1, true)"
+    masked, mp = TextsUtils.mask_tokens_in_structure(s, pats)
+    assert "$gameSwitches" in mp.values()
+    assert "true" in mp.values()
+
+
+def test_bracket_vars_leaves_prepositions_unmasked():
+    pats = RPGMakerExtractor(None).get_mask_patterns()
+    s = "Choose a [1] or v[2] in [3]"
+    masked, mp = TextsUtils.mask_tokens_in_structure(s, pats)
+    assert mp == {"__XTOK_0__": "v[2]"}
+    assert masked == "Choose a [1] or __XTOK_0__ in [3]"
+
+
+

@@ -58,3 +58,15 @@ def test_rpg_text_filters_narrowed_patterns():
     for s in code_strings:
         assert RPGTextFilters.is_technical_or_code(s) is True, f"Expected True for {s}"
 
+
+def test_mask_patterns_preserve_ui_words():
+    from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
+    import src.utils.TextsUtils as TextsUtils
+
+    labels = ["Yes", "No", "Start", "Cancel"]
+    pats = RPGMakerExtractor(None).get_mask_patterns()
+    masked, mp = TextsUtils.mask_tokens_in_structure(labels, pats)
+    assert masked == ["Yes", "No", "Start", "Cancel"]
+    assert len(mp) == 0
+
+
