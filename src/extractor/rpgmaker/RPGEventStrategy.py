@@ -80,12 +80,18 @@ class ShowTextStrategy(EventStrategy):
                 iten_text_parts = iten_text.split(":", 1)
                 if len(iten_text_parts) > 1:
                     orig_rem = iten_text_parts[1].strip()
-                    new_val = text[1] if isinstance(text, list) and len(text) == 2 else text
+                    if isinstance(text, (list, tuple)):
+                        new_val = text[1] if len(text) == 2 else (text[0] if len(text) == 1 else text)
+                    else:
+                        new_val = text
                     if str(new_val) == orig_rem:
                         return
                     item['parameters'][0] = iten_text_parts[0] + ": " + str(new_val)
             else:
-                new_val = text[1] if isinstance(text, list) and len(text) == 2 else text
+                if isinstance(text, (list, tuple)):
+                    new_val = text[1] if len(text) == 2 else (text[0] if len(text) == 1 else text)
+                else:
+                    new_val = text
                 item['parameters'][0] = str(new_val)
         else:
             # Para comandos multi-parâmetros (122, 101, etc.)

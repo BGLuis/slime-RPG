@@ -180,8 +180,30 @@ class TestJapaneseTokenAndControlVariables(unittest.TestCase):
         restored = TextsUtils.unmask_tokens_in_structure(masked, mp)
         self.assertEqual(restored, input_list)
 
+    def test_repeated_tokens_in_single_string_preserves_translation(self):
+        pats = RPGMakerExtractor(None).get_mask_patterns()
+        s1 = r"\C[1]Red\C[0] and \C[1]Blue\C[0]"
+        s2 = r"\C[1]Red\C[0] and \C[1]Blue\C[0]"
+        input_list = [s1, s2]
+        masked, mp = TextsUtils.mask_tokens_in_structure(input_list, pats)
+        self.assertEqual(len(set(masked)), 1)
+        translated = [m.replace("Red", "Vermelho").replace("Blue", "Azul").replace("and", "e") for m in masked]
+        restored = TextsUtils.unmask_tokens_in_structure(translated, mp)
+        expected = [r"\C[1]Vermelho\C[0] e \C[1]Azul\C[0]", r"\C[1]Vermelho\C[0] e \C[1]Azul\C[0]"]
+        self.assertEqual(restored, expected)
+
+    def test_wolf_ruby_with_nested_format_tags(self):
+        from src.extractor.wolfrpg.WolfRPGExtractor import WolfRPGExtractor
+        s1 = r"\r[kanji,\C[1]ruby\C[0]]"
+        s2 = r"\r[\C[1]kanji\C[0],ruby]"
+        self.assertEqual(WolfRPGExtractor.unwrap_ruby(s1), "kanji")
+        self.assertEqual(WolfRPGExtractor.unwrap_ruby(s2), r"\C[1]kanji\C[0]")
+        fixed = WolfRPGExtractor.fix_text_translate([s1, s2])
+        self.assertEqual(fixed, ["kanji", r"\c[1]kanji\c[0]"])
+
 
 if __name__ == '__main__':
     unittest.main()
+
 
 

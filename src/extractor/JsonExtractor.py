@@ -157,12 +157,10 @@ class JsonExtractor(BaseExtractor):
             return False
 
         if '/' in clean or '\\' in clean:
-            if not cls._CJK_PATTERN.search(clean):
-                if cls._KNOWN_PATH_PREFIXES.match(clean):
-                    return False
-                if (clean.count('/') + clean.count('\\')) >= 2:
-                    return False
-                if not cls._UI_SLASH_PAIR_PATTERN.match(clean):
+            if cls._KNOWN_PATH_PREFIXES.match(clean):
+                return False
+            if ' ' not in clean and not cls._CJK_PATTERN.search(clean):
+                if (clean.count('/') + clean.count('\\')) >= 2 or not cls._UI_SLASH_PAIR_PATTERN.match(clean):
                     return False
         return True
 

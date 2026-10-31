@@ -35,7 +35,7 @@ class _MatchSpan:
 
 class _CodeOnlyPattern:
     """Wrapper de padrão regex que só casa quando o segmento inteiro é código técnico."""
-    _XTOK_RE = re.compile(r'__XTOK_\d+__')
+    _XTOK_RE = re.compile(r'__\s*XTOK[_\s]+[a-zA-Z0-9]+\s*__', re.IGNORECASE)
 
     def __init__(self, regex: re.Pattern):
         self._regex = regex
@@ -46,7 +46,7 @@ class _CodeOnlyPattern:
             return False
         if RPGTextFilters.is_technical_or_code(s):
             return True
-        if '__XTOK_' in s:
+        if '__xtok_' in s.lower():
             probe = self._XTOK_RE.sub('$game', s)
             return RPGTextFilters.is_technical_or_code(probe)
         return False
@@ -794,7 +794,7 @@ class RPGMakerExtractor(BaseExtractor):
     _CODE_PATTERN = re.compile(r'(\$game\s*[a-zA-Z]+(?:\s*\.\s*[_a-zA-Z][_a-zA-Z0-9]*(?:\s*\[\s*[^\\\]]+\s*\])?)*|\$\s*[a-z]+[A-Z][a-zA-Z]*|!(?<!\\)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\]|(?<!\\)(?<!!)\b[A-Za-z]{1,2}\s*\[\s*\d+\s*\])', re.IGNORECASE)
 
     _WHITESPACE_PATTERN = re.compile(r'\s+')
-    _QUOTE_SPLIT_PATTERN = re.compile(r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")""")
+    _QUOTE_SPLIT_PATTERN = re.compile(r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`)""")
     _OCTAL_LEADING_ZERO_PATTERN = re.compile(r'\b0+([1-9]\d*)\b')
     _OCTAL_MULTI_ZERO_PATTERN = re.compile(r'\b00+\b')
 

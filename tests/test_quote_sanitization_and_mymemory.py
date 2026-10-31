@@ -72,7 +72,17 @@ class TestQuoteSanitizationAndMyMemory(unittest.TestCase):
         res2 = BaseExtractor.sanitize_octal_data('var a = "It\'s"; var x = 007; var b = "Don\'t";')
         self.assertEqual(res2, 'var a = "It\'s"; var x = 7; var b = "Don\'t";')
 
+    def test_template_literal_backtick_preservation(self):
+        from src.extractor.BaseExtractor import BaseExtractor
+        from src.extractor.rpgmaker.RPGMakerExtractor import RPGMakerExtractor
+        res_octal = BaseExtractor.sanitize_octal_data("var x = `Don't open 007`; var y = 009;")
+        self.assertEqual(res_octal, "var x = `Don't open 007`; var y = 9;")
+
+        res_fix = RPGMakerExtractor.fix_text_translate(["if(v[1] == 01) msg = `Don't open 007`"])
+        self.assertEqual(res_fix, ["if(v[1] == 1) msg = `Don't open 007`"])
+
 
 if __name__ == '__main__':
     unittest.main()
+
 

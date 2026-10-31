@@ -185,3 +185,15 @@ def test_process_event_command_items_extract_and_apply():
     assert modified[1]["text"][1] == "Option B"
 
 
+def test_show_text_strategy_insert_single_element_list():
+    strat = ShowTextStrategy()
+    cmd1 = {"code": 401, "parameters": ["Standard dialogue line"]}
+    strat.insert(cmd1, ["Linha de diálogo traduzida"])
+    assert cmd1["parameters"][0] == "Linha de diálogo traduzida"
+
+    cmd2 = {"code": 401, "parameters": ["text: Some message"]}
+    strat.insert(cmd2, ["Alguma mensagem"])
+    assert cmd2["parameters"][0] == "text: Alguma mensagem"
+
+
+

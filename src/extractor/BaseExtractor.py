@@ -327,7 +327,7 @@ class BaseExtractor(ABC):
             res._csv_meta['is_dirty'] = res._csv_meta.get('is_dirty', False) or has_changes
         return res
 
-    _QUOTE_SPLIT_PATTERN = re.compile(r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")""")
+    _QUOTE_SPLIT_PATTERN = re.compile(r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"|`(?:\\.|[^`\\])*`)""")
     _OCTAL_LEADING_ZERO_PATTERN = re.compile(r"\b0+([0-9]+)\b")
 
     @classmethod

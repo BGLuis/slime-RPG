@@ -219,7 +219,8 @@ class WolfRPGExtractor(BaseExtractor):
         if "Empacotar" in repack_opt:
             self.repack_wolf = True
 
-    _RUBY_PATTERN = re.compile(r'\\r\s*\[\s*([^,\]]+)\s*,\s*[^\]]+\s*\]', re.IGNORECASE)
+    _RUBY_PART = r"(?:(?:\\[A-Za-z]+\[[^\]]*\])|[^,\]])+"
+    _RUBY_PATTERN = re.compile(rf'\\r\s*\[\s*({_RUBY_PART})\s*,\s*(?:(?:\\[A-Za-z]+\[[^\]]*\])|[^\]])+\s*\]', re.IGNORECASE)
 
     @classmethod
     def unwrap_ruby(cls, text):
@@ -736,7 +737,7 @@ class WolfRPGExtractor(BaseExtractor):
         # Regex para normalizar códigos de controle
         p_c_v_s = re.compile(r'\\\s*([cCsSvV])\s*\[\s*([^\]]*?)\s*\]')
         p_self = re.compile(r'\\\s*(cself|self)\s*\[\s*([^\]]*?)\s*\]', re.IGNORECASE)
-        p_ruby = re.compile(r'\\\s*r\s*\[\s*([^,\]]+)\s*,\s*([^\]]+)\s*\]', re.IGNORECASE)
+        p_ruby = re.compile(rf'\\\s*r\s*\[\s*({WolfRPGExtractor._RUBY_PART})\s*,\s*(?:(?:\\[A-Za-z]+\[[^\]]*\])|[^\]])+\s*\]', re.IGNORECASE)
         p_font = re.compile(r'\\\s*font\s*\[\s*([^\]]*?)\s*\]', re.IGNORECASE)
         p_escapes = re.compile(r'\\\s+([\\nrt])')
 
