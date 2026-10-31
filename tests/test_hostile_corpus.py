@@ -246,4 +246,19 @@ def test_bracket_vars_leaves_prepositions_unmasked():
     assert masked == "Choose a [1] or __XTOK_0__ in [3]"
 
 
+def test_fix_text_translate_preserves_quoted_prose_and_choice_condition_body():
+    # 1. Frases completas dentro de código não sofrem substituições booleanas
+    res1 = RPGMakerExtractor.fix_text_translate(['if(v[1] == 1) msg = "O rei verdadeiro nunca é falso"'])
+    assert res1 == ['if(v[1] == 1) msg = "O rei verdadeiro nunca é falso"']
+
+    # 2. Código fora de aspas tem verdadeiro -> true, mas dentro da string preserva
+    res2 = RPGMakerExtractor.fix_text_translate(['if(v[1] == verdadeiro) msg = "O rei verdadeiro"'])
+    assert res2 == ['if(v[1] == true) msg = "O rei verdadeiro"']
+
+    # 3. Condição show_if com prosa após a condição tem apenas a condição corrigida
+    res3 = RPGMakerExtractor.fix_text_translate(['show_if(v[1] == verdadeiro) Esta história é verdadeira e o contrato é nulo.'])
+    assert res3 == ['show_if(v[1] == true) Esta história é verdadeira e o contrato é nulo.']
+
+
+
 

@@ -309,11 +309,13 @@ class BaseExtractor(ABC):
             res._csv_meta['is_dirty'] = res._csv_meta.get('is_dirty', False) or has_changes
         return res
 
+    _QUOTE_SPLIT_PATTERN = re.compile(r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")""")
+    _OCTAL_LEADING_ZERO_PATTERN = re.compile(r"\b0+([0-9]+)\b")
+
     @classmethod
     def sanitize_octal_data(cls, data):
         """Sanitiza números com zeros à esquerda em trechos de código em estruturas de dados na memória."""
         from src.extractor.rpgmaker.RPGTextFilters import RPGTextFilters
-        num_leading_zero = re.compile(r"\b0+([0-9]+)\b")
 
         def walk(obj):
             if isinstance(obj, dict):
@@ -326,18 +328,11 @@ class BaseExtractor(ABC):
                 return obj
             elif isinstance(obj, str):
                 s = obj
-                if RPGTextFilters.is_technical_or_code(s) and num_leading_zero.search(s):
-                    def repl(m):
-                        start, end = m.start(), m.end()
-                        before = s[:start]
-                        after = s[end:]
-                        in_double = before.count('"') % 2 == 1 and after.count('"') % 2 == 1
-                        in_single = before.count("'") % 2 == 1 and after.count("'") % 2 == 1
-                        if in_double or in_single:
-                            return m.group(0)
-                        return m.group(1)
-
-                    return num_leading_zero.sub(repl, s)
+                if RPGTextFilters.is_technical_or_code(s) and cls._OCTAL_LEADING_ZERO_PATTERN.search(s):
+                    parts = cls._QUOTE_SPLIT_PATTERN.split(s)
+                    for j in range(0, len(parts), 2):
+                        parts[j] = cls._OCTAL_LEADING_ZERO_PATTERN.sub(r'\1', parts[j])
+                    return ''.join(parts)
                 return s
             return obj
 
