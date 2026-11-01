@@ -9,10 +9,81 @@ from src.pipeline import (
 import src.utils.TextsUtils as TextsUtils
 
 
-def test_map002_and_commonevents_pipeline():
+def _build_synthetic_rpgmaker_fixture_dir(tmp_path):
+    map002 = {
+        "displayName": "地下水路-最奥",
+        "events": [
+            None,
+            {
+                "id": 1,
+                "name": "EV001",
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 101, "indent": 0, "parameters": ["Actor1", 0, 0, 2, "ルミナ"]},
+                            {"code": 401, "indent": 0, "parameters": ["\\C[27]・・・？♡\\C[0] ここはどこ？"]},
+                            {
+                                "code": 102,
+                                "indent": 0,
+                                "parameters": [
+                                    [
+                                        "地下水路-最奥if(s[183])en(!s[4982])",
+                                        "夜まで休むif(s[2])",
+                                    ],
+                                    1,
+                                ],
+                            },
+                            {
+                                "code": 355,
+                                "indent": 0,
+                                "parameters": ['$gameScreen.OriginalMessage("ルミナ", "「（……）」", 0, 2);'],
+                            },
+                            {"code": 0, "indent": 0, "parameters": []},
+                        ]
+                    }
+                ],
+            },
+        ],
+    }
+    common_events = [
+        None,
+        {
+            "id": 1,
+            "name": "休憩イベント",
+            "list": [
+                {
+                    "code": 355,
+                    "indent": 0,
+                    "parameters": ["TickerManager.show('\\\\c[16]身体を休めました……');"],
+                },
+                {
+                    "code": 205,
+                    "indent": 0,
+                    "parameters": [
+                        8,
+                        {
+                            "list": [
+                                {"code": 45, "parameters": ["TickerManager.show('\\\\c[16]☆メインクエストクリア');"]},
+                                {"code": 0},
+                            ]
+                        },
+                    ],
+                },
+                {"code": 0, "indent": 0, "parameters": []},
+            ],
+        },
+    ]
+    (tmp_path / "Map002.json").write_text(json.dumps(map002, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "CommonEvents.json").write_text(
+        json.dumps(common_events, ensure_ascii=False), encoding="utf-8"
+    )
+    return str(tmp_path)
+
+
+def test_map002_and_commonevents_pipeline(tmp_path):
     base_ja = "/mnt/hdd/game/Mahou Shoujo Shirufiina otomi-games/otomi-games.com_GN6UASU1O/魔法少女シルフィーナ/www/data-ja"
     if not os.path.exists(base_ja):
-        pytest.skip(f"Base path local não encontrado: {base_ja}")
+        base_ja = _build_synthetic_rpgmaker_fixture_dir(tmp_path)
     extractor = RPGMakerExtractor(None)
 
     for fname in ["Map002.json", "CommonEvents.json"]:

@@ -57,6 +57,8 @@ def get_memory_db_path():
         return os.path.abspath(env_path)
 
     dest_path = os.path.join(get_app_dir("data"), "memory.db")
+    if os.environ.get("SLIME_DATA_DIR"):
+        return dest_path
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     legacy_candidates = [
         os.path.join(os.getcwd(), "cache", "memory.db"),
@@ -82,6 +84,8 @@ def get_settings_db_path():
         return os.path.abspath(env_path)
 
     dest_path = os.path.join(get_app_dir("config"), "settings.db")
+    if os.environ.get("SLIME_CONFIG_DIR"):
+        return dest_path
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     legacy_candidates = [
         os.path.join(os.getcwd(), "cache", "settings.db"),

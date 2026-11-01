@@ -41,12 +41,15 @@ jobs:
       - name: Lint
         run: make lint
 
+      - name: Unit & Integration Tests (Parallel)
+        run: pytest -n auto --dist worksteal -m "unit or integration" --ignore=tests/test_gui_dynamic_form.py
+
       - name: Install system dependencies (Qt)
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends libegl1 libxkbcommon-x11-0
 
-      - name: Test
+      - name: E2E Tests (CLI, TUI, GUI & Full Pipeline)
         env:
           QT_QPA_PLATFORM: offscreen
-        run: make test
+        run: make test-e2e
