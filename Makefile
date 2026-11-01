@@ -18,7 +18,7 @@ ifeq ($(wildcard $(PYTHON)),)
     PIP := pip3
 endif
 
-.PHONY: all help run cli gui install install-cli uninstall-cli install-desktop uninstall-desktop uninstall venv test clean add-alias remove-alias list-aliases lint lint-full install-hooks
+.PHONY: all help run cli gui install install-cli uninstall-cli install-desktop uninstall-desktop uninstall venv test test-unit test-integration test-e2e clean add-alias remove-alias list-aliases lint lint-full install-hooks
 
 all: help
 
@@ -139,17 +139,24 @@ install: install-cli install-desktop
 uninstall: uninstall-cli uninstall-desktop
 	@echo "✓ Desinstalação completa concluída."
 
+PYTEST := $(shell [ -f "$(VENV_DIR)/bin/pytest" ] && echo "$(VENV_DIR)/bin/pytest" || echo "pytest")
+
 test:
-	@if [ -f "$(VENV_DIR)/bin/pytest" ]; then \
-		$(VENV_DIR)/bin/pytest; \
-	else \
-		pytest; \
-	fi
+	@$(PYTEST) -n auto --dist loadscope
+
+test-unit:
+	@$(PYTEST) -n auto --dist worksteal -m unit --ignore=tests/test_gui_dynamic_form.py
+
+test-integration:
+	@$(PYTEST) -n auto --dist worksteal -m integration --ignore=tests/test_gui_dynamic_form.py
+
+test-e2e:
+	@QT_QPA_PLATFORM=offscreen $(PYTEST) -n auto --dist loadscope -m e2e
 
 # Lint "critico": só falha para bugs de fato (nome indefinido, erro de sintaxe,
 # etc. - a mesma classe do bug do 'sys' não importado). Roda em segundos e é
 # seguro deixar bloqueante (pre-commit/CI).
-LINT_TARGETS := src main.py
+LINT_TARGETS := src main.py tests
 FLAKE8 := $(shell [ -f "$(VENV_DIR)/bin/flake8" ] && echo "$(VENV_DIR)/bin/flake8" || echo "flake8")
 
 lint:

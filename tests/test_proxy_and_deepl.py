@@ -7,6 +7,13 @@ from src.factory import TranslatorFactory
 
 class TestProxyManagerAndDeepl(unittest.TestCase):
 
+    def tearDown(self):
+        pm = ProxyManager.get_instance()
+        pm.set_direct_blocked(False)
+        pm.set_enabled(True)
+        with pm._pool_lock:
+            pm._working_proxies.clear()
+
     def test_proxy_manager_singleton(self):
         pm1 = ProxyManager.get_instance()
         pm2 = ProxyManager.get_instance()

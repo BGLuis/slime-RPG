@@ -62,11 +62,16 @@ class TestNoTextBinaryIntegrity(unittest.TestCase):
     def test_process_file_copies_scripts_rvdata2_intact(self):
         """Valida que process_file em Scripts.rvdata2 copia diretamente sem re-serializar."""
         real_scripts = "/mnt/hdd/game/Dress Quest EN/Data-en/Scripts.rvdata2"
-        if not os.path.exists(real_scripts):
-            self.skipTest("Arquivo real do jogo não encontrado para este teste")
-
         test_scripts = os.path.join(self.extractor.folderInput, "Scripts.rvdata2")
-        shutil.copy2(real_scripts, test_scripts)
+        if os.path.exists(real_scripts):
+            shutil.copy2(real_scripts, test_scripts)
+        else:
+            import zlib
+            import rubymarshal.writer as r_writer
+
+            with open(test_scripts, "wb") as f:
+                r_writer.write(f, [[1, "Main", zlib.compress(b"rgss_main { SceneManager.run }")]])
+                f.write(b"\x00\xffNON_CANONICAL_TRAILER_BYTES")
 
         orig_hash = self._sha256(test_scripts)
         orig_size = os.path.getsize(test_scripts)

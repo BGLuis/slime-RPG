@@ -271,13 +271,37 @@ def test_pipeline_does_not_cache_identical_source_target_fallback(isolated_cache
     assert translator.cache.lookup("Is this ... a wooden sword?") is None
 
 
-def test_google_translate_gtx_translation():
+def test_google_translate_gtx_translation(isolated_cache_dir, monkeypatch):
     translator = GoogleTranslate(lang_source='en', lang_target='pt')
-    try:
-        res = translator._translate_gtx("Is this ... a wooden sword?")
-    except Exception as e:
-        pytest.skip(f"Google Translate endpoint indisponível ou com rate limit: {e}")
-    assert res is not None
-    assert "espada de madeira" in res.lower()
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [[
+                ["Isto é ... ", "Is this ... "],
+                ["uma espada de madeira?", "a wooden sword?"],
+            ]]
+
+    class FakeSession:
+        def post(self, url, data=None, headers=None, timeout=None):
+            captured["url"] = url
+            captured["data"] = data
+            captured["headers"] = headers
+            return FakeResponse()
+
+    monkeypatch.setattr(GoogleTranslate, "_get_session", classmethod(lambda cls: FakeSession()))
+    monkeypatch.setattr(GoogleTranslate, "_rate_limit", classmethod(lambda cls: None))
+
+    res = translator._translate_gtx("Is this ... a wooden sword?")
+    assert res == "Isto é ... uma espada de madeira?"
+    assert captured["data"]["client"] == "gtx"
+    assert captured["data"]["sl"] == "en"
+    assert captured["data"]["tl"] == "pt"
+    assert captured["data"]["q"] == "Is this ... a wooden sword?"
 
 
