@@ -177,3 +177,59 @@ class EvtextFormatAdapter:
         with open(file_path, "wb") as f:
             f.write(raw_bytes)
         logging.info(f"✓ Validated and saved text: {file_name}")
+
+
+@register_format_adapter
+class PluginJsFormatAdapter:
+    extensions = (".js",)
+
+    @staticmethod
+    def load_file(file_path: str) -> Any:
+        with open(file_path, "rb") as f:
+            raw_bytes = f.read()
+        text_content = raw_bytes.decode("utf-8-sig", errors="replace")
+
+        start_idx = text_content.find('[')
+        end_idx = text_content.rfind(']')
+        if start_idx != -1 and end_idx != -1 and "plugins" in text_content[:start_idx].lower():
+            header = text_content[:start_idx]
+            footer = text_content[end_idx + 1:]
+            json_str = text_content[start_idx:end_idx + 1]
+            data = json.loads(json_str)
+            wrapped = JsonDataList(data)
+            wrapped._js_header = header
+            wrapped._js_footer = footer
+            wrapped._raw_bytes = raw_bytes
+            wrapped._file_name = os.path.basename(file_path)
+            return wrapped
+
+        wrapped = JsonDataDict({"content": text_content})
+        wrapped._file_name = os.path.basename(file_path)
+        return wrapped
+
+    @staticmethod
+    def save_file(file_path: str, data: Any, **ctx: Any) -> None:
+        file_name = ctx.get("file_name") or os.path.basename(file_path)
+        os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
+        try:
+            if isinstance(data, list) and hasattr(data, "_js_header"):
+                header = getattr(data, "_js_header", "var $plugins =\n")
+                footer = getattr(data, "_js_footer", ";\n")
+                json_string = json.dumps(data, ensure_ascii=False, indent=2)
+                full_content = f"{header}{json_string}{footer}"
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(full_content)
+                logging.info(f"✓ Validated and saved: {file_name}")
+                return
+
+            if isinstance(data, dict) and "content" in data:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(data["content"])
+                logging.info(f"✓ Validated and saved: {file_name}")
+                return
+
+            JsonFormatAdapter.save_file(file_path, data, **ctx)
+        except Exception as e:
+            logging.error(f"✗ Failed to save {file_name}: {e}")
+            raise
+

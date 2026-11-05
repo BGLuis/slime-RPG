@@ -257,6 +257,10 @@ class BaseExtractor(ABC):
             if hasattr(self.translate, 'cache') and self.translate.cache:
                 self.translate.cache.game = self.game_name
 
+    def finalize(self):
+        """Hook executado após a exportação de todos os arquivos para folderOutput."""
+        pass
+
 
     @staticmethod
     @abstractmethod
@@ -1093,3 +1097,7 @@ class BaseExtractor(ABC):
                                 except Exception:
                                     pass
                             shutil.copy2(file, dest_path)
+        try:
+            self.finalize()
+        except Exception as e:
+            logging.warning(f"Erro no hook finalize do extrator: {e}")

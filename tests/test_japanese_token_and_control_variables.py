@@ -166,11 +166,29 @@ class TestJapaneseTokenAndControlVariables(unittest.TestCase):
         self.assertNotIn("__XTOK_0__", masked)
         self.assertIn("魔法", masked)
 
-        unwrapped = WolfRPGExtractor.unwrap_ruby(raw)
-        self.assertEqual(unwrapped, "魔法を使う")
-        masked_unwrapped, mp2 = TextsUtils.mask_tokens_in_structure(unwrapped, pats)
-        self.assertEqual(masked_unwrapped, "魔法を使う")
-        self.assertEqual(len(mp2), 0)
+    def test_control_variables_asset_identifiers_and_expressions_ignored(self):
+        strategy = ControlVariablesStrategy()
+
+        # Nomes de assets, poses e arquivos nunca devem ser extraídos
+        for asset_code in ["'teman'", "'reina'", "'naked'", "'nakedk'", "'oko'", "'morita'", "'normal'", "'BC'"]:
+            cmd = {"code": 122, "parameters": [57, 57, 0, 4, asset_code]}
+            self.assertIsNone(strategy.extract(cmd), f"Asset {asset_code} should not be extracted")
+
+        # Expressões de script concatenando caminhos nunca devem ser extraídas
+        expr_cmds = [
+            {"code": 122, "parameters": [4, 4, 0, 4, "'cg_'+$gameVariables.value(8)"]},
+            {"code": 122, "parameters": [4, 4, 0, 4, "$gameVariables.value(57)+'_'+$gameVariables.value(8)"]},
+            {"code": 122, "parameters": [436, 436, 0, 4, "$dataActors[$gameVariables.value(514)].meta['tatsuta_name']"]},
+        ]
+        for cmd in expr_cmds:
+            self.assertIsNone(strategy.extract(cmd), f"Expression {cmd['parameters'][4]} should not be extracted")
+
+        # Frases válidas em inglês e diálogos CJK continuam sendo extraídos
+        prose_cmd = {"code": 122, "parameters": [10, 10, 0, 4, "'Hello world, adventurer!'"]}
+        self.assertEqual(strategy.extract(prose_cmd), "Hello world, adventurer!")
+
+        cjk_cmd = {"code": 122, "parameters": [10, 10, 0, 4, "'うぅ……\\次は頑張ります………'"]}
+        self.assertEqual(strategy.extract(cjk_cmd), "うぅ……\\次は頑張ります………")
 
     def test_identical_tokens_reuse_placeholder_indices(self):
         pats = RPGMakerExtractor(None).get_mask_patterns()

@@ -1,3 +1,5 @@
+import os
+import json
 import re
 import logging
 from src.extractor.BaseExtractor import BaseExtractor, _ClassOrInstanceMethod
@@ -162,15 +164,135 @@ class _BalancedConditionPattern:
         return ''.join(out)
 
 
-from src.extractor.FormatAdapter import JsonFormatAdapter
+from src.extractor.FormatAdapter import JsonFormatAdapter, PluginJsFormatAdapter
 from .RVDataAdapter import RVDataAdapter
+
+
+class PluginJsonDict(dict):
+    _is_json_str = True
+
+
+class PluginJsonList(list):
+    _is_json_str = True
+
+
+class PluginParametersProcessor:
+    IGNORE_PARAM_KEYS = {
+        'script', 'filterscript', 'datascript', 'mappingscript', 'itemdrawscript',
+        'isenablescript', 'decisionscript', 'filename', 'image', 'imagename', 'bgm', 'se',
+        'variableid', 'switchid', 'defaultvalue', 'hiddenflag', 'addposition', 'paddingtop'
+    }
+
+    _CJK_PATTERN = re.compile(r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]')
+
+    @classmethod
+    def unpack_node(cls, node):
+        if isinstance(node, str):
+            s = node.strip()
+            if (s.startswith('{') and s.endswith('}')) or (s.startswith('[') and s.endswith(']')):
+                try:
+                    sub = json.loads(s)
+                    if isinstance(sub, dict):
+                        return PluginJsonDict({k: cls.unpack_node(v) for k, v in sub.items()})
+                    elif isinstance(sub, list):
+                        return PluginJsonList([cls.unpack_node(x) for x in sub])
+                except Exception:
+                    pass
+            return node
+        elif isinstance(node, dict):
+            res = PluginJsonDict() if getattr(node, '_is_json_str', False) else {}
+            for k, v in node.items():
+                res[k] = cls.unpack_node(v)
+            return res
+        elif isinstance(node, list):
+            res = PluginJsonList() if getattr(node, '_is_json_str', False) else []
+            for x in node:
+                res.append(cls.unpack_node(x))
+            return res
+        return node
+
+    @classmethod
+    def pack_node(cls, node):
+        if isinstance(node, dict):
+            packed = {k: cls.pack_node(v) for k, v in node.items()}
+            if getattr(node, '_is_json_str', False):
+                return json.dumps(packed, ensure_ascii=False, separators=(',', ':'))
+            return packed
+        elif isinstance(node, list):
+            packed = [cls.pack_node(x) for x in node]
+            if getattr(node, '_is_json_str', False):
+                return json.dumps(packed, ensure_ascii=False, separators=(',', ':'))
+            return packed
+        return node
+
+    @classmethod
+    def is_translatable(cls, val: str, key_name: str = '') -> bool:
+        if not isinstance(val, str) or not val.strip():
+            return False
+        if key_name.lower() in cls.IGNORE_PARAM_KEYS:
+            return False
+        if RPGTextFilters.is_technical_or_code(val, context='param'):
+            return False
+        if cls._CJK_PATTERN.search(val):
+            return True
+        if not any(ch in val for ch in ('{', '}', ';', '(', ')', '$', '=', '<', '>')):
+            if ' ' in val or (len(val) > 2 and val[0].isupper() and val.isalpha()):
+                return True
+        return False
+
+    @classmethod
+    def extract_tree(cls, node, key_name=''):
+        if isinstance(node, dict):
+            d = PluginJsonDict() if getattr(node, '_is_json_str', False) else {}
+            has_any = False
+            for k, v in node.items():
+                if k.lower() in cls.IGNORE_PARAM_KEYS:
+                    continue
+                sub_ext, has = cls.extract_tree(v, k)
+                if has:
+                    d[k] = sub_ext
+                    has_any = True
+            return d, has_any
+        elif isinstance(node, list):
+            l = PluginJsonList() if getattr(node, '_is_json_str', False) else []
+            has_any = False
+            for item in node:
+                sub_ext, has = cls.extract_tree(item, key_name)
+                if has:
+                    l.append(sub_ext)
+                    has_any = True
+                else:
+                    l.append(None)
+            return (l, True) if has_any else (None, False)
+        elif isinstance(node, str):
+            if cls.is_translatable(node, key_name):
+                return node, True
+            return None, False
+        return None, False
+
+    @classmethod
+    def apply_tree(cls, orig_node, trans_node):
+        if isinstance(orig_node, dict) and isinstance(trans_node, dict):
+            for k, sub_trans in trans_node.items():
+                if k in orig_node:
+                    if isinstance(orig_node[k], (dict, list)):
+                        cls.apply_tree(orig_node[k], sub_trans)
+                    elif isinstance(sub_trans, str):
+                        orig_node[k] = sub_trans
+        elif isinstance(orig_node, list) and isinstance(trans_node, list):
+            for i, sub_trans in enumerate(trans_node):
+                if i < len(orig_node) and sub_trans is not None:
+                    if isinstance(orig_node[i], (dict, list)):
+                        cls.apply_tree(orig_node[i], sub_trans)
+                    elif isinstance(sub_trans, str):
+                        orig_node[i] = sub_trans
 
 
 @register_extractor("rpgmaker", display_name="RPG Maker", aliases=["RPG Maker", "rpg_maker", "rpg-maker"])
 class RPGMakerExtractor(BaseExtractor):
     name = "rpgmaker"
-    files_types = ['json', 'rvdata2']
-    format_adapters = (JsonFormatAdapter, RVDataAdapter)
+    files_types = ['json', 'rvdata2', 'js']
+    format_adapters = (JsonFormatAdapter, RVDataAdapter, PluginJsFormatAdapter)
 
     def __init__(self, translate):
         super().__init__(translate)
@@ -200,6 +322,43 @@ class RPGMakerExtractor(BaseExtractor):
 
     def apply_configuration(self, config):
         pass
+
+    def prepare(self):
+        super().prepare()
+        folder_input = getattr(self, 'folderInput', getattr(self.__class__, 'folderInput', 'input'))
+        if not folder_input or not os.path.exists(folder_input):
+            return
+
+        target_plugin_js = os.path.join(folder_input, 'plugins.js')
+        if not os.path.exists(target_plugin_js):
+            candidates = [
+                os.path.join(folder_input, 'js', 'plugins.js'),
+                os.path.join(os.path.dirname(folder_input), 'js', 'plugins.js'),
+                os.path.join(os.path.dirname(folder_input), 'www', 'js', 'plugins.js'),
+            ]
+            for cand in candidates:
+                if os.path.isfile(cand):
+                    import shutil
+                    try:
+                        shutil.copy2(cand, target_plugin_js)
+                        logging.info(f"Copiado plugins.js de {cand} para entrada: {target_plugin_js}")
+                        self._plugins_js_origin = cand
+                        break
+                    except Exception as e:
+                        logging.warning(f"Erro ao copiar plugins.js de {cand}: {e}")
+
+    def finalize(self):
+        super().finalize()
+        if hasattr(self, '_plugins_js_origin') and self._plugins_js_origin:
+            folder_output = getattr(self, 'folderOutput', getattr(self.__class__, 'folderOutput', 'output'))
+            out_plugin = os.path.join(folder_output, 'plugins.js')
+            if os.path.isfile(out_plugin):
+                import shutil
+                try:
+                    shutil.copy2(out_plugin, self._plugins_js_origin)
+                    logging.info(f"Copiado plugins.js traduzido de volta para: {self._plugins_js_origin}")
+                except Exception as e:
+                    logging.warning(f"Erro ao copiar plugins.js traduzido de volta: {e}")
 
     @classmethod
     def detect(cls, path: str):
@@ -412,14 +571,51 @@ class RPGMakerExtractor(BaseExtractor):
     _COMMON_EVENTS_PATTERN = re.compile(r'CommonEvents')
     _TROOPS_PATTERN = re.compile(r'Troops')
     _SYSTEM_PATTERN = re.compile(r'System')
+    _PLUGINS_JS_PATTERN = re.compile(r'^plugins\.js$', re.IGNORECASE)
     _OBJECT_PATTERNS = [re.compile(p) for p in [r'MapInfos', r'Weapons', r'Items', r'Skills', r'States', r'Enemies', r'Actors', r'Armors', r'Classes']]
+
+    def extract_text_plugins_js(self, data):
+        if not isinstance(data, list):
+            return {}
+        extracted = {}
+        for idx, plugin in enumerate(data):
+            if not isinstance(plugin, dict) or not plugin.get('status'):
+                continue
+            params = plugin.get('parameters', {})
+            if not isinstance(params, dict):
+                continue
+            unpacked = {k: PluginParametersProcessor.unpack_node(v) for k, v in params.items()}
+            tree, has = PluginParametersProcessor.extract_tree(unpacked)
+            if has:
+                p_name = plugin.get('name') or str(idx)
+                extracted[p_name] = tree
+        return extracted
+
+    def insert_text_plugins_js(self, data, translated_data):
+        if not isinstance(data, list) or not isinstance(translated_data, dict):
+            return
+        for idx, plugin in enumerate(data):
+            if not isinstance(plugin, dict):
+                continue
+            p_name = plugin.get('name') or str(idx)
+            if p_name not in translated_data:
+                continue
+            trans_tree = translated_data[p_name]
+            params = plugin.get('parameters', {})
+            if not isinstance(params, dict):
+                continue
+            unpacked = {k: PluginParametersProcessor.unpack_node(v) for k, v in params.items()}
+            PluginParametersProcessor.apply_tree(unpacked, trans_tree)
+            repacked = {k: PluginParametersProcessor.pack_node(v) for k, v in unpacked.items()}
+            plugin['parameters'] = repacked
 
     _EXTRACT_MAP_CONFIG = [
         {"file_patterns": [_MAP_FILENAME_PATTERN], "extractor_name": "extract_text_map", "insert_name": "insert_text_map"},
         {"file_patterns": [_COMMON_EVENTS_PATTERN], "extractor_name": "extract_text_common_events", "insert_name": "insert_text_common_events"},
         {"file_patterns": [_TROOPS_PATTERN], "extractor_name": "extract_text_troops", "insert_name": "insert_text_troops"},
         {"file_patterns": _OBJECT_PATTERNS, "extractor_name": "extract_text_object", "insert_name": "insert_text_object"},
-        {"file_patterns": [_SYSTEM_PATTERN], "extractor_name": "extract_text_System", "insert_name": "insert_text_System"}
+        {"file_patterns": [_SYSTEM_PATTERN], "extractor_name": "extract_text_System", "insert_name": "insert_text_System"},
+        {"file_patterns": [_PLUGINS_JS_PATTERN], "extractor_name": "extract_text_plugins_js", "insert_name": "insert_text_plugins_js"}
     ]
 
     @property
@@ -625,6 +821,53 @@ class RPGMakerExtractor(BaseExtractor):
                         filtered_troops.append({'id': tr_id, 'pages': filtered_pages})
                 if filtered_troops:
                     inst.insert_text_troops(data, filtered_troops)
+                return data
+
+        if cls._PLUGINS_JS_PATTERN.search(base_name):
+            extracted = inst.extract_text_plugins_js(copy.deepcopy(data))
+            if mode == 'extract':
+                def _collect_segments(node, path):
+                    if isinstance(node, dict):
+                        for k, v in node.items():
+                            _collect_segments(v, f"{path}.{k}" if path else str(k))
+                    elif isinstance(node, list):
+                        for i, item in enumerate(node):
+                            if item is not None:
+                                _collect_segments(item, f"{path}.{i}")
+                    elif isinstance(node, str) and node:
+                        segments.append(Segment(
+                            id=f"{base_name}#{path}",
+                            source=node,
+                            context={'file': base_name, 'path': path, 'kind': 'ui'},
+                        ))
+
+                for p_name, p_tree in extracted.items():
+                    _collect_segments(p_tree, p_name)
+                return segments
+            else:
+                def _apply_segments_to_tree(node, path):
+                    if isinstance(node, dict):
+                        for k, v in node.items():
+                            cur_p = f"{path}.{k}" if path else str(k)
+                            if isinstance(v, (dict, list)):
+                                _apply_segments_to_tree(v, cur_p)
+                            elif isinstance(v, str):
+                                seg_id = f"{base_name}#{cur_p}"
+                                if seg_id in translations:
+                                    node[k] = translations[seg_id]
+                    elif isinstance(node, list):
+                        for i, item in enumerate(node):
+                            cur_p = f"{path}.{i}"
+                            if isinstance(item, (dict, list)):
+                                _apply_segments_to_tree(item, cur_p)
+                            elif isinstance(item, str):
+                                seg_id = f"{base_name}#{cur_p}"
+                                if seg_id in translations:
+                                    node[i] = translations[seg_id]
+
+                for p_name, p_tree in extracted.items():
+                    _apply_segments_to_tree(p_tree, p_name)
+                inst.insert_text_plugins_js(data, extracted)
                 return data
 
         if cls._SYSTEM_PATTERN.search(base_name):

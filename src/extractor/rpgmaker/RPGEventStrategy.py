@@ -524,6 +524,9 @@ class ControlVariablesStrategy(EventStrategy):
         r'^[\'"]?\s*(?:easy|normal|hard|very\s*hard|expert|nightmare|hell|beginner|insane|lunatic)\s*[\'"]?;?$',
         re.IGNORECASE
     )
+    _ASCII_IDENTIFIER_PATTERN = re.compile(r'^[A-Za-z0-9_.\-]+$')
+    _CJK_PATTERN = re.compile(r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]')
+    _CODE_SYMBOLS = set('$()=;+[]<>{}')
 
     def extract(self, item, context=None):
         params = item.get('parameters', [])
@@ -539,18 +542,33 @@ class ControlVariablesStrategy(EventStrategy):
         if RPGTextFilters.is_technical_or_code(val) or RPGTextFilters.is_numeric(val) or RPGTextFilters.is_boolean(val):
             return None
 
-        # Se for string entre aspas: '"texto"' ou "'texto'" ou '`texto`'
+        # No comando 122 com params[3] == 4 (Script eval), literais de string delimitados
+        # por aspas ("...", '...' ou `...`) podem conter mensagens para o jogador.
+        # Expressões compostas (concatenações, variáveis JS, arrays) nunca são extraídas.
         trimmed = val.strip().rstrip(';')
         if (trimmed.startswith('"') and trimmed.endswith('"') and len(trimmed) >= 2) or \
            (trimmed.startswith("'") and trimmed.endswith("'") and len(trimmed) >= 2) or \
            (trimmed.startswith('`') and trimmed.endswith('`') and len(trimmed) >= 2):
-            inner = trimmed[1:-1]
-            inner = ScriptStrategy._unescape_quotes(inner)
-            if not RPGTextFilters.is_technical_or_code(inner):
+            inner = ScriptStrategy._unescape_quotes(trimmed[1:-1])
+            if RPGTextFilters.is_technical_or_code(inner):
+                return None
+            # Se contiver caracteres CJK (japonês/chinês/coreano), é texto legível (fala/mensagem)
+            if self._CJK_PATTERN.search(inner):
                 return inner
-            return None
+            # Se for ASCII puro: ignorar identificadores sem espaços (nomes de sprites, poses, tags, assets)
+            if not any(ord(c) > 127 for c in inner):
+                if self._ASCII_IDENTIFIER_PATTERN.match(inner) or ' ' not in inner:
+                    return None
+            return inner
 
-        return val
+        # Se não tiver delimitadores de aspas: só aceita se for texto livre com espaços e sem símbolos de código JS
+        if ' ' in trimmed and not any(ch in trimmed for ch in self._CODE_SYMBOLS):
+            if self._CJK_PATTERN.search(trimmed):
+                return trimmed
+            if not self._ASCII_IDENTIFIER_PATTERN.match(trimmed) and not RPGTextFilters.is_technical_or_code(trimmed):
+                return trimmed
+
+        return None
 
     def insert(self, item, text, context=None):
         if text is None:
@@ -585,4 +603,4 @@ class ControlVariablesStrategy(EventStrategy):
                 sanitized = ScriptStrategy._sanitize_script_param(inner, quote, original_text=orig_unescaped)
             params[4] = f'{quote}{sanitized}{quote}' + (';' if has_semicolon else '')
         else:
-            params[4] = text_str
+            params[4] = f"{text_str}{';' if has_semicolon else ''}"
