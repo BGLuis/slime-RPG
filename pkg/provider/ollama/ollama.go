@@ -69,7 +69,7 @@ type generateResponse struct {
 // TranslateBatch traduz uma lista de strings enviando-as individualmente com contexto preservado.
 func (o *OllamaTranslator) TranslateBatch(ctx context.Context, texts []string, srcLang, tgtLang string) ([]string, error) {
 	if len(texts) == 0 {
-		return nil, provider.ErrEmptyBatch
+		return []string{}, nil
 	}
 
 	results := make([]string, len(texts))

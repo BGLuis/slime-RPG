@@ -9,6 +9,7 @@ import (
 
 	"github.com/BGLuis/slime-rpg/pkg/provider"
 	"github.com/BGLuis/slime-rpg/pkg/provider/google"
+	"github.com/BGLuis/slime-rpg/pkg/provider/proxy"
 )
 
 func TestGoogleTranslator_Success(t *testing.T) {
@@ -58,5 +59,42 @@ func TestGoogleTranslator_RateLimit429(t *testing.T) {
 	}
 	if !errors.Is(err, provider.ErrRateLimited) {
 		t.Errorf("esperava ErrRateLimited, obteve: %v", err)
+	}
+}
+
+func TestGoogleTranslator_RateLimitThroughProxyEvictsProxyNotDirect(t *testing.T) {
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+	}))
+	defer proxyServer.Close()
+
+	pm := proxy.NewManager(true, []string{proxyServer.URL})
+	pm.ReportDirectRateLimit()
+
+	tr := google.NewGoogleTranslator(pm)
+	tr.SetEndpoint("http://translate.invalid/translate_a/single")
+
+	_, err := tr.TranslateBatch(context.Background(), []string{"Hello"}, "en", "pt")
+	if !errors.Is(err, provider.ErrRateLimited) {
+		t.Fatalf("esperava ErrRateLimited, obteve %v", err)
+	}
+	if pm.PoolSize() != 0 {
+		t.Errorf("o proxy bloqueado deveria sair do pool, restam %d", pm.PoolSize())
+	}
+}
+
+func TestGoogleTranslator_DirectRateLimitBlocksDirectIP(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+	}))
+	defer ts.Close()
+
+	pm := proxy.NewManager(true, nil)
+	tr := google.NewGoogleTranslator(pm)
+	tr.SetEndpoint(ts.URL)
+
+	_, _ = tr.TranslateBatch(context.Background(), []string{"Hello"}, "en", "pt")
+	if !pm.DirectBlocked() {
+		t.Error("429 no IP direto deveria colocá-lo em cooldown")
 	}
 }

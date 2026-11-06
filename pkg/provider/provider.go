@@ -10,7 +10,6 @@ var (
 	ErrAuthFailed         = errors.New("provider authentication failed (HTTP 401/403)")
 	ErrUnavailable        = errors.New("provider service temporarily unavailable")
 	ErrCircuitBreakerOpen = errors.New("circuit breaker is open due to consecutive failures")
-	ErrEmptyBatch         = errors.New("cannot translate empty batch")
 )
 
 // Provider define o contrato comum para todos os serviços de tradução externa e local.

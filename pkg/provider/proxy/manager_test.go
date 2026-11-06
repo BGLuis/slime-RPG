@@ -1,43 +1,125 @@
-package proxy_test
+package proxy
 
 import (
 	"testing"
 	"time"
-
-	"github.com/BGLuis/slime-rpg/pkg/provider/proxy"
 )
 
-func TestProxyManager_DirectAndRateLimit(t *testing.T) {
-	mgr := proxy.NewManager(true, []string{"http://127.0.0.1:8080", "http://127.0.0.1:8081"})
+type fakeClock struct{ t time.Time }
 
-	if mgr.PoolSize() != 2 {
-		t.Fatalf("esperava pool com 2 proxies, obteve %d", mgr.PoolSize())
-	}
+func (c *fakeClock) now() time.Time          { return c.t }
+func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
-	// Notifica rate limit
-	mgr.ReportDirectRateLimit()
-
-	// Ao pedir cliente em cooldown, deve vir configurado
-	c := mgr.GetClient(time.Second)
-	if c == nil {
-		t.Fatal("esperava cliente retornado")
-	}
-
-	// Notifica sucesso direto
-	mgr.ReportDirectSuccess()
+func newTestManager(enabled bool, proxies ...string) (*Manager, *fakeClock) {
+	clock := &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	m := NewManager(enabled, proxies)
+	m.now = clock.now
+	return m, clock
 }
 
-func TestProxyManager_ProxyFailureEviction(t *testing.T) {
-	badProxy := "http://1.2.3.4:8080"
-	goodProxy := "http://5.6.7.8:8080"
-	mgr := proxy.NewManager(true, []string{badProxy, goodProxy})
+func TestDirectConnectionUntilBlocked(t *testing.T) {
+	m, _ := newTestManager(true, "http://1.1.1.1:8080")
+	if _, p := m.Client(time.Second); p != "" {
+		t.Errorf("sem bloqueio o IP direto deve ser usado mesmo com pool habilitado, obteve proxy %q", p)
+	}
+}
 
-	// 3 falhas seguidas no badProxy devem removê-lo
-	mgr.ReportProxyFailure(badProxy)
-	mgr.ReportProxyFailure(badProxy)
-	mgr.ReportProxyFailure(badProxy)
+func TestRotatesProxiesWhileBlockedAndEvictsFailures(t *testing.T) {
+	m, _ := newTestManager(true, "http://1.1.1.1:8080", "http://2.2.2.2:8080")
+	m.ReportDirectRateLimit()
 
-	if mgr.PoolSize() != 1 {
-		t.Errorf("esperava 1 proxy restante após remoção de proxy instável, obteve %d", mgr.PoolSize())
+	_, p1 := m.Client(time.Second)
+	_, p2 := m.Client(time.Second)
+	if p1 != "http://1.1.1.1:8080" || p2 != "http://2.2.2.2:8080" {
+		t.Errorf("rotação round-robin esperada, obteve %q e %q", p1, p2)
+	}
+
+	m.ReportProxyFailure(p1)
+	if m.PoolSize() != 1 {
+		t.Errorf("proxy que falhou deve sair do pool, restam %d", m.PoolSize())
+	}
+	if _, p := m.Client(time.Second); p != "http://2.2.2.2:8080" {
+		t.Errorf("só o proxy saudável deve ser usado, obteve %q", p)
+	}
+}
+
+func TestDisabledPoolNeverUsesProxies(t *testing.T) {
+	m, _ := newTestManager(false, "http://1.1.1.1:8080")
+	m.ReportDirectRateLimit()
+	if _, p := m.Client(time.Second); p != "" {
+		t.Errorf("pool desabilitado não pode usar proxy, obteve %q", p)
+	}
+	m.SetEnabled(true)
+	if _, p := m.Client(time.Second); p == "" {
+		t.Error("após habilitar, o bloqueio ativo deve usar o pool")
+	}
+}
+
+func TestDirectBlockExpiresAfterCooldown(t *testing.T) {
+	m, clock := newTestManager(true, "http://1.1.1.1:8080")
+	m.ReportDirectRateLimit()
+	if !m.DirectBlocked() {
+		t.Fatal("429 deveria bloquear o IP direto")
+	}
+	clock.advance(directCooldownBase + time.Second)
+	if m.DirectBlocked() {
+		t.Error("bloqueio deveria expirar após o cooldown")
+	}
+	if _, p := m.Client(time.Second); p != "" {
+		t.Errorf("após o cooldown o IP direto volta a ser usado, obteve %q", p)
+	}
+}
+
+func TestCooldownGrowsOnRepeatedBlocksAndResetsOnSuccess(t *testing.T) {
+	m, clock := newTestManager(true)
+	remaining := func() time.Duration { return m.unblockAt.Sub(clock.now()) }
+
+	m.ReportDirectRateLimit()
+	first := remaining()
+	clock.advance(first)
+	m.ReportDirectRateLimit()
+	if second := remaining(); second <= first {
+		t.Errorf("cooldown deveria crescer: %v -> %v", first, second)
+	}
+
+	for range 20 {
+		m.ReportDirectRateLimit()
+	}
+	if got := remaining(); got > directCooldownMax {
+		t.Errorf("cooldown não pode passar do teto: %v", got)
+	}
+
+	m.ReportDirectSuccess()
+	m.ReportDirectRateLimit()
+	if got := remaining(); got != first {
+		t.Errorf("após sucesso o cooldown volta à base: %v, esperava %v", got, first)
+	}
+}
+
+func TestIgnoresInvalidAndDuplicateProxies(t *testing.T) {
+	m, _ := newTestManager(true, "", "http://1.1.1.1:8080", "http://1.1.1.1:8080", "::not-a-url")
+	if m.PoolSize() != 1 {
+		t.Errorf("esperava 1 proxy válido, obteve %d", m.PoolSize())
+	}
+}
+
+func TestTransportsAreReusedAndVerifyTLS(t *testing.T) {
+	m, _ := newTestManager(true, "http://1.1.1.1:8080")
+	c1, _ := m.Client(time.Second)
+	c2, _ := m.Client(time.Second)
+	if c1.Transport != c2.Transport {
+		t.Error("requisições diretas devem compartilhar o mesmo transport")
+	}
+
+	m.ReportDirectRateLimit()
+	c3, _ := m.Client(time.Second)
+	c4, _ := m.Client(time.Second)
+	if c3.Transport != c4.Transport {
+		t.Error("requisições pelo mesmo proxy devem compartilhar o transport")
+	}
+	for _, tr := range m.transports {
+		if tr.TLSClientConfig != nil && tr.TLSClientConfig.InsecureSkipVerify {
+			t.Error("proxies públicos não podem desativar a verificação TLS")
+		}
 	}
 }

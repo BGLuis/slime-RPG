@@ -1,40 +1,54 @@
 package proxy
 
 import (
-	"crypto/tls"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync"
 	"time"
 )
 
-// Manager gerencia o pool de proxies rotativos e o cooldown do IP direto em caso de rate-limit (HTTP 429).
+const (
+	directCooldownBase = 30 * time.Second
+	directCooldownMax  = 5 * time.Minute
+)
+
+// Manager decide entre IP direto e pool de proxies rotativos. O pool só é usado
+// quando está habilitado e o IP direto está em cooldown após um HTTP 429.
 type Manager struct {
-	mu             sync.RWMutex
-	enabled        bool
-	directBlocked  bool
-	directCooldown time.Duration
-	unblockAt      time.Time
-	proxies        []string
-	proxyIndex     int
-	failedCounts   map[string]int
+	mu          sync.Mutex
+	enabled     bool
+	blockStreak int
+	unblockAt   time.Time
+	proxies     []string
+	proxyIndex  int
+	now         func() time.Time
+
+	// Transports são reaproveitados entre requisições: criar um por chamada
+	// impede o reuso de conexões e acumula conexões ociosas abertas.
+	direct     *http.Transport
+	transports map[string]*http.Transport
 }
 
 // NewManager cria uma nova instância do gerenciador de proxies.
 func NewManager(enabled bool, initialProxies []string) *Manager {
-	cleanProxies := make([]string, 0, len(initialProxies))
-	for _, p := range initialProxies {
-		if p != "" {
-			cleanProxies = append(cleanProxies, p)
-		}
+	m := &Manager{
+		enabled:    enabled,
+		now:        time.Now,
+		direct:     newTransport(nil),
+		transports: make(map[string]*http.Transport),
 	}
+	m.AddProxies(initialProxies...)
+	return m
+}
 
-	return &Manager{
-		enabled:        enabled,
-		directCooldown: 30 * time.Second,
-		proxies:        cleanProxies,
-		failedCounts:   make(map[string]int),
+func newTransport(proxyURL *url.URL) *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = 20
+	if proxyURL != nil {
+		t.Proxy = http.ProxyURL(proxyURL)
 	}
+	return t
 }
 
 // SetEnabled habilita ou desabilita o uso de proxies rotativos.
@@ -46,109 +60,98 @@ func (m *Manager) SetEnabled(enabled bool) {
 
 // IsEnabled verifica se o pool de proxies está ativado.
 func (m *Manager) IsEnabled() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.enabled
 }
 
-// AddProxies adiciona novos proxies à lista.
+// AddProxies adiciona novos proxies ao pool, ignorando vazios e URLs inválidas.
 func (m *Manager) AddProxies(newProxies ...string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, p := range newProxies {
-		if p != "" {
-			m.proxies = append(m.proxies, p)
+		if p == "" || slices.Contains(m.proxies, p) {
+			continue
 		}
+		parsed, err := url.Parse(p)
+		if err != nil || parsed.Host == "" {
+			continue
+		}
+		m.proxies = append(m.proxies, p)
+		m.transports[p] = newTransport(parsed)
 	}
 }
 
 // PoolSize retorna a quantidade de proxies ativos cadastrados.
 func (m *Manager) PoolSize() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return len(m.proxies)
 }
 
-// ReportDirectRateLimit notifica que o IP direto recebeu HTTP 429 e entra em cooldown progressivo.
+// DirectBlocked indica se o IP direto ainda está em cooldown.
+func (m *Manager) DirectBlocked() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.directBlockedLocked()
+}
+
+func (m *Manager) directBlockedLocked() bool {
+	return m.now().Before(m.unblockAt)
+}
+
+// ReportDirectRateLimit registra um HTTP 429 no IP direto. O cooldown dobra a cada
+// bloqueio consecutivo (30s, 60s, ... até 5min) e volta à base após um sucesso.
 func (m *Manager) ReportDirectRateLimit() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.directBlocked = true
-	m.unblockAt = time.Now().Add(m.directCooldown)
-
-	// Backoff exponencial no cooldown (até 5 minutos)
-	m.directCooldown *= 2
-	if m.directCooldown > 5*time.Minute {
-		m.directCooldown = 5 * time.Minute
+	cooldown := directCooldownMax
+	if m.blockStreak < 10 {
+		cooldown = min(directCooldownBase<<m.blockStreak, directCooldownMax)
+	}
+	m.blockStreak++
+	if until := m.now().Add(cooldown); until.After(m.unblockAt) {
+		m.unblockAt = until
 	}
 }
 
-// ReportDirectSuccess notifica uma requisição bem-sucedida pelo IP direto, resetando o cooldown.
+// ReportDirectSuccess registra uma requisição bem-sucedida pelo IP direto.
 func (m *Manager) ReportDirectSuccess() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	m.directBlocked = false
-	m.directCooldown = 30 * time.Second
+	m.blockStreak = 0
+	m.unblockAt = time.Time{}
 }
 
-// ReportProxyFailure registra a falha de um proxy específico para expurgá-lo se falhar repetidamente.
+// ReportProxyFailure remove do pool um proxy que falhou ou foi bloqueado: proxies
+// públicos instáveis raramente se recuperam a tempo de valer uma nova tentativa.
 func (m *Manager) ReportProxyFailure(proxyURL string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.failedCounts[proxyURL]++
-	if m.failedCounts[proxyURL] >= 3 {
-		// Remove proxy instável da lista
-		for i, p := range m.proxies {
-			if p == proxyURL {
-				m.proxies = append(m.proxies[:i], m.proxies[i+1:]...)
-				break
-			}
-		}
+	idx := slices.Index(m.proxies, proxyURL)
+	if idx < 0 {
+		return
+	}
+	m.proxies = slices.Delete(m.proxies, idx, idx+1)
+	if t, ok := m.transports[proxyURL]; ok {
+		t.CloseIdleConnections()
+		delete(m.transports, proxyURL)
 	}
 }
 
-// GetClient retorna um http.Client configurado para conexão direta ou com proxy rotativo.
-func (m *Manager) GetClient(timeout time.Duration) *http.Client {
+// Client devolve o cliente HTTP para a próxima requisição e o proxy escolhido
+// (vazio quando a conexão é direta), para que o chamador reporte o resultado.
+func (m *Manager) Client(timeout time.Duration) (*http.Client, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Se o cooldown expirou, tenta o IP direto novamente
-	if m.directBlocked && time.Now().After(m.unblockAt) {
-		m.directBlocked = false
+	if !m.enabled || !m.directBlockedLocked() || len(m.proxies) == 0 {
+		return &http.Client{Timeout: timeout, Transport: m.direct}, ""
 	}
 
-	// Usa IP direto se permitido ou se não houver proxies configurados
-	if (!m.directBlocked && !m.enabled) || len(m.proxies) == 0 {
-		return &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 20,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		}
-	}
-
-	// Seleciona o próximo proxy no formato Round-Robin
-	proxyStr := m.proxies[m.proxyIndex%len(m.proxies)]
+	proxyURL := m.proxies[m.proxyIndex%len(m.proxies)]
 	m.proxyIndex++
-
-	parsedURL, err := url.Parse(proxyStr)
-	if err != nil {
-		// Fallback para direto se url for inválida
-		return &http.Client{Timeout: timeout}
-	}
-
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			Proxy:               http.ProxyURL(parsedURL),
-			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
-			MaxIdleConns:        50,
-			MaxIdleConnsPerHost: 10,
-		},
-	}
+	return &http.Client{Timeout: timeout, Transport: m.transports[proxyURL]}, proxyURL
 }

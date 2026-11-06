@@ -56,7 +56,7 @@ func (g *GoogleTranslator) SetEndpoint(endpoint string) {
 // TranslateBatch traduz uma lista de textos de forma concorrente respeitando limites de taxa e pooling de proxies.
 func (g *GoogleTranslator) TranslateBatch(ctx context.Context, texts []string, srcLang, tgtLang string) ([]string, error) {
 	if len(texts) == 0 {
-		return nil, provider.ErrEmptyBatch
+		return []string{}, nil
 	}
 
 	results := make([]string, len(texts))
@@ -107,8 +107,11 @@ func (g *GoogleTranslator) TranslateBatch(ctx context.Context, texts []string, s
 }
 
 func (g *GoogleTranslator) translateSingle(ctx context.Context, text, srcLang, tgtLang string) (string, error) {
-	// Pacing suave para não sobrecarregar o IP direto
-	g.rateLimitPacing()
+	client, proxyURL := g.proxyManager.Client(10 * time.Second)
+	if proxyURL == "" {
+		// O pacing protege só o IP direto; cada proxy tem seu próprio limite.
+		g.rateLimitPacing()
+	}
 
 	params := url.Values{}
 	params.Set("client", "gtx")
@@ -125,18 +128,24 @@ func (g *GoogleTranslator) translateSingle(ctx context.Context, text, srcLang, t
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded;charset=utf-8")
 	req.Header.Set("User-Agent", UserAgent)
 
-	client := g.proxyManager.GetClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return "", ctx.Err()
+		}
+		if proxyURL != "" {
+			g.proxyManager.ReportProxyFailure(proxyURL)
 		}
 		return "", fmt.Errorf("network error during google translate: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		g.proxyManager.ReportDirectRateLimit()
+		if proxyURL != "" {
+			g.proxyManager.ReportProxyFailure(proxyURL)
+		} else {
+			g.proxyManager.ReportDirectRateLimit()
+		}
 		return "", provider.ErrRateLimited
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
@@ -179,7 +188,9 @@ func (g *GoogleTranslator) translateSingle(ctx context.Context, text, srcLang, t
 		}
 	}
 
-	g.proxyManager.ReportDirectSuccess()
+	if proxyURL == "" {
+		g.proxyManager.ReportDirectSuccess()
+	}
 	return sb.String(), nil
 }
 

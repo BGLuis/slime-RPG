@@ -53,9 +53,11 @@ func (d *DeepLTranslator) SetEndpoint(endpoint string) {
 }
 
 type translateRequest struct {
-	Text       []string `json:"text"`
-	SourceLang string   `json:"source_lang,omitempty"`
-	TargetLang string   `json:"target_lang"`
+	Text               []string `json:"text"`
+	SourceLang         string   `json:"source_lang,omitempty"`
+	TargetLang         string   `json:"target_lang"`
+	PreserveFormatting bool     `json:"preserve_formatting"`
+	TagHandling        string   `json:"tag_handling"`
 }
 
 type translationItem struct {
@@ -68,25 +70,42 @@ type translateResponse struct {
 	Message      string            `json:"message,omitempty"`
 }
 
+// MapLangCode converte um código ISO para o formato do DeepL. Como idioma de
+// destino, inglês e português exigem variante regional; como origem, o DeepL só
+// aceita o idioma base. Origem vazia ou "auto" devolve "" (detecção automática).
+func MapLangCode(code string, isTarget bool) string {
+	c := strings.ToLower(strings.TrimSpace(code))
+	switch {
+	case c == "" && isTarget:
+		return "EN-US"
+	case c == "" || c == "auto":
+		return ""
+	case c == "en" && isTarget:
+		return "EN-US"
+	case c == "pt" && isTarget:
+		return "PT-BR"
+	}
+	if !isTarget {
+		if base, _, found := strings.Cut(c, "-"); found {
+			c = base
+		}
+	}
+	return strings.ToUpper(c)
+}
+
 // TranslateBatch despacha o lote nativamente em uma única requisição HTTP para a API DeepL.
 func (d *DeepLTranslator) TranslateBatch(ctx context.Context, texts []string, srcLang, tgtLang string) ([]string, error) {
 	if len(texts) == 0 {
-		return nil, provider.ErrEmptyBatch
+		return []string{}, nil
 	}
 
 	// Normaliza códigos de idioma para o formato DeepL (ex: "pt" -> "PT-BR" ou "PT-PT", "en" -> "EN")
-	normalizedTarget := strings.ToUpper(tgtLang)
-	if normalizedTarget == "PT" {
-		normalizedTarget = "PT-BR"
-	}
-	normalizedSource := strings.ToUpper(srcLang)
-
 	reqPayload := translateRequest{
-		Text:       texts,
-		TargetLang: normalizedTarget,
-	}
-	if normalizedSource != "" && normalizedSource != "AUTO" {
-		reqPayload.SourceLang = normalizedSource
+		Text:               texts,
+		SourceLang:         MapLangCode(srcLang, false),
+		TargetLang:         MapLangCode(tgtLang, true),
+		PreserveFormatting: true,
+		TagHandling:        "xml",
 	}
 
 	jsonData, err := json.Marshal(reqPayload)
@@ -114,8 +133,10 @@ func (d *DeepLTranslator) TranslateBatch(ctx context.Context, texts []string, sr
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil, provider.ErrRateLimited
 	}
-	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
-		return nil, provider.ErrAuthFailed
+	// 456 é a resposta do DeepL para cota de caracteres esgotada.
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == 456 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%w: DeepL HTTP %d: %s", provider.ErrAuthFailed, resp.StatusCode, string(body))
 	}
 	if resp.StatusCode >= 500 {
 		return nil, fmt.Errorf("%w: DeepL HTTP %d", provider.ErrUnavailable, resp.StatusCode)
