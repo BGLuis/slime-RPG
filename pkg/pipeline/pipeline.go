@@ -42,6 +42,7 @@ type Context struct {
 	SrcLang         string
 	TgtLang         string
 	Engine          string
+	Game            string // vincula as traduções novas ao jogo na memória
 	Translator      Translator
 	Memory          Memory
 	Masker          *masking.Masker
@@ -322,6 +323,7 @@ func (s *CacheStoreStep) Execute(ctx context.Context, pctx *Context) error {
 				TargetText: seg.Target(),
 				Engine:     pctx.Engine,
 				Status:     memory.StatusMachine,
+				Game:       pctx.Game,
 			})
 		}
 	}
