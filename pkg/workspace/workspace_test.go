@@ -238,3 +238,60 @@ func TestBackupSurvivesInPlaceCommit(t *testing.T) {
 		t.Errorf("backup foi corrompido pelo commit: %q", got)
 	}
 }
+
+// Na segunda tradução in-place a entrada já está traduzida: refazer o backup não
+// pode trocar o original guardado pelo texto traduzido.
+func TestEnsureBackupNeverOverwritesExistingOriginal(t *testing.T) {
+	input := t.TempDir()
+	writeFile(t, filepath.Join(input, "Map001.json"), "original")
+	backup := filepath.Join(t.TempDir(), "backup")
+
+	ws := newWorkspace(t, input, "")
+	if _, err := ws.EnsureBackup(backup, nil); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, ws.ProcessPath("Map001.json"), "traduzido")
+	if _, err := ws.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	again := newWorkspace(t, input, "")
+	created, err := again.EnsureBackup(backup, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 0 {
+		t.Errorf("nenhum arquivo novo deveria entrar no backup: %v", created)
+	}
+	if got := readFile(t, filepath.Join(backup, "Map001.json")); got != "original" {
+		t.Errorf("backup sobrescrito pela tradução: %q", got)
+	}
+}
+
+func TestEnsureBackupCopiesTranslatableAndLinksMedia(t *testing.T) {
+	input := t.TempDir()
+	writeFile(t, filepath.Join(input, "data", "Map001.json"), "{}")
+	writeFile(t, filepath.Join(input, "img", "hero.png"), "png")
+	backup := filepath.Join(t.TempDir(), "backup")
+
+	ws := newWorkspace(t, input, "")
+	created, err := ws.EnsureBackup(backup, func(rel string) bool { return filepath.Ext(rel) == ".json" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 2 {
+		t.Errorf("arquivos criados = %v", created)
+	}
+
+	same := func(rel string) bool {
+		a, _ := os.Stat(filepath.Join(input, rel))
+		b, _ := os.Stat(filepath.Join(backup, rel))
+		return os.SameFile(a, b)
+	}
+	if same(filepath.Join("data", "Map001.json")) {
+		t.Error("arquivo traduzível precisa de cópia independente, não hardlink")
+	}
+	if !same(filepath.Join("img", "hero.png")) {
+		t.Error("mídia deveria ser hardlink para não ocupar espaço")
+	}
+}

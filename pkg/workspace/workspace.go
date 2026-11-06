@@ -109,43 +109,58 @@ func (w *Workspace) OutputPath(relPath string) string {
 	return filepath.Join(w.outputDir, relPath)
 }
 
-// CreateBackup cria uma cópia completa da pasta de entrada para backupDir.
-// Utiliza hardlinks (os.Link) para eficiência máxima (zero espaço extra e zero I/O de disco para arquivos grandes de mídia),
-// realizando cópia física convencional como fallback caso o sistema de arquivos não permita hardlink.
+// CreateBackup cria uma cópia da pasta de entrada em backupDir usando hardlinks
+// (sem espaço extra em disco), com cópia física como fallback.
 func (w *Workspace) CreateBackup(backupDir string) error {
+	_, err := w.EnsureBackup(backupDir, nil)
+	return err
+}
+
+// EnsureBackup garante que todo arquivo da entrada exista em backupDir e devolve
+// os caminhos relativos copiados nesta chamada. Arquivos aceitos por copyFilter
+// (os que serão traduzidos) recebem cópia independente; os demais, hardlink.
+// Arquivos já presentes no backup nunca são sobrescritos: numa segunda tradução
+// in-place a entrada já contém texto traduzido, e o backup é o único original.
+func (w *Workspace) EnsureBackup(backupDir string, copyFilter func(rel string) bool) ([]string, error) {
 	absBackup, err := filepath.Abs(backupDir)
 	if err != nil {
-		return fmt.Errorf("failed to resolve backup directory: %w", err)
+		return nil, fmt.Errorf("failed to resolve backup directory: %w", err)
 	}
 
-	return filepath.Walk(w.inputDir, func(path string, info os.FileInfo, err error) error {
+	var created []string
+	err = filepath.WalkDir(w.inputDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-
 		rel, err := filepath.Rel(w.inputDir, path)
 		if err != nil {
 			return err
 		}
-		if rel == "." {
-			return os.MkdirAll(absBackup, 0755)
-		}
-
 		target := filepath.Join(absBackup, rel)
-
-		if info.IsDir() {
-			return os.MkdirAll(target, info.Mode().Perm())
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
 		}
-
-		// Tenta criar hardlink primeiro
-		linkErr := os.Link(path, target)
-		if linkErr == nil {
+		if _, err := os.Lstat(target); err == nil {
 			return nil
 		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
 
-		// Se o hardlink falhar (ex: cross-device EXDEV ou sistema sem suporte), copia os bytes
-		return copyFile(path, target, info.Mode().Perm())
+		if copyFilter == nil || !copyFilter(filepath.ToSlash(rel)) {
+			if os.Link(path, target) == nil {
+				created = append(created, rel)
+				return nil
+			}
+		}
+		if err := copyFile(path, target, info.Mode().Perm()); err != nil {
+			return err
+		}
+		created = append(created, rel)
+		return nil
 	})
+	return created, err
 }
 
 // Commit grava atomicamente os arquivos de processDir em outputDir e devolve os
