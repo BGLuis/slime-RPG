@@ -35,7 +35,7 @@ func NewMVExtractor() *MVExtractor {
 	return &MVExtractor{}
 }
 
-// CanHandle verifica se o arquivo é um formato JSON suportado pelo RPG Maker MV/MZ.
+// CanHandle verifica se o arquivo é um formato JSON ou plugins.js suportado pelo RPG Maker MV/MZ.
 func (e *MVExtractor) CanHandle(filePath string) bool {
 	base := filepath.Base(filePath)
 	return rxMapFile.MatchString(base) ||
@@ -43,12 +43,17 @@ func (e *MVExtractor) CanHandle(filePath string) bool {
 		rxActorsFile.MatchString(base) ||
 		rxDbFiles.MatchString(base) ||
 		rxTroopsFile.MatchString(base) ||
-		rxSystemFile.MatchString(base)
+		rxSystemFile.MatchString(base) ||
+		rxPluginsFile.MatchString(base)
 }
 
 // Extract extrai os segmentos traduzíveis do arquivo JSON.
 func (e *MVExtractor) Extract(filePath string, data []byte) ([]*model.Segment, error) {
 	base := filepath.Base(filePath)
+	if rxPluginsFile.MatchString(base) {
+		return e.extractPluginsJs(base, data)
+	}
+
 	var raw any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse json %s: %w", base, err)
@@ -99,6 +104,10 @@ func (e *MVExtractor) Extract(filePath string, data []byte) ([]*model.Segment, e
 // Inject reinjeta as traduções resolvidas no JSON original.
 func (e *MVExtractor) Inject(filePath string, originalData []byte, segments []*model.Segment) ([]byte, error) {
 	base := filepath.Base(filePath)
+	if rxPluginsFile.MatchString(base) {
+		return e.injectPluginsJs(base, originalData, segments)
+	}
+
 	var raw any
 	if err := json.Unmarshal(originalData, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse json %s: %w", base, err)
