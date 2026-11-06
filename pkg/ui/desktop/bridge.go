@@ -16,6 +16,7 @@ import (
 	"github.com/BGLuis/slime-rpg/pkg/provider/deepl"
 	"github.com/BGLuis/slime-rpg/pkg/provider/google"
 	"github.com/BGLuis/slime-rpg/pkg/provider/ollama"
+	"github.com/BGLuis/slime-rpg/pkg/provider/proxy"
 	"github.com/egoist/mygo"
 )
 
@@ -301,6 +302,8 @@ func (s *SlimeService) resolveProvider(opts JobStartOptions) provider.Provider {
 		}
 		return ollama.NewOllamaTranslator(endpoint, model, "")
 	default:
-		return google.NewGoogleTranslator(nil)
+		pm := proxy.NewManager(proxy.EnabledByEnv(), nil)
+		pm.UsePublicSources()
+		return google.NewGoogleTranslator(pm)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/BGLuis/slime-rpg/pkg/provider"
@@ -18,7 +19,11 @@ func googleFake(t *testing.T) provider.Provider {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		q := r.Form.Get("q")
-		_ = json.NewEncoder(w).Encode([]any{[]any{[]any{"TR:" + q, q}}, nil, "en"})
+		parts := strings.Split(q, google.Delimiter)
+		for i, p := range parts {
+			parts[i] = "TR:" + p
+		}
+		_ = json.NewEncoder(w).Encode([]any{[]any{[]any{strings.Join(parts, google.Delimiter), q}}, nil, "en"})
 	}))
 	t.Cleanup(ts.Close)
 	g := google.NewGoogleTranslator(nil)

@@ -2,9 +2,13 @@ package google_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/BGLuis/slime-rpg/pkg/provider"
@@ -12,35 +16,67 @@ import (
 	"github.com/BGLuis/slime-rpg/pkg/provider/proxy"
 )
 
-func TestGoogleTranslator_Success(t *testing.T) {
+// gtxFake responde como o endpoint GTX, traduzindo cada parte do lote e
+// preservando o delimitador, e conta as requisições recebidas.
+func gtxFake(t *testing.T, translate func(string) string, requests *atomic.Int32) *httptest.Server {
+	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
 		_ = r.ParseForm()
-		q := r.Form.Get("q")
-		if q == "Hello" {
-			// Formato padrão Google GTX
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[[["Olá","Hello",null,null,10]],null,"en",null,null,null,null,[]]`))
-			return
+		parts := strings.Split(r.Form.Get("q"), google.Delimiter)
+		for i, p := range parts {
+			parts[i] = translate(p)
 		}
-		if q == "World" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[[["Mundo","World",null,null,10]],null,"en",null,null,null,null,[]]`))
-			return
-		}
-		http.Error(w, "not found", http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode([]any{[]any{[]any{strings.Join(parts, google.Delimiter), r.Form.Get("q")}}, nil, "en"})
 	}))
-	defer ts.Close()
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestGoogleTranslator_SendsBatchInOneRequest(t *testing.T) {
+	var requests atomic.Int32
+	dict := map[string]string{"Hello": "Olá", "World": "Mundo"}
+	ts := gtxFake(t, func(s string) string { return dict[s] }, &requests)
 
 	tr := google.NewGoogleTranslator(nil)
 	tr.SetEndpoint(ts.URL)
 
-	results, err := tr.TranslateBatch(context.Background(), []string{"Hello", "World"}, "en", "pt")
+	results, err := tr.TranslateBatch(context.Background(), []string{"Hello", "  ", "World"}, "en", "pt")
 	if err != nil {
 		t.Fatalf("falha ao traduzir lote: %v", err)
 	}
+	if want := []string{"Olá", "  ", "Mundo"}; !slices.Equal(results, want) {
+		t.Errorf("traduções = %q, esperava %q", results, want)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Errorf("o lote deveria ir numa única requisição, foram %d", got)
+	}
+}
 
-	if len(results) != 2 || results[0] != "Olá" || results[1] != "Mundo" {
-		t.Errorf("traduções incorretas: %+v", results)
+// Se o Google engolir o delimitador, dividir a resposta desalinharia as traduções:
+// os textos precisam ser traduzidos individualmente.
+func TestGoogleTranslator_FallsBackPerItemWhenDelimiterIsLost(t *testing.T) {
+	var requests atomic.Int32
+	ts := gtxFake(t, func(s string) string { return "pt:" + s }, &requests)
+	ts.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_ = r.ParseForm()
+		q := strings.ReplaceAll(r.Form.Get("q"), google.Delimiter, " ")
+		_ = json.NewEncoder(w).Encode([]any{[]any{[]any{"pt:" + q, q}}, nil, "en"})
+	})
+
+	tr := google.NewGoogleTranslator(nil)
+	tr.SetEndpoint(ts.URL)
+
+	results, err := tr.TranslateBatch(context.Background(), []string{"a", "b"}, "en", "pt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"pt:a", "pt:b"}; !slices.Equal(results, want) {
+		t.Errorf("traduções = %q, esperava %q", results, want)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Errorf("esperava 1 requisição em lote + 2 individuais, foram %d", got)
 	}
 }
 

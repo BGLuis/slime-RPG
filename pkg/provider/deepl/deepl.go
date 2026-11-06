@@ -43,6 +43,11 @@ func NewDeepLTranslator(apiKey string) *DeepLTranslator {
 	}
 }
 
+// Capabilities segue os limites da API DeepL: até 50 textos por requisição.
+func (d *DeepLTranslator) Capabilities() provider.Capabilities {
+	return provider.Capabilities{MaxChars: 10000, MaxItems: 50, Concurrency: 5}
+}
+
 func (d *DeepLTranslator) ID() string {
 	return "deepl"
 }

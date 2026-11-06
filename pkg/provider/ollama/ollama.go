@@ -2,12 +2,15 @@ package ollama
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +46,17 @@ func NewOllamaTranslator(endpoint, modelName, synopsis string) *OllamaTranslator
 			Timeout: 120 * time.Second,
 		},
 	}
+}
+
+// Capabilities envia um texto por requisição: o modelo traduz melhor um texto
+// isolado do que uma lista. A concorrência pode ser ajustada por
+// OLLAMA_MAX_REQUESTS, como na versão Python.
+func (o *OllamaTranslator) Capabilities() provider.Capabilities {
+	concurrency := 10
+	if n, err := strconv.Atoi(os.Getenv("OLLAMA_MAX_REQUESTS")); err == nil && n > 0 {
+		concurrency = n
+	}
+	return provider.Capabilities{MaxChars: 10000, MaxItems: 1, Concurrency: concurrency}
 }
 
 func (o *OllamaTranslator) ID() string {
@@ -96,18 +110,7 @@ func (o *OllamaTranslator) TranslateBatch(ctx context.Context, texts []string, s
 }
 
 func (o *OllamaTranslator) translateSingle(ctx context.Context, text, srcLang, tgtLang string) (string, error) {
-	systemPrompt := fmt.Sprintf(
-		"You are a professional video game localizer and translator from %s to %s.\n"+
-			"CRITICAL RULES:\n"+
-			"1. You MUST preserve any placeholders matching `__XTOK_<n>__` EXACTLY as they appear without translating or altering them.\n"+
-			"2. Translate dialogue naturally for players.\n"+
-			"3. Output ONLY the translated text, with no explanations, notes, or quotes.",
-		srcLang, tgtLang,
-	)
-
-	if o.synopsis != "" {
-		systemPrompt += fmt.Sprintf("\nGame Synopsis and Lore Context:\n%s", o.synopsis)
-	}
+	systemPrompt := systemPrompt(srcLang, tgtLang, o.synopsis)
 
 	reqPayload := generateRequest{
 		Model:  o.model,
@@ -138,8 +141,16 @@ func (o *OllamaTranslator) translateSingle(ctx context.Context, text, srcLang, t
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("ollama HTTP %d: %s", resp.StatusCode, string(body))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		switch {
+		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+			return "", fmt.Errorf("%w: ollama HTTP %d", provider.ErrAuthFailed, resp.StatusCode)
+		case resp.StatusCode == http.StatusTooManyRequests:
+			return "", fmt.Errorf("%w: ollama", provider.ErrRateLimited)
+		case resp.StatusCode >= 500:
+			return "", fmt.Errorf("%w: ollama HTTP %d: %s", provider.ErrUnavailable, resp.StatusCode, body)
+		}
+		return "", fmt.Errorf("ollama HTTP %d: %s", resp.StatusCode, body)
 	}
 
 	var res generateResponse
@@ -161,4 +172,23 @@ func (o *OllamaTranslator) translateSingle(ctx context.Context, text, srcLang, t
 	}
 
 	return cleaned, nil
+}
+
+// Instruções do tradutor Ollama da versão Python; OLLAMA_CONTEXT_FUNCTION e
+// OLLAMA_CONTEXT_ADDITIONAL substituem as duas primeiras, como lá.
+const (
+	defaultContextFunction   = "Reply with only the translated text, without any additional comments, explanations, or notes."
+	defaultContextAdditional = "Act as an expert game localizer. Your mission is to translate text for a video game, ensuring the translation is engaging and immersive for the player. The text could be character dialogue, an item description, a quest objective, or a UI menu element. Adapt the translation to fit the gaming context, using appropriate and common gaming jargon. Maintain the original tone, whether it's serious, humorous, or epic. Do not provide a literal, word-for-word translation if a more natural, context-aware alternative exists."
+	placeholderInstruction   = "Tokens like __XTOK_12345678__ are placeholders for game control codes: copy each one into the translation exactly as written, without translating, reformatting, or removing it."
+)
+
+func systemPrompt(srcLang, tgtLang, synopsis string) string {
+	function := cmp.Or(os.Getenv("OLLAMA_CONTEXT_FUNCTION"), defaultContextFunction)
+	additional := cmp.Or(os.Getenv("OLLAMA_CONTEXT_ADDITIONAL"), defaultContextAdditional)
+	parts := []string{function, additional, placeholderInstruction}
+	if synopsis != "" {
+		parts = append(parts, "Game Synopsis/Context: "+synopsis+"\n\nUse this synopsis to better understand the game's context and provide more accurate, context-aware translations.")
+	}
+	parts = append(parts, fmt.Sprintf("Translate the user's message from %s to %s.", srcLang, tgtLang))
+	return strings.Join(parts, "\n\n")
 }
