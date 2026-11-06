@@ -51,6 +51,12 @@ tasks:
       - task: build
       - ./{{.BIN_DIR}}/{{.BINARY_NAME}} --tui
 
+  run:gui:
+    desc: Compila e executa o Slime RPG no modo Desktop UI (MyGo)
+    cmds:
+      - task: build
+      - ./{{.BIN_DIR}}/{{.BINARY_NAME}} --gui
+
   test:
     desc: Executa a suíte de testes unitários
     cmds:
