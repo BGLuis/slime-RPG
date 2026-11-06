@@ -3,20 +3,29 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/BGLuis/slime-rpg/pkg/detector"
+	"github.com/BGLuis/slime-rpg/pkg/engine"
 	"github.com/BGLuis/slime-rpg/pkg/event"
+	"github.com/BGLuis/slime-rpg/pkg/filenames"
+	"github.com/BGLuis/slime-rpg/pkg/formats"
 	"github.com/BGLuis/slime-rpg/pkg/job"
 	"github.com/BGLuis/slime-rpg/pkg/memory"
+	"github.com/BGLuis/slime-rpg/pkg/metadata"
 	"github.com/BGLuis/slime-rpg/pkg/paths"
 	"github.com/BGLuis/slime-rpg/pkg/provider"
 	"github.com/BGLuis/slime-rpg/pkg/provider/deepl"
 	"github.com/BGLuis/slime-rpg/pkg/provider/google"
 	"github.com/BGLuis/slime-rpg/pkg/provider/ollama"
+	"github.com/BGLuis/slime-rpg/pkg/provider/proxy"
 	"github.com/BGLuis/slime-rpg/pkg/ui/desktop"
 	"github.com/BGLuis/slime-rpg/pkg/ui/tui"
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,6 +38,12 @@ var (
 	date    = "unknown"
 )
 
+// languages são os idiomas oferecidos pela versão Python.
+var languages = [][2]string{
+	{"pt", "Português"}, {"en", "Inglês"}, {"es", "Espanhol"}, {"fr", "Francês"},
+	{"it", "Italiano"}, {"ja", "Japonês"}, {"auto", "Automático (Detectar)"},
+}
+
 func printUsage() {
 	fmt.Printf(`Slime RPG (Go Edition) v%s
 
@@ -37,91 +52,106 @@ USO:
 
 COMANDOS:
   translate       Extrai, traduz e reinjeta textos no jogo (padrão)
-  verify          Verifica a integridade das variáveis e códigos protegidos
-  tm              Gerencia a Memória de Tradução SQLite local
+  verify          Confere a pasta traduzida contra o .slime/meta.json
+  adopt           Registra o metadado de um jogo já traduzido
+  filenames       Traduz os nomes dos arquivos de uma pasta
+  tm              Memória de Tradução: contagem, export/import TMX e glossário
+  list            Lista extratores, tradutores e idiomas suportados
   version         Exibe informações detalhadas de versão e build
 
-OPÇÕES GERAIS:
-  -i, --input     Caminho para a pasta raiz do jogo (padrão: pasta atual)
-  --tui           Executa no modo Terminal UI interativo (Bubble Tea)
-  --gui           Executa no modo Desktop UI nativo (MyGo)
-  --service       Provedor de tradução: google, deepl, ollama (padrão: google)
-  --from          Idioma de origem dos textos (padrão: ja)
-  --to            Idioma de destino da tradução (padrão: pt)
-  --incremental   Traduz apenas textos ou arquivos que foram alterados (padrão: true)
-  --dry-run       Calcula estimativa pré-voo sem persistir alterações nos arquivos
-  --json          Emite eventos estruturados em JSON para automação e scripts
-  -h, --help      Exibe esta mensagem de ajuda
+OPÇÕES DE TRADUÇÃO:
+  -i, --input        Pasta raiz do jogo ou arquivo (padrão: pasta atual)
+  -o, --output       Pasta de destino (padrão: a própria entrada)
+  -t, --translator   Provedor: google, deepl, ollama (padrão: google)
+  -s, --source       Idioma de origem (padrão: ja)
+  -d, --target       Idioma de destino (padrão: pt)
+  --synopsis         Sinopse do jogo para dar contexto ao Ollama
+  --model            Modelo do Ollama (padrão: $OLLAMA_MODEL ou qwen2.5)
+  --no-backup        Não criar o backup <pasta>-<origem>
+  --memory-only      Aplica só a Memória de Tradução, sem rede (alias: --offline)
+  --switch-engine    Ignora traduções automáticas de outros provedores na memória
+  --incremental      Traduz só arquivos novos ou alterados (padrão: true)
+  --no-proxy         Não usar o pool de proxies quando o Google bloquear o IP
+  --dry-run          Calcula a estimativa pré-voo sem alterar arquivos
+  --json             Emite eventos em JSON Lines para automação
+  --tui / --gui      Força a interface de terminal ou desktop
+  -h, --help         Exibe esta mensagem
+
+MEMÓRIA DE TRADUÇÃO:
+  slime tm                                              # total de entradas
+  slime tm export --src ja --tgt pt --out f.tmx [--status reviewed,locked]
+  slime tm import --file f.tmx [--engine human] [--status reviewed|locked|machine]
+  slime tm glossary --src ja --tgt pt --source "ルイ" --target "Rui"
+  slime tm glossary --src ja --tgt pt --list
+
+NOMES DE ARQUIVO:
+  slime filenames -i <pasta> [-o <saída>] [-t google -s ja -d pt] [--keep-original]
+
+VERIFICAÇÃO E ADOÇÃO:
+  slime verify <pasta-traduzida> [--original <pasta>]
+  slime adopt <pasta-traduzida> --original <pasta> -e <extrator> [-s en -d pt]
 
 EXEMPLOS:
-  slime                                 # Inicia a TUI interativa na pasta atual
-  slime --gui                           # Inicia a janela desktop com webview nativa
-  slime translate -i ./Meujogo --to pt  # Tradução headless via linha de comando
+  slime                                   # TUI interativa na pasta atual
+  slime --gui                             # Janela desktop
+  slime translate -i ./MeuJogo -d pt      # Tradução headless
+  slime -i ./MeuJogo -t deepl --no-backup
 `, version)
 }
 
 func main() {
-	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
-		fmt.Printf("Slime RPG (Go) v%s (commit: %s, date: %s)\n", version, commit, date)
-		return
+	args := os.Args[1:]
+	cmd := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		cmd, args = args[0], args[1:]
 	}
 
-	if len(os.Args) > 1 && (os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h") {
+	switch cmd {
+	case "version":
+		printVersion()
+		return
+	case "help":
 		printUsage()
 		return
+	case "verify":
+		os.Exit(runVerify(args))
+	case "adopt":
+		os.Exit(runAdopt(args))
+	case "filenames":
+		os.Exit(runFilenames(args))
+	case "tm":
+		os.Exit(runTM(args))
+	case "list":
+		printLists()
+		return
+	case "", "translate":
+	default:
+		fmt.Fprintf(os.Stderr, "Comando desconhecido: %s\n\n", cmd)
+		printUsage()
+		os.Exit(2)
+	}
+	if len(args) > 0 && (args[0] == "--version" || args[0] == "-v") {
+		printVersion()
+		return
 	}
 
-	// Comandos e flags
-	var (
-		inputDir    string
-		serviceName string
-		sourceLang  string
-		targetLang  string
-		incremental bool
-		dryRun      bool
-		jsonOutput  bool
-		forceTUI    bool
-		forceGUI    bool
-	)
-
+	var o translateOptions
 	fs := flag.NewFlagSet("slime", flag.ExitOnError)
-	fs.StringVar(&inputDir, "i", ".", "Caminho para o diretório do jogo")
-	fs.StringVar(&inputDir, "input", ".", "Caminho para o diretório do jogo")
-	fs.StringVar(&serviceName, "service", "google", "Provedor: google, deepl, ollama")
-	fs.StringVar(&sourceLang, "from", "ja", "Idioma de origem")
-	fs.StringVar(&targetLang, "to", "pt", "Idioma de destino")
-	fs.BoolVar(&incremental, "incremental", true, "Modo incremental (só o que mudou)")
-	fs.BoolVar(&dryRun, "dry-run", false, "Simulação pré-voo sem alterar arquivos")
-	fs.BoolVar(&jsonOutput, "json", false, "Saída em formato JSON Lines")
-	fs.BoolVar(&forceTUI, "tui", false, "Forçar Terminal UI")
-	fs.BoolVar(&forceGUI, "gui", false, "Forçar Desktop UI (MyGo)")
-
-	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "translate" {
-		args = args[1:]
-	} else if len(args) > 0 && args[0] == "verify" {
-		handleVerify(args[1:])
-		return
-	} else if len(args) > 0 && args[0] == "tm" {
-		handleTM(args[1:])
-		return
-	}
-
+	fs.Usage = printUsage
+	o.register(fs)
 	_ = fs.Parse(args)
 
-	// Se solicitado GUI, inicia MyGo
-	if forceGUI {
-		if err := desktop.Run(inputDir); err != nil {
+	if o.gui {
+		if err := desktop.Run(o.input); err != nil {
 			fmt.Fprintf(os.Stderr, "Erro ao iniciar interface desktop: %v\n", err)
 			os.Exit(1)
 		}
 		return
 	}
 
-	// Se o terminal for interativo e não foi pedido --json nem flags headless explícitas, inicia a TUI
 	isTerminal := isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd())
-	if (forceTUI || (isTerminal && len(args) == 0 && !jsonOutput)) && !dryRun {
-		p := tea.NewProgram(tui.NewModel(inputDir), tea.WithAltScreen())
+	if (o.tui || (isTerminal && len(args) == 0 && cmd == "")) && !o.dryRun {
+		p := tea.NewProgram(tui.NewModel(o.input), tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "Erro ao iniciar TUI: %v\n", err)
 			os.Exit(1)
@@ -129,130 +159,500 @@ func main() {
 		return
 	}
 
-	// Execução CLI / Headless
-	runHeadless(inputDir, serviceName, sourceLang, targetLang, incremental, dryRun, jsonOutput)
+	os.Exit(runHeadless(o))
 }
 
-func runHeadless(gameDir, provName, srcLang, tgtLang string, incremental, dryRun, jsonOutput bool) {
-	det, err := detector.Detect(gameDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Erro ao detectar jogo em %s: %v\n", gameDir, err)
-		os.Exit(1)
-	}
+func printVersion() {
+	fmt.Printf("Slime RPG (Go) v%s (commit: %s, date: %s)\n", version, commit, date)
+}
 
-	if !jsonOutput {
-		fmt.Printf("Jogo detectado: %s (%s)\n", det.GameName, det.Engine)
-		fmt.Printf("Pasta de dados: %s (%d arquivos)\n", det.DataDir, det.FileCount)
-		fmt.Printf("Serviço: %s | Idiomas: %s → %s\n", provName, srcLang, tgtLang)
-	}
+type translateOptions struct {
+	input, output, translator, source, target string
+	synopsis, model                           string
+	noBackup, memoryOnly, switchEngine        bool
+	incremental, noProxy, dryRun, jsonOutput  bool
+	tui, gui                                  bool
+}
 
-	memPath, err := paths.MemoryDBPath()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Erro ao resolver banco de memória: %v\n", err)
-		os.Exit(1)
+func (o *translateOptions) register(fs *flag.FlagSet) {
+	str := func(p *string, def, usage string, names ...string) {
+		for _, n := range names {
+			fs.StringVar(p, n, def, usage)
+		}
 	}
-	mem, err := memory.New(memPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Erro ao abrir banco de memória: %v\n", err)
-		os.Exit(1)
+	boolean := func(p *bool, def bool, usage string, names ...string) {
+		for _, n := range names {
+			fs.BoolVar(p, n, def, usage)
+		}
 	}
-	defer mem.Close()
+	str(&o.input, ".", "Pasta do jogo ou arquivo", "i", "input")
+	str(&o.output, "", "Pasta de destino", "o", "output")
+	str(&o.translator, "google", "Provedor de tradução", "t", "translator", "service")
+	str(&o.source, "ja", "Idioma de origem", "s", "source", "from")
+	str(&o.target, "pt", "Idioma de destino", "d", "target", "to")
+	str(&o.synopsis, "", "Sinopse do jogo", "synopsis", "sinopse")
+	str(&o.model, os.Getenv("OLLAMA_MODEL"), "Modelo do Ollama", "model")
+	boolean(&o.noBackup, false, "Não criar backup", "no-backup")
+	boolean(&o.memoryOnly, false, "Só a Memória de Tradução", "memory-only", "offline")
+	boolean(&o.switchEngine, false, "Trocar de provedor", "switch-engine")
+	boolean(&o.incremental, true, "Só arquivos alterados", "incremental")
+	boolean(&o.noProxy, !proxy.EnabledByEnv(), "Sem pool de proxies", "no-proxy")
+	boolean(&o.dryRun, false, "Estimativa sem alterar arquivos", "dry-run")
+	boolean(&o.jsonOutput, false, "Saída em JSON Lines", "json")
+	boolean(&o.tui, false, "Forçar Terminal UI", "tui")
+	boolean(&o.gui, false, "Forçar Desktop UI", "gui")
+}
 
-	var prov provider.Provider
-	switch provName {
+func newProvider(o translateOptions) (provider.Provider, error) {
+	switch memory.NormalizeEngine(o.translator) {
 	case "deepl":
-		prov = deepl.NewDeepLTranslator(os.Getenv("DEEPL_API_KEY"))
+		key := os.Getenv("DEEPL_API_KEY")
+		if key == "" {
+			return nil, errors.New("defina DEEPL_API_KEY para usar o DeepL")
+		}
+		return deepl.NewDeepLTranslator(key), nil
 	case "ollama":
 		endpoint := os.Getenv("OLLAMA_HOST")
 		if endpoint == "" {
-			endpoint = "http://localhost:11434"
+			endpoint = ollama.DefaultEndpoint
 		}
-		prov = ollama.NewOllamaTranslator(endpoint, "llama3", "")
-	default:
-		prov = google.NewGoogleTranslator(nil)
+		return ollama.NewOllamaTranslator(endpoint, o.model, o.synopsis), nil
+	case "google":
+		pm := proxy.NewManager(!o.noProxy, nil)
+		pm.UsePublicSources()
+		return google.NewGoogleTranslator(pm), nil
 	}
+	return nil, fmt.Errorf("tradutor desconhecido: %s (use google, deepl ou ollama)", o.translator)
+}
+
+func runHeadless(o translateOptions) int {
+	det, err := detector.Detect(o.input)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Erro ao detectar jogo em %s: %v\n", o.input, err)
+		return 1
+	}
+	if !o.jsonOutput {
+		fmt.Printf("Jogo detectado: %s (%s)\n", det.GameName, det.Engine)
+		fmt.Printf("Pasta de dados: %s (%d arquivos)\n", det.DataDir, det.FileCount)
+		fmt.Printf("Serviço: %s | Idiomas: %s → %s\n", o.translator, o.source, o.target)
+	}
+
+	var prov provider.Provider
+	if !o.memoryOnly {
+		if prov, err = newProvider(o); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+
+	mem, err := openMemory()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer mem.Close()
 
 	bus := event.NewBus()
 	j := job.NewJob(job.Config{
-		GamePath:      gameDir,
-		ProviderName:  provName,
-		SourceLang:    srcLang,
-		TargetLang:    tgtLang,
-		Incremental:   incremental,
-		BackupEnabled: true,
+		GamePath:      o.input,
+		ProviderName:  memory.NormalizeEngine(o.translator),
+		SourceLang:    o.source,
+		TargetLang:    o.target,
+		Incremental:   o.incremental,
+		EnableProxies: !o.noProxy,
+		BackupEnabled: !o.noBackup,
+		OutputDir:     o.output,
+		MemoryOnly:    o.memoryOnly,
+		SwitchEngine:  o.switchEngine,
 	}, bus, mem, prov)
 
-	if dryRun {
-		est, err := j.Estimate(context.Background())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	if o.dryRun {
+		est, err := j.Estimate(ctx)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Erro ao calcular estimativa: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
-		if jsonOutput {
-			enc := json.NewEncoder(os.Stdout)
-			_ = enc.Encode(est)
+		if o.jsonOutput {
+			_ = json.NewEncoder(os.Stdout).Encode(est)
 		} else {
 			fmt.Println("\n--- Estimativa Pré-Voo ---")
-			fmt.Printf("Arquivos: %d | Segmentos: %d (No cache: %d)\n", est.FilesTotal, est.SegmentsTotal, est.SegmentsCached)
+			fmt.Printf("Arquivos: %d (a processar: %d) | Segmentos: %d (na memória: %d)\n",
+				est.FilesTotal, est.FilesToProcess, est.SegmentsTotal, est.SegmentsCached)
 			fmt.Printf("Tempo estimado: %s | Backup: %s\n", est.EstimatedDuration, est.BackupPath)
 		}
-		return
+		return 0
 	}
 
-	// Escuta eventos e imprime
-	ch := bus.SubscribeEvents(100)
+	done := make(chan struct{})
+	ch := bus.SubscribeEvents(4096)
 	go func() {
-		defer bus.UnsubscribeEvents(ch)
+		defer close(done)
 		for env := range ch {
-			if jsonOutput {
+			if o.jsonOutput {
 				data, _ := json.Marshal(env)
 				fmt.Println(string(data))
 			} else {
-				switch e := env.Data.(type) {
-				case event.PhaseChangedEvent:
-					fmt.Printf("[FASE] %s: %s\n", e.Phase, e.Message)
-				case event.JobFinishedEvent:
-					fmt.Printf("[FIM] Concluído em %s. Código de saída: %d\n", e.Duration, e.ExitCode)
-				}
+				printEvent(env)
+			}
+			if env.Type == event.EventJobFinished {
+				return
 			}
 		}
 	}()
 
-	if err := j.Run(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "Erro durante a tradução: %v\n", err)
-		os.Exit(1)
+	runErr := j.Run(ctx)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
 	}
+	bus.UnsubscribeEvents(ch)
 
-	time.Sleep(50 * time.Millisecond)
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "Erro durante a tradução: %v\n", runErr)
+	}
+	snap := j.Snapshot()
+	if !o.jsonOutput {
+		printSummary(snap)
+	}
+	return snap.ExitCode
 }
 
-func handleVerify(args []string) {
-	dir := "."
-	if len(args) > 0 {
-		dir = args[0]
+func printEvent(env event.Envelope) {
+	switch e := env.Data.(type) {
+	case event.PhaseChangedEvent:
+		fmt.Printf("[FASE] %s: %s\n", e.Phase, e.Message)
+	case event.FileStatusEvent:
+		if e.Status == event.StatusWaiting || e.Status == event.StatusProcessing {
+			return
+		}
+		fmt.Printf("[%s] %s - %s\n", strings.ToUpper(string(e.Status)), e.File, e.Message)
+	case event.ProviderThrottledEvent:
+		fmt.Printf("[AVISO] %s: %s\n", e.Provider, e.Message)
+	case event.JobFinishedEvent:
+		fmt.Printf("[FIM] %d concluído(s), %d parcial(is), %d com erro em %s\n",
+			e.FilesComplete, e.FilesPartial, e.FilesError, e.Duration.Round(time.Millisecond))
 	}
-	fmt.Printf("Verificando integridade dos arquivos em %s...\n", dir)
-	det, err := detector.Detect(dir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Erro ao detectar jogo: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Motor: %s. Nenhum erro de sintaxe ou tag ausente detectado.\n", det.Engine)
 }
 
-func handleTM(args []string) {
+// printSummary repete no fim os arquivos com falha ou tradução parcial, como o Python.
+func printSummary(snap job.Snapshot) {
+	var failed, partial []job.FileProgress
+	for _, f := range snap.Files {
+		switch f.Status {
+		case event.StatusError:
+			failed = append(failed, f)
+		case event.StatusPartial:
+			partial = append(partial, f)
+		}
+	}
+	if len(failed) > 0 {
+		fmt.Println("--- Arquivos com falha de processamento ---")
+		for _, f := range failed {
+			fmt.Printf("  ✗ %s: %s\n", f.Path, f.Message)
+		}
+	}
+	if len(partial) > 0 {
+		fmt.Println("--- Arquivos com tradução parcial (<100%) ---")
+		for _, f := range partial {
+			fmt.Printf("  • %s: %s\n", f.Path, f.Message)
+		}
+	}
+	fmt.Printf("Segmentos: %d (memória: %d, novos: %d) | Backup: %s | Metadado: %s\n",
+		snap.SegmentsTotal, snap.SegmentsCached, snap.SegmentsNew, snap.BackupPath, snap.MetaPath)
+}
+
+func openMemory() (*memory.TranslationMemory, error) {
 	memPath, err := paths.MemoryDBPath()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Erro ao resolver banco: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("erro ao resolver banco de memória: %w", err)
 	}
 	mem, err := memory.New(memPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Erro ao abrir banco: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("erro ao abrir banco de memória %s: %w", memPath, err)
+	}
+	return mem, nil
+}
+
+// runVerify equivale ao --verify-game da versão Python.
+func runVerify(args []string) int {
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	original := fs.String("original", "", "Pasta com os arquivos originais")
+	dir, rest := splitPositional(args)
+	_ = fs.Parse(rest)
+	if dir == "" {
+		dir = "."
+	}
+
+	report, err := metadata.Verify(dir, *original, nil)
+	if errors.Is(err, metadata.ErrNoMeta) {
+		fmt.Printf("Sem metadado em %s. Use 'slime adopt' para registrar o jogo.\n", dir)
+		return 1
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	for _, r := range report {
+		if r.State != metadata.StateIntact && r.State != metadata.StateUnchanged {
+			fmt.Printf("  [%s] %s\n", r.State, r.File)
+		}
+	}
+	fmt.Printf("Resumo: %s\n", formatSummary(metadata.Summarize(report)))
+	return 0
+}
+
+// runAdopt equivale ao --adopt da versão Python: registra uma tradução feita
+// fora do Slime comparando-a com a pasta original.
+func runAdopt(args []string) int {
+	fs := flag.NewFlagSet("adopt", flag.ExitOnError)
+	original := fs.String("original", "", "Pasta com os arquivos originais")
+	var extractor, source, target string
+	for _, n := range []string{"e", "extractor"} {
+		fs.StringVar(&extractor, n, "", "Extrator: rpgmaker, wolfrpg, csv, json")
+	}
+	for _, n := range []string{"s", "source"} {
+		fs.StringVar(&source, n, "", "Idioma de origem")
+	}
+	for _, n := range []string{"d", "target"} {
+		fs.StringVar(&target, n, "", "Idioma de destino")
+	}
+	dir, rest := splitPositional(args)
+	_ = fs.Parse(rest)
+
+	name, exts := formats.ExtensionsFor(extractor)
+	if dir == "" || *original == "" || exts == nil {
+		fmt.Fprintln(os.Stderr, "adopt exige a pasta traduzida, --original e -e/--extractor (rpgmaker, wolfrpg, csv, json).")
+		return 1
+	}
+	for _, folder := range []string{dir, *original} {
+		if info, err := os.Stat(folder); err != nil || !info.IsDir() {
+			fmt.Fprintf(os.Stderr, "Pasta não existe: %s\n", folder)
+			return 1
+		}
+	}
+
+	meta := metadata.Build(dir, *original, metadata.BuildOptions{
+		Origin: metadata.OriginLegacy, Extractor: name, LangSource: source, LangTarget: target,
+		Extensions: exts, Previous: metadata.Load(dir),
+	})
+	path, err := metadata.Save(dir, meta)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	states := make(map[string]int)
+	for _, f := range meta.Files {
+		states[f.Status]++
+	}
+	fmt.Printf("Metadado gravado em %s\n  %d arquivo(s) registrados: %s\n", path, len(meta.Files), formatSummary(states))
+	return 0
+}
+
+// splitPositional separa o primeiro argumento posicional das flags, já que o
+// pacote flag para de ler flags no primeiro argumento posicional.
+func splitPositional(args []string) (string, []string) {
+	for i, a := range args {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		if i > 0 && strings.HasPrefix(args[i-1], "-") && !strings.Contains(args[i-1], "=") {
+			continue
+		}
+		return a, append(append([]string{}, args[:i]...), args[i+1:]...)
+	}
+	return "", args
+}
+
+func formatSummary(summary map[string]int) string {
+	keys := make([]string, 0, len(summary))
+	for k := range summary {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%s=%d", k, summary[k])
+	}
+	return strings.Join(parts, ", ")
+}
+
+// runTM reúne as ferramentas de memória da versão Python (scripts/tm_*.py).
+func runTM(args []string) int {
+	mem, err := openMemory()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
 	defer mem.Close()
+	ctx := context.Background()
 
-	count, _ := mem.Count(context.Background())
-	fmt.Printf("Memória de Tradução (%s): %d entradas registradas.\n", memPath, count)
+	sub := ""
+	if len(args) > 0 {
+		sub, args = args[0], args[1:]
+	}
+	fs := flag.NewFlagSet("tm "+sub, flag.ExitOnError)
+	src := fs.String("src", "", "Idioma de origem")
+	tgt := fs.String("tgt", "", "Idioma de destino")
+	out := fs.String("out", "", "Arquivo .tmx de saída")
+	file := fs.String("file", "", "Arquivo .tmx a importar")
+	engineName := fs.String("engine", "human", "Rótulo da origem das traduções importadas")
+	status := fs.String("status", "", "Status (export: filtro separado por vírgula; import: reviewed, locked ou machine)")
+	source := fs.String("source", "", "Termo de origem a travar")
+	target := fs.String("target", "", "Tradução fixa do termo")
+	list := fs.Bool("list", false, "Lista os termos travados")
+	_ = fs.Parse(args)
+
+	switch sub {
+	case "":
+		count, err := mem.Count(ctx)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		path, _ := paths.MemoryDBPath()
+		fmt.Printf("Memória de Tradução (%s): %d entradas registradas.\n", path, count)
+		return 0
+
+	case "export":
+		if *src == "" || *tgt == "" || *out == "" {
+			fmt.Fprintln(os.Stderr, "tm export exige --src, --tgt e --out")
+			return 2
+		}
+		var statuses []memory.Status
+		for _, st := range strings.Split(*status, ",") {
+			if st = strings.TrimSpace(st); st != "" {
+				statuses = append(statuses, memory.Status(st))
+			}
+		}
+		pairs, err := mem.Pairs(ctx, *src, *tgt, statuses...)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		f, err := os.Create(*out)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		defer f.Close()
+		if err := memory.WriteTMX(f, *src, *tgt, pairs); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("%d segmentos exportados para %s\n", len(pairs), *out)
+		return 0
+
+	case "import":
+		st := memory.Status(*status)
+		if st == "" {
+			st = memory.StatusReviewed
+		}
+		if *file == "" || (st != memory.StatusReviewed && st != memory.StatusLocked && st != memory.StatusMachine) {
+			fmt.Fprintln(os.Stderr, "tm import exige --file e --status reviewed, locked ou machine")
+			return 2
+		}
+		f, err := os.Open(*file)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		defer f.Close()
+		units, skipped, err := memory.ReadTMX(f)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		entries := make([]memory.Entry, len(units))
+		for i, u := range units {
+			entries[i] = memory.Entry{SrcLang: u.SrcLang, TgtLang: u.TgtLang, SourceText: u.Source, TargetText: u.Target, Engine: *engineName, Status: st}
+		}
+		if err := mem.StoreBatch(ctx, entries); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("%d segmentos importados (status=%s), %d ignorados (incompletos)\n", len(units), st, skipped)
+		return 0
+
+	case "glossary":
+		if *src == "" || *tgt == "" {
+			fmt.Fprintln(os.Stderr, "tm glossary exige --src e --tgt")
+			return 2
+		}
+		if *list {
+			pairs, err := mem.Pairs(ctx, *src, *tgt, memory.StatusLocked)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			for _, p := range pairs {
+				fmt.Printf("%s -> %s\n", p.Source, p.Target)
+			}
+			return 0
+		}
+		if *source == "" || *target == "" {
+			fmt.Fprintln(os.Stderr, "Use --source e --target para travar um termo, ou --list para listar.")
+			return 2
+		}
+		if err := mem.LockTerm(ctx, *src, *tgt, "glossary", *source, *target); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("Travado: %q -> %q\n", *source, *target)
+		return 0
+	}
+	fmt.Fprintf(os.Stderr, "Subcomando desconhecido: tm %s (use export, import ou glossary)\n", sub)
+	return 2
+}
+
+// runFilenames equivale ao --mode filenames da versão Python. Sem -o, as cópias
+// com nome traduzido ficam na própria pasta, ao lado dos originais.
+func runFilenames(args []string) int {
+	var o translateOptions
+	var keepOriginal bool
+	fs := flag.NewFlagSet("filenames", flag.ExitOnError)
+	o.register(fs)
+	fs.BoolVar(&keepOriginal, "keep-original", false, "Também copia o arquivo com o nome original")
+	_ = fs.Parse(args)
+
+	prov, err := newProvider(o)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	output := o.output
+	if output == "" {
+		output = o.input
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	res, err := filenames.Process(ctx, engine.New(prov, engine.Options{}), o.input, output, filenames.Options{
+		SrcLang: o.source, TgtLang: o.target, KeepOriginal: keepOriginal,
+		Log: func(msg string) { fmt.Println(msg) },
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if keepOriginal {
+		fmt.Printf("Originais mantidos: %d\n", res.CopiedOriginals)
+	}
+	return 0
+}
+
+func printLists() {
+	fmt.Println("Extratores disponíveis:")
+	for _, e := range []string{"rpgmaker (RPG Maker MV/MZ/VX Ace/XP)", "wolfrpg (Wolf RPG)", "csv (CSV)", "json (Json)"} {
+		fmt.Println("  -", e)
+	}
+	fmt.Println("Tradutores disponíveis:")
+	for _, t := range []string{"google", "deepl", "ollama"} {
+		fmt.Println("  -", t)
+	}
+	fmt.Println("Idiomas suportados:")
+	for _, l := range languages {
+		fmt.Printf("  - %s: %s\n", l[0], l[1])
+	}
 }
