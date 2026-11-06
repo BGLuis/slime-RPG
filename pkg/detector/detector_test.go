@@ -72,3 +72,22 @@ func TestDetect_DangerousPath(t *testing.T) {
 		t.Errorf("expected ErrDangerousPath for root directory, got %v", err)
 	}
 }
+
+func TestRestrictedPaths(t *testing.T) {
+	cases := map[string]bool{
+		"/home/u/.local/share/Trash/files/Game": true,
+		"/mnt/hdd/.Trash-1000/files/Game":       true,
+		"/home/u/.trash/Game":                   true,
+		`C:/$Recycle.Bin/Game`:                  true,
+		"/home/u/games/Trashman":                false,
+		"/home/u/games/Trash Panda Quest":       false,
+	}
+	for path, want := range cases {
+		if got := isRestrictedPath(path); got != want {
+			t.Errorf("isRestrictedPath(%q) = %v, want %v", path, got, want)
+		}
+	}
+	if !isRestrictedPath(filepath.Join("..", "..")) {
+		t.Error("a raiz do repositório do Slime deveria ser recusada")
+	}
+}

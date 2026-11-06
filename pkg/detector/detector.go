@@ -168,10 +168,10 @@ func Detect(targetPath string) (*DetectionResult, error) {
 		cleanPath,
 	}
 	for _, dir := range candidatesWolf {
-		if hasFile(dir, "CommonEvent.dat") || hasFile(dir, "DataBase.dat") || countFiles(dir, ".mps") > 0 {
+		if hasFile(dir, "CommonEvent.dat") || hasFile(dir, "DataBase.dat") || countFiles(dir, ".mps") > 0 || countFiles(dir, ".wolf") > 0 {
 			res.DataDir = dir
 			res.Engine = EngineWolfRPG
-			res.FileCount = countFiles(dir, ".mps") + countFiles(dir, ".dat")
+			res.FileCount = countFiles(dir, ".mps") + countFiles(dir, ".dat") + countFiles(dir, ".wolf")
 			res.ProbableLang = "ja"
 			res.LangDetectionConfidence = 95
 			res.Description = "WOLF RPG · dados em " + filepath.Base(dir)
@@ -227,15 +227,33 @@ func Detect(targetPath string) (*DetectionResult, error) {
 	return res, nil
 }
 
+// isRestrictedPath recusa a raiz do sistema, lixeiras (com os marcadores da
+// versão Python, mais a lixeira do Windows) e o próprio repositório do Slime.
 func isRestrictedPath(path string) bool {
-	lower := strings.ToLower(path)
 	if path == "/" || path == "\\" || len(path) <= 3 && strings.HasSuffix(path, ":\\") {
 		return true
 	}
-	if strings.Contains(lower, "trash") || strings.Contains(lower, "recycle.bin") {
-		return true
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
 	}
-	return false
+	lower := strings.ToLower(filepath.ToSlash(abs)) + "/"
+	for _, marker := range []string{"/.trash/", "/.trash-", "/.local/share/trash/", "/trash/", "/$recycle.bin/"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return isSlimeRepoRoot(abs)
+}
+
+// isSlimeRepoRoot evita "traduzir" o código-fonte do próprio Slime quando ele é
+// executado sem argumentos na raiz do repositório.
+func isSlimeRepoRoot(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), "module github.com/BGLuis/slime-rpg") && hasFile(filepath.Join(dir, "cmd"), "slime")
 }
 
 func hasFile(dir, filename string) bool {
