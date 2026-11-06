@@ -2,6 +2,8 @@ package json_test
 
 import (
 	json_std "encoding/json"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/BGLuis/slime-rpg/pkg/extractor/rpgmaker/json"
@@ -185,4 +187,147 @@ func replaceTarget(segs []*model.Segment, id, target string) []*model.Segment {
 		}
 	}
 	return segs
+}
+
+func extractSources(t *testing.T, file, raw string) []string {
+	t.Helper()
+	segs, err := json.NewMVExtractor().Extract(file, []byte(raw))
+	if err != nil {
+		t.Fatalf("Extract(%s): %v", file, err)
+	}
+	var out []string
+	for _, s := range segs {
+		out = append(out, s.Source())
+	}
+	return out
+}
+
+func mapWithCommands(commands string) string {
+	return `{"events":[null,{"id":1,"pages":[{"list":[` + commands + `,{"code":0,"parameters":[]}]}]}]}`
+}
+
+func TestExtractsShowText(t *testing.T) {
+	got := extractSources(t, "Map001.json", mapWithCommands(`{"code":401,"parameters":["Olá Mundo!"]}`))
+	if !slices.Equal(got, []string{"Olá Mundo!"}) {
+		t.Errorf("obteve %v", got)
+	}
+}
+
+// Comentários (108/408) e labels (118) são diretivas de plugin e alvos de salto:
+// traduzi-los quebra mecânicas do jogo.
+func TestCommentsAndLabelsAreNotExtracted(t *testing.T) {
+	got := extractSources(t, "Map001.json", mapWithCommands(
+		`{"code":108,"parameters":["tool_duration : 15"]},{"code":408,"parameters":["tool_position : user"]},`+
+			`{"code":118,"parameters":["loop_start"]},{"code":401,"parameters":["Texto de diálogo real"]}`))
+	if !slices.Equal(got, []string{"Texto de diálogo real"}) {
+		t.Errorf("só o 401 deveria ser extraído, obteve %v", got)
+	}
+}
+
+func TestMapEventsShapes(t *testing.T) {
+	cases := map[string]struct {
+		raw  string
+		want []string
+	}{
+		"events false": {`{"displayName":"","events":false,"width":17}`, nil},
+		"events null":  {`{"displayName":"","events":null}`, nil},
+		"events objeto": {
+			`{"events":{"1":{"id":1,"pages":[{"list":[{"code":401,"parameters":["Texto em dict"]}]}]}}}`,
+			[]string{"Texto em dict"},
+		},
+		"pages e list malformados": {
+			`{"events":[null,{"id":1,"pages":false},{"id":2,"pages":[{"list":null}]},` +
+				`{"id":3,"pages":[{"list":[false,{"code":401,"parameters":["Ok"]}]}]}]}`,
+			[]string{"Ok"},
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := extractSources(t, "Map040.json", c.raw); !slices.Equal(got, c.want) {
+				t.Errorf("obteve %v, esperava %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestEventsAsObjectRoundTrip(t *testing.T) {
+	raw := `{"events":{"1":{"id":1,"pages":[{"list":[{"code":401,"parameters":["Hi"]}]}]}}}`
+	ext := json.NewMVExtractor()
+	segs, _ := ext.Extract("Map042.json", []byte(raw))
+	out, err := ext.Inject("Map042.json", []byte(raw), []*model.Segment{segs[0].WithTarget("Oi")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Replace(raw, `"Hi"`, `"Oi"`, 1); string(out) != want {
+		t.Errorf("obteve %s", out)
+	}
+}
+
+func TestPictureOnlyChoicesAreSkippedAndMixedChoicesKeepTags(t *testing.T) {
+	if got := extractSources(t, "Map001.json", mapWithCommands(`{"code":102,"parameters":[["\\picture[yes]","\\picture[no]"],-1,0,2,0]}`)); len(got) != 0 {
+		t.Errorf("escolhas só com imagem não têm texto, obteve %v", got)
+	}
+
+	raw := mapWithCommands(`{"code":102,"parameters":[["\\picture[yes]","Option Two"],-1,0,2,0]}`)
+	ext := json.NewMVExtractor()
+	segs, _ := ext.Extract("Map001.json", []byte(raw))
+	if len(segs) != 1 || segs[0].Source() != "Option Two" {
+		t.Fatalf("só a opção com texto deveria ser extraída: %v", segs)
+	}
+	out, _ := ext.Inject("Map001.json", []byte(raw), []*model.Segment{segs[0].WithTarget("Opção Dois")})
+	if !strings.Contains(string(out), `["\\picture[yes]","Opção Dois"]`) {
+		t.Errorf("tag de imagem precisa ser preservada: %s", out)
+	}
+}
+
+func TestSystemExtractsPlayerFacingFieldsOnly(t *testing.T) {
+	raw := `{"gameTitle":"Meu Jogo","currencyUnit":"G","switches":["","Debug Switch","Intro Completed"],` +
+		`"variables":["","Gold Count"],"armorTypes":["","Escudo"],"elements":["","Fogo"],` +
+		`"terms":{"commands":["Fight","Escape"],"basic":["Level"],"messages":{"victory":"%1 won!"}}}`
+	got := extractSources(t, "System.json", raw)
+	for _, want := range []string{"Meu Jogo", "G", "Escudo", "Fogo", "Fight", "Escape", "Level", "%1 won!"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%q deveria ser extraído; obteve %v", want, got)
+		}
+	}
+	for _, internal := range []string{"Debug Switch", "Intro Completed", "Gold Count"} {
+		if slices.Contains(got, internal) {
+			t.Errorf("%q é nome interno do editor e não pode ser traduzido", internal)
+		}
+	}
+}
+
+func TestTroopsBattleEventsAreExtracted(t *testing.T) {
+	raw := `[null,{"id":1,"name":"Slime*2","pages":[{"list":[{"code":401,"parameters":["The slimes attack!"]}]}]}]`
+	if got := extractSources(t, "Troops.json", raw); !slices.Equal(got, []string{"The slimes attack!"}) {
+		t.Errorf("obteve %v", got)
+	}
+}
+
+// Reescrever via MarshalIndent transformava um Map minificado de 132 bytes em 360,
+// reordenava chaves e escapava <, > e & como \u003c, \u003e e \u0026.
+func TestInjectChangesOnlyTranslatedStrings(t *testing.T) {
+	raw := "\xef\xbb\xbf" + `{"events":[null,{"id":1,"pages":[{"list":[{"code":401,"indent":0,"parameters":["<b>Hi</b> & bye"]}]}]}],"displayName":"","width":17}`
+	ext := json.NewMVExtractor()
+	segs, err := ext.Extract("Map001.json", []byte(raw))
+	if err != nil {
+		t.Fatalf("arquivo com BOM deve ser aceito: %v", err)
+	}
+	out, err := ext.Inject("Map001.json", []byte(raw), []*model.Segment{segs[0].WithTarget("<b>Oi</b> & tchau")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Replace(raw, "<b>Hi</b> & bye", "<b>Oi</b> & tchau", 1); string(out) != want {
+		t.Errorf("obteve\n%s\nesperava\n%s", out, want)
+	}
+}
+
+func TestInjectIgnoresSegmentsFromOtherFiles(t *testing.T) {
+	raw := mapWithCommands(`{"code":401,"parameters":["Hello"]}`)
+	ext := json.NewMVExtractor()
+	segs, _ := ext.Extract("Map001.json", []byte(raw))
+	out, _ := ext.Inject("Map002.json", []byte(raw), []*model.Segment{segs[0].WithTarget("Olá")})
+	if string(out) != raw {
+		t.Errorf("segmento de outro arquivo não pode ser aplicado: %s", out)
+	}
 }

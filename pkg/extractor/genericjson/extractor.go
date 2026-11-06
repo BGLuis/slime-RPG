@@ -2,13 +2,13 @@ package genericjson
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strconv"
+	"regexp"
 	"strings"
 
+	"github.com/BGLuis/slime-rpg/pkg/extractor/jsonedit"
 	"github.com/BGLuis/slime-rpg/pkg/model"
 )
 
@@ -96,155 +96,58 @@ func UnescapePointer(token string) string {
 	return token
 }
 
-// SniffIndentation detecta a indentação predominante do JSON (espaços ou tabs).
-func SniffIndentation(data []byte) (prefix string, indent string) {
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		if strings.HasPrefix(line, "\t") {
-			return "", "\t"
-		}
-		if strings.HasPrefix(line, "    ") {
-			return "", "    "
-		}
-		if strings.HasPrefix(line, "  ") {
-			return "", "  "
-		}
-	}
-	return "", "  " // Default padrão elegante de 2 espaços
-}
-
-// Extract extrai os segmentos traduzíveis do arquivo JSON.
+// Extract extrai, na ordem do documento, as strings traduzíveis do arquivo JSON.
 func (e *JSONExtractor) Extract(filePath string, data []byte, srcLang string) ([]*model.Segment, error) {
-	cleanData := bytes.TrimSpace(data)
-	if len(cleanData) == 0 {
+	if len(bytes.TrimSpace(jsonedit.StripBOM(data))) == 0 {
 		return nil, ErrEmptyJSON
 	}
-
-	dec := json.NewDecoder(bytes.NewReader(cleanData))
-	dec.UseNumber()
-
-	var root any
-	if err := dec.Decode(&root); err != nil {
+	values, err := jsonedit.Strings(data)
+	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidJSON, err)
 	}
 
 	base := filepath.Base(filePath)
 	var segments []*model.Segment
-
-	var walk func(node any, ptr string, parentKey string)
-	walk = func(node any, ptr string, parentKey string) {
-		switch v := node.(type) {
-		case map[string]any:
-			for key, val := range v {
-				childPtr := ptr + "/" + EscapePointer(key)
-				walk(val, childPtr, key)
-			}
-		case []any:
-			for idx, item := range v {
-				childPtr := ptr + "/" + strconv.Itoa(idx)
-				walk(item, childPtr, parentKey)
-			}
-		case string:
-			if !e.isTranslatable(parentKey, v) {
-				return
-			}
-			id := fmt.Sprintf("%s#%s", base, ptr)
-			kind := model.KindDialogue
-			lowerKey := strings.ToLower(parentKey)
-			if lowerKey == "name" || lowerKey == "title" || lowerKey == "label" || lowerKey == "caption" {
-				kind = model.KindMenu
-			}
-
-			seg, err := model.NewSegment(id, v, kind, map[string]any{
-				"file":    base,
-				"pointer": ptr,
-				"key":     parentKey,
-			}, nil)
-			if err == nil {
-				segments = append(segments, seg)
-			}
+	for _, v := range values {
+		if !e.isTranslatable(v.Key, v.Value) {
+			continue
+		}
+		kind := model.KindDialogue
+		switch strings.ToLower(v.Key) {
+		case "name", "title", "label", "caption":
+			kind = model.KindMenu
+		}
+		seg, err := model.NewSegment(fmt.Sprintf("%s#%s", base, v.Pointer), v.Value, kind, map[string]any{
+			"file":    base,
+			"pointer": v.Pointer,
+			"key":     v.Key,
+		}, nil)
+		if err == nil {
+			segments = append(segments, seg)
 		}
 	}
-
-	walk(root, "", "")
 	return segments, nil
 }
 
-// Inject atualiza o arquivo JSON com as traduções fornecidas.
+// Inject grava as traduções substituindo apenas as strings traduzidas: ordem das
+// chaves, indentação, números e BOM do arquivo original são preservados.
 func (e *JSONExtractor) Inject(filePath string, originalData []byte, segments []*model.Segment, tgtLang string) ([]byte, error) {
-	cleanData := bytes.TrimSpace(originalData)
-	if len(cleanData) == 0 {
-		return originalData, nil
-	}
-
-	trMap := make(map[string]string, len(segments))
+	replacements := make(map[string]string, len(segments))
 	for _, s := range segments {
-		if s.IsResolved() && s.Target() != "" {
-			trMap[s.ID()] = s.Target()
+		if !s.IsResolved() || s.Target() == "" {
+			continue
+		}
+		if ptr, ok := s.ContextValue("pointer"); ok {
+			replacements[ptr.(string)] = s.Target()
 		}
 	}
-
-	if len(trMap) == 0 {
+	if len(replacements) == 0 {
 		return originalData, nil
 	}
 
-	dec := json.NewDecoder(bytes.NewReader(cleanData))
-	dec.UseNumber()
-
-	var root any
-	if err := dec.Decode(&root); err != nil {
+	out, err := jsonedit.ReplaceStrings(originalData, replacements)
+	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidJSON, err)
-	}
-
-	base := filepath.Base(filePath)
-	changedAny := false
-
-	var walkUpdate func(node any, ptr string) any
-	walkUpdate = func(node any, ptr string) any {
-		switch v := node.(type) {
-		case map[string]any:
-			for key, val := range v {
-				childPtr := ptr + "/" + EscapePointer(key)
-				v[key] = walkUpdate(val, childPtr)
-			}
-			return v
-		case []any:
-			for idx, item := range v {
-				childPtr := ptr + "/" + strconv.Itoa(idx)
-				v[idx] = walkUpdate(item, childPtr)
-			}
-			return v
-		case string:
-			id := fmt.Sprintf("%s#%s", base, ptr)
-			if target, found := trMap[id]; found {
-				changedAny = true
-				return target
-			}
-			return v
-		default:
-			return v
-		}
-	}
-
-	updated := walkUpdate(root, "")
-	if !changedAny {
-		return originalData, nil
-	}
-
-	prefix, indent := SniffIndentation(originalData)
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent(prefix, indent)
-
-	if err := enc.Encode(updated); err != nil {
-		return nil, fmt.Errorf("failed to encode updated json: %w", err)
-	}
-
-	out := buf.Bytes()
-	// Preserva se o arquivo original terminava ou não com quebra de linha
-	if !bytes.HasSuffix(originalData, []byte("\n")) && bytes.HasSuffix(out, []byte("\n")) {
-		out = bytes.TrimSuffix(out, []byte("\n"))
 	}
 	return out, nil
 }
@@ -263,16 +166,28 @@ func (e *JSONExtractor) isTranslatable(key, text string) bool {
 		}
 	}
 
-	// Filtra extensões técnicas de arquivos
-	lowerStr := strings.ToLower(str)
+	if looksLikePath(str) {
+		return false
+	}
+
+	// Códigos de formato não são texto: "\C[2]" sozinho não tem o que traduzir.
+	clean := strings.TrimSpace(escapeCodeRE.ReplaceAllString(str, ""))
+	if clean == "" {
+		return false
+	}
+
+	lowerStr := strings.ToLower(clean)
 	for _, ext := range technicalExtensions {
 		if strings.HasSuffix(lowerStr, ext) {
 			return false
 		}
 	}
+	if looksLikePath(clean) {
+		return false
+	}
 
-	// Filtra expressões de script e código (ex: $gameVariables.value(1), javascript, etc.)
-	if strings.HasPrefix(str, "$") || strings.HasPrefix(str, "http://") || strings.HasPrefix(str, "https://") {
+	// Expressões JS ($gameVariables.value(1)) e URLs; "$100 for this sword!" é prosa.
+	if jsIdentifierRE.MatchString(str) || strings.HasPrefix(str, "http://") || strings.HasPrefix(str, "https://") {
 		return false
 	}
 
@@ -282,6 +197,29 @@ func (e *JSONExtractor) isTranslatable(key, text string) bool {
 	}
 
 	return true
+}
+
+var (
+	escapeCodeRE      = regexp.MustCompile(`\\[A-Za-z]{1,4}\[[^\]]*\]|\\[nrtfvbae0\\]`)
+	cjkRE             = regexp.MustCompile(`[\x{3040}-\x{30ff}\x{3400}-\x{4dbf}\x{4e00}-\x{9fff}\x{f900}-\x{faff}]`)
+	uiSlashPairRE     = regexp.MustCompile(`^\pL+(?:\s*/\s*\pL+)+$`)
+	knownPathPrefixRE = regexp.MustCompile(`(?i)^(?:audio|img|image|images|pictures|graphic|graphics|sound|bgm|bgs|se|me|data|movies|system|fonts)[/\\]`)
+	jsIdentifierRE    = regexp.MustCompile(`^\$[A-Za-z_]`)
+)
+
+// looksLikePath reconhece caminhos de asset ("audio/bgm/theme", `C:\Users\hero`)
+// sem confundir pares de opções de interface ("Yes/No", "はい/いいえ") ou prosa com barra.
+func looksLikePath(s string) bool {
+	if !strings.ContainsAny(s, `/\`) {
+		return false
+	}
+	if knownPathPrefixRE.MatchString(s) {
+		return true
+	}
+	if strings.Contains(s, " ") || cjkRE.MatchString(s) {
+		return false
+	}
+	return strings.Count(s, "/")+strings.Count(s, `\`) >= 2 || !uiSlashPairRE.MatchString(s)
 }
 
 func isNumeric(s string) bool {

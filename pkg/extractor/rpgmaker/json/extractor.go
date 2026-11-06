@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/BGLuis/slime-rpg/pkg/extractor/jsonedit"
 	"github.com/BGLuis/slime-rpg/pkg/model"
+	"github.com/BGLuis/slime-rpg/pkg/pipeline/masking"
 )
 
 // OpCodes do RPG Maker MV/MZ
@@ -26,6 +30,8 @@ var (
 	rxCommonFile = regexp.MustCompile(`(?i)^CommonEvents\.json$`)
 	rxSystemFile = regexp.MustCompile(`(?i)^System\.json$`)
 	rxDbFiles    = regexp.MustCompile(`(?i)^(Classes|Skills|Items|Weapons|Armors|Enemies|States)\.json$`)
+
+	formatCodePatterns = masking.DefaultRPGPatterns()
 )
 
 // MVExtractor é o extrator especializado em arquivos JSON do RPG Maker MV e MZ.
@@ -47,6 +53,37 @@ func (e *MVExtractor) CanHandle(filePath string) bool {
 		rxPluginsFile.MatchString(base)
 }
 
+// collector acumula segmentos guardando no contexto o JSON Pointer do texto,
+// que o Inject usa para reescrever só aquela string.
+type collector struct {
+	base     string
+	segments []*model.Segment
+}
+
+func (c *collector) add(id, pointer, text string, kind model.SegmentKind, ctx map[string]any) {
+	if !isTranslatableText(text) {
+		return
+	}
+	if ctx == nil {
+		ctx = map[string]any{}
+	}
+	ctx["pointer"] = pointer
+	seg, err := model.NewSegment(fmt.Sprintf("%s#%s", c.base, id), text, kind, ctx, nil)
+	if err == nil {
+		c.segments = append(c.segments, seg)
+	}
+}
+
+// isTranslatableText descarta textos vazios ou compostos só de códigos de
+// formato (ex.: escolhas "\picture[yes]"), que não têm nada a traduzir.
+func isTranslatableText(text string) bool {
+	rest := text
+	for _, p := range formatCodePatterns {
+		rest = p.ReplaceAllString(rest, "")
+	}
+	return strings.TrimSpace(rest) != ""
+}
+
 // Extract extrai os segmentos traduzíveis do arquivo JSON.
 func (e *MVExtractor) Extract(filePath string, data []byte) ([]*model.Segment, error) {
 	base := filepath.Base(filePath)
@@ -55,334 +92,183 @@ func (e *MVExtractor) Extract(filePath string, data []byte) ([]*model.Segment, e
 	}
 
 	var raw any
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := json.Unmarshal(jsonedit.StripBOM(data), &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse json %s: %w", base, err)
 	}
 
-	var segments []*model.Segment
-
+	c := &collector{base: base}
 	switch {
 	case rxMapFile.MatchString(base):
-		segs, err := e.extractMap(base, raw)
-		if err != nil {
-			return nil, err
-		}
-		segments = append(segments, segs...)
-
+		e.extractMap(c, raw)
 	case rxCommonFile.MatchString(base):
-		segs, err := e.extractCommonEvents(base, raw)
-		if err != nil {
-			return nil, err
-		}
-		segments = append(segments, segs...)
-
+		e.extractCommonEvents(c, raw)
+	case rxTroopsFile.MatchString(base):
+		e.extractTroops(c, raw)
 	case rxActorsFile.MatchString(base):
-		segs, err := e.extractActors(base, raw)
-		if err != nil {
-			return nil, err
-		}
-		segments = append(segments, segs...)
-
+		e.extractDB(c, raw, actorFields)
 	case rxDbFiles.MatchString(base):
-		segs, err := e.extractGenericDB(base, raw)
-		if err != nil {
-			return nil, err
-		}
-		segments = append(segments, segs...)
-
+		e.extractDB(c, raw, dbFields)
 	case rxSystemFile.MatchString(base):
-		segs, err := e.extractSystem(base, raw)
-		if err != nil {
-			return nil, err
-		}
-		segments = append(segments, segs...)
+		e.extractSystem(c, raw)
 	}
-
-	return segments, nil
+	return c.segments, nil
 }
 
-// Inject reinjeta as traduções resolvidas no JSON original.
+// Inject reinjeta as traduções resolvidas substituindo apenas as strings
+// traduzidas: formatação, ordem das chaves, números e BOM ficam intactos.
 func (e *MVExtractor) Inject(filePath string, originalData []byte, segments []*model.Segment) ([]byte, error) {
 	base := filepath.Base(filePath)
 	if rxPluginsFile.MatchString(base) {
 		return e.injectPluginsJs(base, originalData, segments)
 	}
 
-	var raw any
-	if err := json.Unmarshal(originalData, &raw); err != nil {
-		return nil, fmt.Errorf("failed to parse json %s: %w", base, err)
-	}
-
-	translationMap := make(map[string]string, len(segments))
+	replacements := make(map[string]string, len(segments))
 	for _, s := range segments {
-		if s.IsResolved() && s.Target() != "" {
-			translationMap[s.ID()] = s.Target()
+		if !s.IsResolved() || s.Target() == "" || !strings.HasPrefix(s.ID(), base+"#") {
+			continue
+		}
+		if ptr, ok := s.ContextValue("pointer"); ok {
+			replacements[ptr.(string)] = s.Target()
 		}
 	}
-
-	if len(translationMap) == 0 {
+	if len(replacements) == 0 {
 		return originalData, nil
 	}
 
-	switch {
-	case rxMapFile.MatchString(base):
-		e.injectMap(base, raw, translationMap)
-	case rxCommonFile.MatchString(base):
-		e.injectCommonEvents(base, raw, translationMap)
-	case rxActorsFile.MatchString(base):
-		e.injectActors(base, raw, translationMap)
-	case rxDbFiles.MatchString(base):
-		e.injectGenericDB(base, raw, translationMap)
-	case rxSystemFile.MatchString(base):
-		e.injectSystem(base, raw, translationMap)
+	out, err := jsonedit.ReplaceStrings(originalData, replacements)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inject json %s: %w", base, err)
 	}
-
-	return json.MarshalIndent(raw, "", "  ")
+	return out, nil
 }
 
-// --- Map Extraction & Injection ---
+// --- Mapas, eventos comuns e tropas ---
 
-func (e *MVExtractor) extractMap(base string, raw any) ([]*model.Segment, error) {
-	m, ok := raw.(map[string]any)
-	if !ok {
-		return nil, nil
-	}
-
-	var segments []*model.Segment
-
-	// Nome de exibição do mapa (displayName)
-	if disp, ok := m["displayName"].(string); ok && strings.TrimSpace(disp) != "" {
-		id := fmt.Sprintf("%s#map:displayName", base)
-		seg, err := model.NewSegment(id, disp, model.KindMenu, map[string]any{"field": "displayName"}, nil)
-		if err == nil {
-			segments = append(segments, seg)
-		}
-	}
-
-	events, ok := m["events"].([]any)
-	if !ok {
-		return segments, nil
-	}
-
-	for evIdx, evRaw := range events {
-		ev, ok := evRaw.(map[string]any)
-		if !ok || ev == nil {
-			continue
-		}
-		pages, ok := ev["pages"].([]any)
-		if !ok {
-			continue
-		}
-
-		for pageIdx, pageRaw := range pages {
-			page, ok := pageRaw.(map[string]any)
-			if !ok || page == nil {
-				continue
-			}
-			list, ok := page["list"].([]any)
-			if !ok {
-				continue
-			}
-
-			segs := e.extractCommandList(base, fmt.Sprintf("event:%d/page:%d", evIdx, pageIdx), list)
-			segments = append(segments, segs...)
-		}
-	}
-
-	return segments, nil
-}
-
-func (e *MVExtractor) injectMap(base string, raw any, trMap map[string]string) {
+func (e *MVExtractor) extractMap(c *collector, raw any) {
 	m, ok := raw.(map[string]any)
 	if !ok {
 		return
 	}
 
-	if target, ok := trMap[fmt.Sprintf("%s#map:displayName", base)]; ok {
-		m["displayName"] = target
+	if disp, ok := m["displayName"].(string); ok {
+		c.add("map:displayName", "/displayName", disp, model.KindMenu, map[string]any{"field": "displayName"})
 	}
 
-	events, ok := m["events"].([]any)
-	if !ok {
-		return
-	}
-
-	for evIdx, evRaw := range events {
+	// "events" costuma ser um array com null no índice 0, mas mapas vazios trazem
+	// false/null e alguns editores gravam um objeto indexado por id.
+	forEachEntry(m["events"], func(key string, evRaw any) {
 		ev, ok := evRaw.(map[string]any)
-		if !ok || ev == nil {
-			continue
-		}
-		pages, ok := ev["pages"].([]any)
 		if !ok {
-			continue
+			return
 		}
-
-		for pageIdx, pageRaw := range pages {
-			page, ok := pageRaw.(map[string]any)
-			if !ok || page == nil {
-				continue
-			}
-			list, ok := page["list"].([]any)
-			if !ok {
-				continue
-			}
-
-			e.injectCommandList(base, fmt.Sprintf("event:%d/page:%d", evIdx, pageIdx), list, trMap)
-		}
-	}
+		e.extractPages(c, fmt.Sprintf("event:%s", key), "/events/"+jsonedit.EscapePointer(key), ev["pages"])
+	})
 }
 
-// --- CommonEvents Extraction & Injection ---
-
-func (e *MVExtractor) extractCommonEvents(base string, raw any) ([]*model.Segment, error) {
-	list, ok := raw.([]any)
-	if !ok {
-		return nil, nil
-	}
-
-	var segments []*model.Segment
-	for ceIdx, ceRaw := range list {
+func (e *MVExtractor) extractCommonEvents(c *collector, raw any) {
+	forEachEntry(raw, func(key string, ceRaw any) {
 		ce, ok := ceRaw.(map[string]any)
-		if !ok || ce == nil {
-			continue
-		}
-		cmdList, ok := ce["list"].([]any)
 		if !ok {
-			continue
+			return
 		}
-
-		segs := e.extractCommandList(base, fmt.Sprintf("commonevent:%d", ceIdx), cmdList)
-		segments = append(segments, segs...)
-	}
-
-	return segments, nil
+		if list, ok := ce["list"].([]any); ok {
+			e.extractCommandList(c, fmt.Sprintf("commonevent:%s", key), "/"+key+"/list", list)
+		}
+	})
 }
 
-func (e *MVExtractor) injectCommonEvents(base string, raw any, trMap map[string]string) {
-	list, ok := raw.([]any)
+func (e *MVExtractor) extractTroops(c *collector, raw any) {
+	forEachEntry(raw, func(key string, troopRaw any) {
+		troop, ok := troopRaw.(map[string]any)
+		if !ok {
+			return
+		}
+		e.extractPages(c, fmt.Sprintf("troop:%s", key), "/"+key, troop["pages"])
+	})
+}
+
+func (e *MVExtractor) extractPages(c *collector, idPrefix, ptrPrefix string, pagesRaw any) {
+	pages, ok := pagesRaw.([]any)
 	if !ok {
 		return
 	}
-
-	for ceIdx, ceRaw := range list {
-		ce, ok := ceRaw.(map[string]any)
-		if !ok || ce == nil {
-			continue
-		}
-		cmdList, ok := ce["list"].([]any)
+	for pageIdx, pageRaw := range pages {
+		page, ok := pageRaw.(map[string]any)
 		if !ok {
 			continue
 		}
-
-		e.injectCommandList(base, fmt.Sprintf("commonevent:%d", ceIdx), cmdList, trMap)
+		if list, ok := page["list"].([]any); ok {
+			e.extractCommandList(c,
+				fmt.Sprintf("%s/page:%d", idPrefix, pageIdx),
+				fmt.Sprintf("%s/pages/%d/list", ptrPrefix, pageIdx),
+				list)
+		}
 	}
 }
 
-// --- Command List Handler (OpCodes) ---
+// forEachEntry percorre um array (chave = índice) ou um objeto (chaves em ordem
+// numérica); qualquer outro valor é ignorado.
+func forEachEntry(container any, fn func(key string, value any)) {
+	switch v := container.(type) {
+	case []any:
+		for i, item := range v {
+			fn(strconv.Itoa(i), item)
+		}
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			ni, errI := strconv.Atoi(keys[i])
+			nj, errJ := strconv.Atoi(keys[j])
+			if errI == nil && errJ == nil {
+				return ni < nj
+			}
+			return keys[i] < keys[j]
+		})
+		for _, k := range keys {
+			fn(k, v[k])
+		}
+	}
+}
 
-func (e *MVExtractor) extractCommandList(base, prefix string, list []any) []*model.Segment {
-	var segments []*model.Segment
-
+func (e *MVExtractor) extractCommandList(c *collector, idPrefix, ptrPrefix string, list []any) {
 	for cmdIdx, cmdRaw := range list {
 		cmd, ok := cmdRaw.(map[string]any)
-		if !ok || cmd == nil {
+		if !ok {
 			continue
 		}
-
 		codeFloat, ok := cmd["code"].(float64)
 		if !ok {
 			continue
 		}
 		code := int(codeFloat)
-
 		params, ok := cmd["parameters"].([]any)
 		if !ok || len(params) == 0 {
 			continue
 		}
 
-		switch code {
-		case CodeShowText, CodeShowTextMore:
-			if text, ok := params[0].(string); ok && strings.TrimSpace(text) != "" {
-				id := fmt.Sprintf("%s#%s/cmd:%d", base, prefix, cmdIdx)
-				seg, err := model.NewSegment(id, text, model.KindDialogue, map[string]any{"code": code}, nil)
-				if err == nil {
-					segments = append(segments, seg)
-				}
-			}
-
-		case CodeShowName:
-			// No RPG Maker MZ, o índice 4 contém o nome do personagem locutor
-			if len(params) >= 5 {
-				if name, ok := params[4].(string); ok && strings.TrimSpace(name) != "" {
-					id := fmt.Sprintf("%s#%s/cmd:%d/speaker", base, prefix, cmdIdx)
-					seg, err := model.NewSegment(id, name, model.KindDialogue, map[string]any{"code": code}, nil)
-					if err == nil {
-						segments = append(segments, seg)
-					}
-				}
-			}
-
-		case CodeShowChoices:
-			if len(params) > 0 {
-				if choices, ok := params[0].([]any); ok {
-					for cIdx, cRaw := range choices {
-						if cText, ok := cRaw.(string); ok && strings.TrimSpace(cText) != "" {
-							id := fmt.Sprintf("%s#%s/cmd:%d/choice:%d", base, prefix, cmdIdx, cIdx)
-							seg, err := model.NewSegment(id, cText, model.KindChoice, map[string]any{"code": code}, nil)
-							if err == nil {
-								segments = append(segments, seg)
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return segments
-}
-
-func (e *MVExtractor) injectCommandList(base, prefix string, list []any, trMap map[string]string) {
-	for cmdIdx, cmdRaw := range list {
-		cmd, ok := cmdRaw.(map[string]any)
-		if !ok || cmd == nil {
-			continue
-		}
-
-		codeFloat, ok := cmd["code"].(float64)
-		if !ok {
-			continue
-		}
-		code := int(codeFloat)
-
-		params, ok := cmd["parameters"].([]any)
-		if !ok || len(params) == 0 {
-			continue
-		}
+		id := fmt.Sprintf("%s/cmd:%d", idPrefix, cmdIdx)
+		ptr := fmt.Sprintf("%s/%d/parameters", ptrPrefix, cmdIdx)
+		ctx := func() map[string]any { return map[string]any{"code": code} }
 
 		switch code {
 		case CodeShowText, CodeShowTextMore:
-			id := fmt.Sprintf("%s#%s/cmd:%d", base, prefix, cmdIdx)
-			if target, found := trMap[id]; found {
-				params[0] = target
+			if text, ok := params[0].(string); ok {
+				c.add(id, ptr+"/0", text, model.KindDialogue, ctx())
 			}
-
 		case CodeShowName:
 			if len(params) >= 5 {
-				id := fmt.Sprintf("%s#%s/cmd:%d/speaker", base, prefix, cmdIdx)
-				if target, found := trMap[id]; found {
-					params[4] = target
+				if name, ok := params[4].(string); ok {
+					c.add(id+"/speaker", ptr+"/4", name, model.KindDialogue, ctx())
 				}
 			}
-
 		case CodeShowChoices:
-			if len(params) > 0 {
-				if choices, ok := params[0].([]any); ok {
-					for cIdx := range choices {
-						id := fmt.Sprintf("%s#%s/cmd:%d/choice:%d", base, prefix, cmdIdx, cIdx)
-						if target, found := trMap[id]; found {
-							choices[cIdx] = target
-						}
+			if choices, ok := params[0].([]any); ok {
+				for cIdx, cRaw := range choices {
+					if text, ok := cRaw.(string); ok {
+						c.add(fmt.Sprintf("%s/choice:%d", id, cIdx), fmt.Sprintf("%s/0/%d", ptr, cIdx), text, model.KindChoice, ctx())
 					}
 				}
 			}
@@ -390,77 +276,20 @@ func (e *MVExtractor) injectCommandList(base, prefix string, list []any, trMap m
 	}
 }
 
-// --- Database Extraction & Injection (Actors, Items, Skills, etc.) ---
+// --- Banco de dados (Actors, Items, Skills etc.) ---
 
-func (e *MVExtractor) extractActors(base string, raw any) ([]*model.Segment, error) {
-	list, ok := raw.([]any)
-	if !ok {
-		return nil, nil
-	}
+type dbField struct {
+	key  string
+	kind model.SegmentKind
+}
 
-	var segments []*model.Segment
-	fields := []struct {
-		key  string
-		kind model.SegmentKind
-	}{
+var (
+	actorFields = []dbField{
 		{"name", model.KindDB},
 		{"nickname", model.KindDB},
 		{"profile", model.KindDialogue},
 	}
-
-	for idx, itemRaw := range list {
-		item, ok := itemRaw.(map[string]any)
-		if !ok || item == nil {
-			continue
-		}
-
-		for _, f := range fields {
-			if val, ok := item[f.key].(string); ok && strings.TrimSpace(val) != "" {
-				id := fmt.Sprintf("%s#item:%d/field:%s", base, idx, f.key)
-				seg, err := model.NewSegment(id, val, f.kind, map[string]any{"field": f.key}, nil)
-				if err == nil {
-					segments = append(segments, seg)
-				}
-			}
-		}
-	}
-
-	return segments, nil
-}
-
-func (e *MVExtractor) injectActors(base string, raw any, trMap map[string]string) {
-	list, ok := raw.([]any)
-	if !ok {
-		return
-	}
-
-	fields := []string{"name", "nickname", "profile"}
-	for idx, itemRaw := range list {
-		item, ok := itemRaw.(map[string]any)
-		if !ok || item == nil {
-			continue
-		}
-
-		for _, f := range fields {
-			id := fmt.Sprintf("%s#item:%d/field:%s", base, idx, f)
-			if target, found := trMap[id]; found {
-				item[f] = target
-			}
-		}
-	}
-}
-
-func (e *MVExtractor) extractGenericDB(base string, raw any) ([]*model.Segment, error) {
-	list, ok := raw.([]any)
-	if !ok {
-		return nil, nil
-	}
-
-	var segments []*model.Segment
-	fields := []struct {
-		key  string
-		kind model.SegmentKind
-	}{
+	dbFields = []dbField{
 		{"name", model.KindDB},
 		{"description", model.KindDB},
 		{"message1", model.KindDialogue},
@@ -468,101 +297,67 @@ func (e *MVExtractor) extractGenericDB(base string, raw any) ([]*model.Segment, 
 		{"message3", model.KindDialogue},
 		{"message4", model.KindDialogue},
 	}
+)
 
-	for idx, itemRaw := range list {
+func (e *MVExtractor) extractDB(c *collector, raw any, fields []dbField) {
+	forEachEntry(raw, func(key string, itemRaw any) {
 		item, ok := itemRaw.(map[string]any)
-		if !ok || item == nil {
-			continue
+		if !ok {
+			return
 		}
-
 		for _, f := range fields {
-			if val, ok := item[f.key].(string); ok && strings.TrimSpace(val) != "" {
-				id := fmt.Sprintf("%s#item:%d/field:%s", base, idx, f.key)
-				seg, err := model.NewSegment(id, val, f.kind, map[string]any{"field": f.key}, nil)
-				if err == nil {
-					segments = append(segments, seg)
-				}
+			if val, ok := item[f.key].(string); ok {
+				c.add(fmt.Sprintf("item:%s/field:%s", key, f.key), fmt.Sprintf("/%s/%s", key, f.key), val, f.kind, map[string]any{"field": f.key})
 			}
 		}
-	}
-
-	return segments, nil
+	})
 }
 
-func (e *MVExtractor) injectGenericDB(base string, raw any, trMap map[string]string) {
-	list, ok := raw.([]any)
-	if !ok {
-		return
-	}
+// --- System.json ---
 
-	fields := []string{"name", "description", "message1", "message2", "message3", "message4"}
-	for idx, itemRaw := range list {
-		item, ok := itemRaw.(map[string]any)
-		if !ok || item == nil {
-			continue
-		}
+// Listas de System.json visíveis ao jogador. switches e variables ficam de fora:
+// são nomes internos do editor.
+var systemLists = []string{"elements", "skillTypes", "weaponTypes", "armorTypes", "equipTypes"}
 
-		for _, f := range fields {
-			id := fmt.Sprintf("%s#item:%d/field:%s", base, idx, f)
-			if target, found := trMap[id]; found {
-				item[f] = target
-			}
-		}
-	}
-}
-
-// --- System.json Extraction & Injection ---
-
-func (e *MVExtractor) extractSystem(base string, raw any) ([]*model.Segment, error) {
-	sys, ok := raw.(map[string]any)
-	if !ok {
-		return nil, nil
-	}
-
-	var segments []*model.Segment
-	if title, ok := sys["gameTitle"].(string); ok && strings.TrimSpace(title) != "" {
-		id := fmt.Sprintf("%s#gameTitle", base)
-		seg, err := model.NewSegment(id, title, model.KindMenu, nil, nil)
-		if err == nil {
-			segments = append(segments, seg)
-		}
-	}
-
-	if terms, ok := sys["terms"].(map[string]any); ok {
-		if messages, ok := terms["messages"].(map[string]any); ok {
-			for k, vRaw := range messages {
-				if msg, ok := vRaw.(string); ok && strings.TrimSpace(msg) != "" {
-					id := fmt.Sprintf("%s#terms/messages/%s", base, k)
-					seg, err := model.NewSegment(id, msg, model.KindMenu, nil, nil)
-					if err == nil {
-						segments = append(segments, seg)
-					}
-				}
-			}
-		}
-	}
-
-	return segments, nil
-}
-
-func (e *MVExtractor) injectSystem(base string, raw any, trMap map[string]string) {
+func (e *MVExtractor) extractSystem(c *collector, raw any) {
 	sys, ok := raw.(map[string]any)
 	if !ok {
 		return
 	}
 
-	if target, found := trMap[fmt.Sprintf("%s#gameTitle", base)]; found {
-		sys["gameTitle"] = target
+	for _, key := range []string{"gameTitle", "currencyUnit"} {
+		if val, ok := sys[key].(string); ok {
+			c.add(key, "/"+key, val, model.KindMenu, nil)
+		}
+	}
+	for _, key := range systemLists {
+		e.extractStringList(c, key, "/"+key, sys[key])
 	}
 
-	if terms, ok := sys["terms"].(map[string]any); ok {
-		if messages, ok := terms["messages"].(map[string]any); ok {
-			for k := range messages {
-				id := fmt.Sprintf("%s#terms/messages/%s", base, k)
-				if target, found := trMap[id]; found {
-					messages[k] = target
-				}
+	terms, ok := sys["terms"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, key := range []string{"basic", "commands", "params"} {
+		e.extractStringList(c, "terms/"+key, "/terms/"+key, terms[key])
+	}
+	if messages, ok := terms["messages"].(map[string]any); ok {
+		forEachEntry(messages, func(k string, vRaw any) {
+			if msg, ok := vRaw.(string); ok {
+				c.add("terms/messages/"+k, "/terms/messages/"+jsonedit.EscapePointer(k), msg, model.KindMenu, nil)
 			}
+		})
+	}
+}
+
+func (e *MVExtractor) extractStringList(c *collector, idPrefix, ptrPrefix string, listRaw any) {
+	list, ok := listRaw.([]any)
+	if !ok {
+		return
+	}
+	for i, vRaw := range list {
+		if val, ok := vRaw.(string); ok {
+			c.add(fmt.Sprintf("%s/%d", idPrefix, i), fmt.Sprintf("%s/%d", ptrPrefix, i), val, model.KindMenu, nil)
 		}
 	}
 }
