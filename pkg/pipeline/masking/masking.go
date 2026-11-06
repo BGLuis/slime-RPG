@@ -12,6 +12,14 @@ var (
 	ErrMaskIntegrity = errors.New("mask integrity check failed")
 )
 
+const placeholderPrefix = "__XTOK_"
+
+var (
+	placeholderRE = regexp.MustCompile(`__XTOK_[A-Za-z0-9]+__`)
+	// Tradutores costumam deformar o placeholder: "__xtok_0__", "__ XTOK_0 __", "__XTOK 0__".
+	mangledPlaceholderRE = regexp.MustCompile(`(?i)__\s*XTOK[_\s]+([a-z0-9]+)\s*__`)
+)
+
 // DefaultRPGPatterns retorna as expressões regulares padrão para proteção de tags e variáveis no RPG Maker.
 func DefaultRPGPatterns() []*regexp.Regexp {
 	return []*regexp.Regexp{
@@ -27,7 +35,6 @@ func DefaultRPGPatterns() []*regexp.Regexp {
 // Masker gerencia a proteção e desmascaramento de trechos protegidos (tokens) em textos.
 type Masker struct {
 	patterns []*regexp.Regexp
-	prefix   string
 }
 
 // NewMasker cria um novo mascarador com os padrões de regex especificados.
@@ -35,15 +42,13 @@ func NewMasker(patterns []*regexp.Regexp) *Masker {
 	if len(patterns) == 0 {
 		patterns = DefaultRPGPatterns()
 	}
-	return &Masker{
-		patterns: patterns,
-		prefix:   "__XTOK_",
-	}
+	return &Masker{patterns: patterns}
 }
 
 // Mask substitui todos os trechos do texto que correspondem aos padrões configurados
 // por placeholders determinísticos sequenciais (__XTOK_0__, __XTOK_1__, etc.).
-// Retorna a string mascarada e o mapa [placeholder] -> tokenOriginal.
+// Retorna a string mascarada e o mapa [placeholder] -> tokenOriginal, cujas chaves
+// são exatamente os placeholders presentes no texto mascarado.
 func (m *Masker) Mask(text string) (string, map[string]string) {
 	tokenMap := make(map[string]string)
 	if text == "" {
@@ -55,27 +60,32 @@ func (m *Masker) Mask(text string) (string, map[string]string) {
 
 	for _, pattern := range m.patterns {
 		result = pattern.ReplaceAllStringFunc(result, func(match string) string {
-			// Se o trecho já for exatamente um placeholder gerado nesta rodada, preserva
-			if strings.HasPrefix(match, m.prefix) && strings.HasSuffix(match, "__") {
-				if _, ok := tokenMap[match]; ok {
-					return match
-				}
+			if _, ok := tokenMap[match]; ok {
+				return match
 			}
 
-			// Gera placeholder único
+			// Um padrão posterior pode engolir placeholders já criados
+			// (ex.: <font color=\C[2]>): o trecho é restaurado e vira um único
+			// placeholder, para que nenhum valor do mapa contenha outro placeholder.
+			original := placeholderRE.ReplaceAllStringFunc(match, func(ph string) string {
+				inner, ok := tokenMap[ph]
+				if !ok {
+					return ph
+				}
+				delete(tokenMap, ph)
+				return inner
+			})
+
 			var ph string
 			for {
-				ph = fmt.Sprintf("%s%d__", m.prefix, counter)
+				ph = fmt.Sprintf("%s%d__", placeholderPrefix, counter)
 				counter++
-				// Garante que o placeholder não exista no texto original nem no mapa
-				if !strings.Contains(text, ph) {
-					if _, exists := tokenMap[ph]; !exists {
-						break
-					}
+				if _, exists := tokenMap[ph]; !exists && !strings.Contains(text, ph) {
+					break
 				}
 			}
 
-			tokenMap[ph] = match
+			tokenMap[ph] = original
 			return ph
 		})
 	}
@@ -83,32 +93,34 @@ func (m *Masker) Mask(text string) (string, map[string]string) {
 	return result, tokenMap
 }
 
-// Unmask restaura os placeholders substituindo-os pelos tokens originais e valida a integridade.
-// Retorna ErrMaskIntegrity se algum placeholder foi perdido, corrompido ou sobrou no texto traduzido.
+// Unmask restaura os placeholders do texto traduzido. Aceita placeholders com caixa
+// ou espaçamento alterados pelo tradutor, mas exige que cada placeholder do mapa
+// apareça exatamente uma vez e que não haja nenhum desconhecido; caso contrário
+// retorna ErrMaskIntegrity.
 func (m *Masker) Unmask(translatedText string, tokenMap map[string]string) (string, error) {
-	if len(tokenMap) == 0 {
-		// Se não havia tokens mapeados, mas o texto traduzido contém o prefixo de placeholder, houve vazamento
-		if strings.Contains(translatedText, m.prefix) {
-			return "", fmt.Errorf("%w: unexpected placeholder detected in output: %s", ErrMaskIntegrity, translatedText)
+	normalized := mangledPlaceholderRE.ReplaceAllStringFunc(translatedText, func(s string) string {
+		id := mangledPlaceholderRE.FindStringSubmatch(s)[1]
+		return placeholderPrefix + strings.ToUpper(id) + "__"
+	})
+
+	found := make(map[string]int)
+	for _, ph := range placeholderRE.FindAllString(normalized, -1) {
+		if _, known := tokenMap[ph]; !known {
+			return "", fmt.Errorf("%w: unexpected placeholder %s in translated text: %q", ErrMaskIntegrity, ph, translatedText)
 		}
-		return translatedText, nil
+		found[ph]++
 	}
-
-	result := translatedText
-
-	// Substitui cada placeholder mapeado pelo seu valor original
-	for ph, originalToken := range tokenMap {
-		if !strings.Contains(result, ph) {
-			// O tradutor removeu ou corrompeu o placeholder
+	for ph := range tokenMap {
+		switch found[ph] {
+		case 1:
+		case 0:
 			return "", fmt.Errorf("%w: placeholder %s missing in translated text: %q", ErrMaskIntegrity, ph, translatedText)
+		default:
+			return "", fmt.Errorf("%w: placeholder %s duplicated in translated text: %q", ErrMaskIntegrity, ph, translatedText)
 		}
-		result = strings.ReplaceAll(result, ph, originalToken)
 	}
 
-	// Verificação de segurança: nenhum resquício de placeholder pode sobrar
-	if strings.Contains(result, m.prefix) {
-		return "", fmt.Errorf("%w: residual placeholder detected after unmasking: %q", ErrMaskIntegrity, result)
-	}
-
-	return result, nil
+	return placeholderRE.ReplaceAllStringFunc(normalized, func(ph string) string {
+		return tokenMap[ph]
+	}), nil
 }
