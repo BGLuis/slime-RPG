@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -16,16 +17,14 @@ var (
 
 // Workspace gerencia a área de trabalho temporária e a escrita atômica dos arquivos traduzidos.
 type Workspace struct {
-	inputDir       string
-	processDir     string
-	outputDir      string
-	tempDir        string
-	isCustomOutput bool
+	inputDir   string
+	processDir string
+	outputDir  string
+	tempDir    string
 }
 
 // New inicializa uma nova área de trabalho isolada.
-// Se outputDir for vazio, o destino final será atribuído ao mesmo diretório temporário
-// ou pode ser especificado posteriormente no momento do commit.
+// Se outputDir for vazio, o destino final é a própria pasta de entrada (tradução in-place).
 func New(inputDir, outputDir string) (*Workspace, error) {
 	if inputDir == "" {
 		return nil, ErrEmptyInputDir
@@ -58,30 +57,26 @@ func New(inputDir, outputDir string) (*Workspace, error) {
 		return nil, fmt.Errorf("failed to create process directory: %w", err)
 	}
 
-	var absOutput string
-	isCustom := false
+	absOutput := absInput
 	if outputDir != "" {
 		absOutput, err = filepath.Abs(outputDir)
 		if err != nil {
 			_ = os.RemoveAll(tempDir)
 			return nil, fmt.Errorf("failed to resolve output path: %w", err)
 		}
-		isCustom = true
-	} else {
-		absOutput = filepath.Join(tempDir, "output")
-		if err := os.MkdirAll(absOutput, 0755); err != nil {
-			_ = os.RemoveAll(tempDir)
-			return nil, fmt.Errorf("failed to create output directory: %w", err)
-		}
 	}
 
 	return &Workspace{
-		inputDir:       absInput,
-		processDir:     processDir,
-		outputDir:      absOutput,
-		tempDir:        tempDir,
-		isCustomOutput: isCustom,
+		inputDir:   absInput,
+		processDir: processDir,
+		outputDir:  absOutput,
+		tempDir:    tempDir,
 	}, nil
+}
+
+// IsInPlace indica se o destino final é a própria pasta de entrada.
+func (w *Workspace) IsInPlace() bool {
+	return filepath.Clean(w.inputDir) == filepath.Clean(w.outputDir)
 }
 
 // InputDir retorna o caminho absoluto da pasta de origem.
@@ -153,18 +148,16 @@ func (w *Workspace) CreateBackup(backupDir string) error {
 	})
 }
 
-// Commit move atomicamente todos os arquivos gerados em processDir para outputDir.
-// Garante que, se a aplicação for interrompida no meio, nenhum arquivo de jogo fique corrompido.
-func (w *Workspace) Commit() error {
-	if err := os.MkdirAll(w.outputDir, 0755); err != nil {
-		return fmt.Errorf("failed to ensure output directory: %w", err)
-	}
-
-	return filepath.Walk(w.processDir, func(path string, info os.FileInfo, err error) error {
+// Commit grava atomicamente os arquivos de processDir em outputDir e devolve os
+// caminhos relativos gravados. Se a aplicação for interrompida no meio, nenhum
+// arquivo de jogo fica truncado: cada destino é substituído por rename.
+func (w *Workspace) Commit() ([]string, error) {
+	var committed []string
+	err := filepath.WalkDir(w.processDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
+		if d.IsDir() {
 			return nil
 		}
 
@@ -172,28 +165,65 @@ func (w *Workspace) Commit() error {
 		if err != nil {
 			return err
 		}
-
-		destFile := filepath.Join(w.outputDir, rel)
-		if err := os.MkdirAll(filepath.Dir(destFile), 0755); err != nil {
-			return fmt.Errorf("failed to create destination directory: %w", err)
+		if err := AtomicReplace(path, filepath.Join(w.outputDir, rel)); err != nil {
+			return fmt.Errorf("failed to commit file %s: %w", rel, err)
 		}
-
-		// Gravação atômica: cria um arquivo temporário no mesmo diretório de destino
-		// e renomeia atomicamente via os.Rename (mesmo filesystem)
-		tmpDest := fmt.Sprintf("%s.tmp.%d", destFile, os.Getpid())
-
-		if err := copyFile(path, tmpDest, info.Mode().Perm()); err != nil {
-			_ = os.Remove(tmpDest)
-			return fmt.Errorf("failed to stage file %s: %w", rel, err)
-		}
-
-		if err := os.Rename(tmpDest, destFile); err != nil {
-			_ = os.Remove(tmpDest)
-			return fmt.Errorf("failed to atomically commit file %s: %w", rel, err)
-		}
-
+		committed = append(committed, rel)
 		return nil
 	})
+	return committed, err
+}
+
+// AtomicReplace substitui dst pelo conteúdo de src gravando um arquivo temporário
+// no diretório de destino e renomeando-o, o que é atômico no mesmo filesystem.
+// Por nunca reescrever o inode de dst, também preserva backups feitos por hardlink.
+func AtomicReplace(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return fmt.Errorf("failed to create destination directory: %w", err)
+	}
+
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".tmp*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+
+	if err := copyFile(src, tmpPath, info.Mode().Perm()); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Chmod(tmpPath, info.Mode().Perm()); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+// CleanProcess esvazia a pasta de processamento mantendo-a existente.
+func (w *Workspace) CleanProcess() error {
+	entries, err := os.ReadDir(w.processDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(w.processDir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Cleanup remove o diretório temporário da área de trabalho e seus arquivos intermediários.
