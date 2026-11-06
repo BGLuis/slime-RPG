@@ -287,7 +287,6 @@ func (j *Job) ApplyCorrection(segmentID, newTarget string, locked bool) error {
 		entry := memory.Entry{
 			SrcLang:    j.cfg.SourceLang,
 			TgtLang:    j.cfg.TargetLang,
-			SourceHash: seg.SourceHash(),
 			SourceText: seg.Source(),
 			TargetText: newTarget,
 			Engine:     "manual",

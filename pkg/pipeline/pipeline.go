@@ -24,7 +24,7 @@ type Translator interface {
 
 // Memory define o contrato da Memória de Tradução consumida pelo pipeline.
 type Memory interface {
-	LookupBatch(ctx context.Context, srcLang, tgtLang, engine string, hashes []string) (map[string]string, error)
+	LookupBatch(ctx context.Context, srcLang, tgtLang, engine string, texts []string) (map[string]string, error)
 	StoreBatch(ctx context.Context, entries []memory.Entry) error
 }
 
@@ -122,19 +122,19 @@ func (s *CacheLookupStep) Execute(ctx context.Context, pctx *Context) error {
 		return nil
 	}
 
-	hashes := make([]string, len(pctx.Segments))
+	sources := make([]string, len(pctx.Segments))
 	for i, seg := range pctx.Segments {
-		hashes[i] = seg.SourceHash()
+		sources[i] = seg.Source()
 	}
 
-	cachedPairs, err := pctx.Memory.LookupBatch(ctx, pctx.SrcLang, pctx.TgtLang, pctx.Engine, hashes)
+	cachedPairs, err := pctx.Memory.LookupBatch(ctx, pctx.SrcLang, pctx.TgtLang, pctx.Engine, sources)
 	if err != nil {
 		return err
 	}
 
 	cachedCount := 0
 	for i, seg := range pctx.Segments {
-		if target, found := cachedPairs[seg.SourceHash()]; found && target != "" {
+		if target, found := cachedPairs[seg.Source()]; found && target != "" {
 			pctx.Segments[i] = seg.WithTarget(target)
 			cachedCount++
 		}
@@ -237,6 +237,8 @@ func (s *TranslationStep) Execute(ctx context.Context, pctx *Context) error {
 }
 
 // 5. UnmaskingStep: Restaura códigos de escape e valida a integridade da máscara.
+// Um segmento cujo tradutor perdeu, duplicou ou inventou placeholders volta ao texto
+// original (contado em Stats.Failed) em vez de derrubar o arquivo inteiro.
 type UnmaskingStep struct{}
 
 func (s *UnmaskingStep) Name() string { return "Unmasking" }
@@ -247,12 +249,17 @@ func (s *UnmaskingStep) Execute(ctx context.Context, pctx *Context) error {
 	}
 
 	for i, seg := range pctx.Segments {
-		tokenMap, hasTokens := pctx.TokenMaps[seg.ID()]
-		if !hasTokens || len(tokenMap) == 0 {
+		tokenMap, masked := pctx.TokenMaps[seg.ID()]
+		if !masked {
 			continue
 		}
 
 		unmasked, err := pctx.Masker.Unmask(seg.Target(), tokenMap)
+		if errors.Is(err, masking.ErrMaskIntegrity) {
+			pctx.Segments[i] = seg.WithTarget(seg.Source())
+			pctx.Stats.Failed++
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("segment %s failed unmasking: %w", seg.ID(), err)
 		}
@@ -262,7 +269,9 @@ func (s *UnmaskingStep) Execute(ctx context.Context, pctx *Context) error {
 	return nil
 }
 
-// 6. FixingStep: Corrige aspas tipográficas e sanitizações de sintaxe.
+// 6. FixingStep: Converte aspas tipográficas para ASCII em segmentos de script.
+// Só o texto reinserido em código JavaScript precisa disso; em diálogo as aspas
+// tipográficas são intencionais e devem ser preservadas (issue #37 da versão Python).
 type FixingStep struct{}
 
 func (s *FixingStep) Name() string { return "Fixing" }
@@ -280,7 +289,7 @@ func (s *FixingStep) Execute(ctx context.Context, pctx *Context) error {
 	)
 
 	for i, seg := range pctx.Segments {
-		if !seg.IsResolved() {
+		if !seg.IsResolved() || seg.Kind() != model.KindScript || seg.Target() == seg.Source() {
 			continue
 		}
 		fixed := replacer.Replace(seg.Target())
@@ -309,7 +318,6 @@ func (s *CacheStoreStep) Execute(ctx context.Context, pctx *Context) error {
 			newEntries = append(newEntries, memory.Entry{
 				SrcLang:    pctx.SrcLang,
 				TgtLang:    pctx.TgtLang,
-				SourceHash: seg.SourceHash(),
 				SourceText: seg.Source(),
 				TargetText: seg.Target(),
 				Engine:     pctx.Engine,

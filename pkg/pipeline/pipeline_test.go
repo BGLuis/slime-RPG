@@ -40,7 +40,6 @@ func TestPipeline_AllCached(t *testing.T) {
 	_ = mem.Store(ctx, memory.Entry{
 		SrcLang:    "en",
 		TgtLang:    "pt",
-		SourceHash: seg.SourceHash(),
 		SourceText: "Hello",
 		TargetText: "Olá",
 		Engine:     "google",
@@ -72,88 +71,113 @@ func TestPipeline_AllCached(t *testing.T) {
 	}
 }
 
-func TestPipeline_EndToEndWithMaskingAndFixing(t *testing.T) {
-	ctx := context.Background()
+func newMemory(t *testing.T) *memory.TranslationMemory {
+	t.Helper()
 	mem, err := memory.New(":memory:")
 	if err != nil {
 		t.Fatalf("falha ao inicializar TM: %v", err)
 	}
-	defer mem.Close()
+	t.Cleanup(func() { _ = mem.Close() })
+	return mem
+}
 
-	// Segmento com tags do RPG Maker e aspas tipográficas
-	seg, _ := model.NewSegment("msg:1", `Hero: “Look \N[1], \V[10] gold!”`, model.KindDialogue, nil, nil)
-
-	tr := &mockTranslator{
-		translateFn: func(texts []string, src, tgt string) ([]string, error) {
-			// Simula tradução que preserva os tokens __XTOK_0__ e __XTOK_1__,
-			// mas insere aspas tipográficas espanholas/inglesas
-			res := make([]string, len(texts))
-			for i, txt := range texts {
-				// Troca Hero por Herói e Look por Olhe, mantendo __XTOK_
-				translated := strings.Replace(txt, "Hero:", "Herói:", 1)
-				translated = strings.Replace(translated, "Look", "Olhe", 1)
-				translated = strings.Replace(translated, "gold!”", "ouro!”", 1)
-				res[i] = translated
-			}
-			return res, nil
-		},
+func newSegment(t *testing.T, id, source string, kind model.SegmentKind) *model.Segment {
+	t.Helper()
+	seg, err := model.NewSegment(id, source, kind, nil, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return seg
+}
+
+func TestPipeline_RestoresTokensAndCachesTranslation(t *testing.T) {
+	ctx := context.Background()
+	mem := newMemory(t)
+	seg := newSegment(t, "msg:1", `Hero: “Look \N[1], \V[10] gold!”`, model.KindDialogue)
+
+	tr := &mockTranslator{translateFn: func(texts []string, src, tgt string) ([]string, error) {
+		out := make([]string, len(texts))
+		for i, txt := range texts {
+			out[i] = strings.NewReplacer("Hero:", "Herói:", "Look", "Olhe", "gold", "ouro").Replace(txt)
+		}
+		return out, nil
+	}}
 
 	pctx := pipeline.NewContext([]*model.Segment{seg}, "en", "pt", "google", mem, tr)
-	pipe := pipeline.DefaultPipeline()
-
-	if err := pipe.Execute(ctx, pctx); err != nil {
+	if err := pipeline.DefaultPipeline().Execute(ctx, pctx); err != nil {
 		t.Fatalf("pipeline falhou: %v", err)
 	}
 
-	res := pctx.Segments[0]
-	if !res.IsResolved() {
-		t.Fatalf("segmento deveria estar resolvido")
+	want := `Herói: “Olhe \N[1], \V[10] ouro!”`
+	if got := pctx.Segments[0].Target(); got != want {
+		t.Errorf("obteve %q, esperava %q (tokens restaurados e aspas tipográficas preservadas no diálogo)", got, want)
 	}
-
-	// 1. Verifica se os tokens foram restaurados corretamente
-	if !strings.Contains(res.Target(), `\N[1]`) || !strings.Contains(res.Target(), `\V[10]`) {
-		t.Errorf("tokens não foram restaurados no resultado: %s", res.Target())
-	}
-	if strings.Contains(res.Target(), "__XTOK_") {
-		t.Errorf("placeholder vazou no resultado: %s", res.Target())
-	}
-
-	// 2. Verifica se a etapa de Fixing normalizou as aspas tipográficas para ASCII
-	if strings.Contains(res.Target(), "“") || strings.Contains(res.Target(), "”") {
-		t.Errorf("aspas tipográficas deveriam ter sido convertidas para ASCII: %s", res.Target())
-	}
-
-	// 3. Verifica se a tradução foi persistida na TranslationMemory
-	cachedTarget, found, err := mem.Lookup(ctx, "en", "pt", "google", seg.SourceHash())
-	if err != nil || !found {
-		t.Fatalf("nova tradução deveria estar salva na memória: %v", err)
-	}
-	if cachedTarget != res.Target() {
-		t.Errorf("alvo em cache diferente do resultado: %q != %q", cachedTarget, res.Target())
+	cached, found, err := mem.Lookup(ctx, "en", "pt", "google", seg.Source())
+	if err != nil || !found || cached != want {
+		t.Errorf("tradução deveria estar na memória: %q, %v, %v", cached, found, err)
 	}
 }
 
-func TestPipeline_MaskIntegrityError(t *testing.T) {
+func TestPipeline_FlattensTypographicQuotesOnlyInScripts(t *testing.T) {
+	dialogue := newSegment(t, "d", "say hi", model.KindDialogue)
+	script := newSegment(t, "s", "say hi", model.KindScript)
+	tr := &mockTranslator{translateFn: func(texts []string, src, tgt string) ([]string, error) {
+		return []string{"diga “oi” e ‘tchau’", "diga “oi” e ‘tchau’"}, nil
+	}}
+
+	pctx := pipeline.NewContext([]*model.Segment{dialogue, script}, "en", "pt", "google", nil, tr)
+	if err := pipeline.DefaultPipeline().Execute(context.Background(), pctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := pctx.Segments[0].Target(); got != "diga “oi” e ‘tchau’" {
+		t.Errorf("diálogo deve manter aspas tipográficas: %q", got)
+	}
+	if got := pctx.Segments[1].Target(); got != `diga "oi" e 'tchau'` {
+		t.Errorf("script reinserido em JS precisa de aspas ASCII: %q", got)
+	}
+}
+
+func TestPipeline_TokenLossFallsBackOnlyThatSegment(t *testing.T) {
 	ctx := context.Background()
+	mem := newMemory(t)
+	broken := newSegment(t, "s1", `Welcome \N[1]!`, model.KindDialogue)
+	healthy := newSegment(t, "s2", "Goodbye", model.KindDialogue)
 
-	seg, _ := model.NewSegment("s1", `Welcome \N[1]!`, model.KindDialogue, nil, nil)
+	tr := &mockTranslator{translateFn: func(texts []string, src, tgt string) ([]string, error) {
+		return []string{"Bem-vindo ao jogo!", "Adeus"}, nil
+	}}
 
-	// Tradutor defeituoso que elimina o placeholder
-	corruptTranslator := &mockTranslator{
-		translateFn: func(texts []string, src, tgt string) ([]string, error) {
-			return []string{"Bem-vindo ao jogo!"}, nil
-		},
+	pctx := pipeline.NewContext([]*model.Segment{broken, healthy}, "en", "pt", "google", mem, tr)
+	if err := pipeline.DefaultPipeline().Execute(ctx, pctx); err != nil {
+		t.Fatalf("perda de placeholder em um segmento não pode derrubar o arquivo: %v", err)
 	}
-
-	pctx := pipeline.NewContext([]*model.Segment{seg}, "en", "pt", "google", nil, corruptTranslator)
-	pipe := pipeline.DefaultPipeline()
-
-	err := pipe.Execute(ctx, pctx)
-	if err == nil {
-		t.Fatal("esperava erro de integridade de máscara por placeholder perdido")
+	if got := pctx.Segments[0].Target(); got != broken.Source() {
+		t.Errorf("segmento corrompido deve voltar ao original, obteve %q", got)
 	}
-	if !strings.Contains(err.Error(), "Unmasking") {
-		t.Errorf("erro deveria vir do passo Unmasking: %v", err)
+	if got := pctx.Segments[1].Target(); got != "Adeus" {
+		t.Errorf("segmento saudável deve ser traduzido, obteve %q", got)
+	}
+	if pctx.Stats.Failed != 1 {
+		t.Errorf("esperava 1 falha contabilizada, obteve %d", pctx.Stats.Failed)
+	}
+	if _, found, _ := mem.Lookup(ctx, "en", "pt", "google", broken.Source()); found {
+		t.Error("fallback para o original não pode ser gravado como tradução")
+	}
+}
+
+func TestPipeline_DoesNotCacheIdenticalFallbackFromProvider(t *testing.T) {
+	ctx := context.Background()
+	mem := newMemory(t)
+	seg := newSegment(t, "s1", "Untranslatable", model.KindDialogue)
+	tr := &mockTranslator{translateFn: func(texts []string, src, tgt string) ([]string, error) {
+		return texts, nil
+	}}
+
+	pctx := pipeline.NewContext([]*model.Segment{seg}, "en", "pt", "google", mem, tr)
+	if err := pipeline.DefaultPipeline().Execute(ctx, pctx); err != nil {
+		t.Fatal(err)
+	}
+	if count, _ := mem.Count(ctx); count != 0 {
+		t.Errorf("tradução idêntica ao original não deve ir para o cache, registros: %d", count)
 	}
 }
