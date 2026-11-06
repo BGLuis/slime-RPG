@@ -1,0 +1,77 @@
+version: '3'
+
+vars:
+  BINARY_NAME: slime
+  BIN_DIR: bin
+  MAIN_PKG: ./cmd/slime
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev"
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo "none"
+  DATE:
+    sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
+  LDFLAGS: -X main.version={{.VERSION}} -X main.commit={{.COMMIT}} -X main.date={{.DATE}}
+
+tasks:
+  default:
+    desc: Tarefa padrão (compila o binário)
+    cmds:
+      - task: build
+
+  build:
+    desc: Compila o binário para o sistema operacional atual
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -ldflags "{{.LDFLAGS}}" -o {{.BIN_DIR}}/{{.BINARY_NAME}} {{.MAIN_PKG}}
+
+  build:windows:
+    desc: Compila o binário para Windows (.exe) sem necessidade de CGO
+    env:
+      GOOS: windows
+      GOARCH: amd64
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -ldflags "{{.LDFLAGS}}" -o {{.BIN_DIR}}/{{.BINARY_NAME}}.exe {{.MAIN_PKG}}
+
+  build:all:
+    desc: Compila binários para Linux e Windows
+    deps:
+      - build
+      - build:windows
+
+  run:
+    desc: Compila e executa o Slime RPG CLI
+    cmds:
+      - task: build
+      - ./{{.BIN_DIR}}/{{.BINARY_NAME}} {{.CLI_ARGS}}
+
+  run:tui:
+    desc: Compila e executa o Slime RPG no modo TUI (Terminal User Interface)
+    cmds:
+      - task: build
+      - ./{{.BIN_DIR}}/{{.BINARY_NAME}} --tui
+
+  test:
+    desc: Executa a suíte de testes unitários
+    cmds:
+      - go test -v -race ./...
+
+  tidy:
+    desc: Atualiza e limpa as dependências do go.mod e go.sum
+    cmds:
+      - go mod tidy
+
+  fmt:
+    desc: Formata o código-fonte Go
+    cmds:
+      - go fmt ./...
+
+  vet:
+    desc: Executa análise estática padrão do Go
+    cmds:
+      - go vet ./...
+
+  clean:
+    desc: Remove binários compilados e artefatos temporários
+    cmds:
+      - rm -rf {{.BIN_DIR}}

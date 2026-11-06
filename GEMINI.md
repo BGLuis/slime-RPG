@@ -1,19 +1,23 @@
-# Diretrizes do Projeto: Extractor and Translation (GEMINI.md)
+# Diretrizes do Projeto: Slime RPG (Go Edition)
 
-Contexto específico deste repositório para agentes de IA. As regras gerais de trabalho ficam no `GEMINI.md` global; aqui entra só o que vale para este projeto.
+Contexto específico da branch de portabilidade para Go (`feat/go-port`). As regras gerais de trabalho ficam no `GEMINI.md` global; aqui entra o que vale para este projeto.
 
-## Visão Geral do Projeto
-Este projeto é uma ferramenta desenvolvida em Python para extrair, processar, mascarar variáveis (códigos protegidos) e traduzir textos (como jogos RPG Maker, CSVs, JSONs). 
-A arquitetura utiliza padrões de projeto para garantir escalabilidade:
-1. **Factory Method (`src/factory.py`)**: Fábrica que registra dinamicamente e constrói instâncias usando decorators (`@register_extractor`, `@register_translator`).
-2. **Observer (`src/extractor/BaseExtractor.py`)**: Para desacoplar as atualizações de progresso/logs da interface (GUI/CLI).
-3. **Pipeline/Chain of Responsibility (`src/pipeline.py`)**: Orquestra os passos de extração: Buscar Padrões -> Mascarar -> Traduzir -> Desmascarar -> Corrigir.
-4. **Strategy**: Uso de `BaseExtractor` e `BaseTranslate` para permitir plugar novos tradutores e extratores.
-5. **Thread Pool**: Concorrência assíncrona robusta para evitar rate-limits (no `BaseExtractor`).
+## Visão Geral da Arquitetura (Go)
+Este projeto é uma ferramenta modular desenvolvida em Go para extrair, mascarar variáveis (códigos protegidos), traduzir e reinjetar textos em jogos e formatos estruturados (RPG Maker, Wolf RPG, CSV, JSON).
+
+A arquitetura em Go adota:
+1. **Desktop UI (`egoist/mygo`)**: Framework em pure-Go (zero CGO) com suporte a webview nativa do SO e IPC fortemente tipado com TypeScript.
+2. **Terminal UI (`charmbracelet/bubbletea` + `bubbles` + `lipgloss`)**: TUI reativa baseada em arquitetura Elm e orientada a mensagens concorrentes assíncronas (`tea.Msg`).
+3. **Task Runner (`Taskfile.yml`)**: Automação padrão via `task` (compilação, execução, testes, formatação e cross-compile sem CGO).
+4. **Pipeline / Chain of Responsibility (`pkg/pipeline`)**: Orquestra os passos: Cache Lookup -> Get Patterns -> Mask -> Translate -> Unmask -> Fix -> Cache Store.
+5. **Translation Memory (`pkg/memory`)**: Persistência SQLite local em Go puro via `modernc.org/sqlite` com WAL mode e FTS5.
+6. **Concorrência com Goroutines e Channels**: Substituição dos pools de threads manuais do Python por canais e goroutines com controle de contexto (`context.Context`).
 
 ## Convenções do Projeto
-Snake case, nomenclatura de Factories (`@register_extractor`, `@register_translator`) e logging centralizado.
+- **Padrão Go**: Nomenclatura idiomática (`camelCase` / `PascalCase`), tratamento explícito de erros com `if err != nil`, pacotes focados em `pkg/` e executáveis em `cmd/`.
+- **Git & Commits**: Conventional Commits em inglês (ex: `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`).
+- **Sem CGO**: Manter o projeto compatível com compilação estática/cross-compilation pura sem dependência de toolchains C/C++.
+- **ai-memory**: Escopo do projeto configurado no `.ai-memory.toml` (`workspace = "rpg-tools"`, `project = "slime-rpg"`).
 
 ## Orçamento de Tokens
-Respeite limites. Se a sessão começar a ficar cheia de ruídos, resuma o contexto e seja claro.
-Se o limite orçamentário for rompido, avise. Não esconda gargalos.
+Respeite os limites de contexto. Se a sessão acumular ruídos, resuma o contexto e seja objetivo.

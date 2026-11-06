@@ -153,3 +153,13 @@ proxies.txt
 
 # Worktrees
 .worktrees/
+
+# Go build outputs
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
