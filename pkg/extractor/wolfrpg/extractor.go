@@ -44,16 +44,17 @@ func (e *Extractor) Extract(filePath string, data []byte, srcLang string) ([]*mo
 		for _, ev := range m.Events {
 			for _, page := range ev.Pages {
 				for cmdIdx, cmd := range page.Commands {
-					if !isTranslatableCommand(cmd.CID) {
-						continue
-					}
-					for sIdx, str := range cmd.StringArgs {
+					for _, sIdx := range translatableArgs(cmd) {
+						str := cmd.StringArgs[sIdx]
 						if !IsTranslatable(str) {
 							continue
 						}
 						kind := model.KindDialogue
-						if cmd.CID == CodeShowChoices {
+						switch cmd.CID {
+						case CodeShowChoices:
 							kind = model.KindChoice
+						case CodePicture:
+							kind = model.KindMenu
 						}
 
 						id := fmt.Sprintf("%s#ev:%d/p:%d/cmd:%d/str:%d", base, ev.ID, page.ID, cmdIdx, sIdx)
@@ -103,16 +104,11 @@ func (e *Extractor) Inject(filePath string, originalData []byte, segments []*mod
 		for _, ev := range m.Events {
 			for _, page := range ev.Pages {
 				for cmdIdx, cmd := range page.Commands {
-					if !isTranslatableCommand(cmd.CID) {
-						continue
-					}
-					for sIdx, str := range cmd.StringArgs {
+					for _, sIdx := range translatableArgs(cmd) {
 						id := fmt.Sprintf("%s#ev:%d/p:%d/cmd:%d/str:%d", base, ev.ID, page.ID, cmdIdx, sIdx)
 						if target, found := trMap[id]; found {
 							cmd.StringArgs[sIdx] = target
 							changedAny = true
-						} else {
-							_ = str
 						}
 					}
 				}
@@ -129,11 +125,34 @@ func (e *Extractor) Inject(filePath string, originalData []byte, segments []*mod
 	return originalData, nil
 }
 
-func isTranslatableCommand(cid WolfEventCode) bool {
-	switch cid {
-	case CodeShowMessage, CodeShowChoices, CodeStringCondition, CodeSetString, CodePicture:
-		return true
-	default:
-		return false
+// translatableArgs devolve os índices de StringArgs que podem conter texto do
+// jogador, com as mesmas regras da versão Python. Condições por texto (112) ficam
+// de fora: traduzir o valor comparado quebraria a lógica do evento.
+func translatableArgs(cmd *WolfCommand) []int {
+	n := len(cmd.StringArgs)
+	if n == 0 {
+		return nil
 	}
+	all := func(from int) []int {
+		var idx []int
+		for i := from; i < n; i++ {
+			idx = append(idx, i)
+		}
+		return idx
+	}
+	switch cmd.CID {
+	case CodeShowMessage, CodeSetString:
+		return []int{0}
+	case CodeShowChoices, CodeCallCommonEvent:
+		return all(0)
+	case CodeCallCommonByName:
+		// O primeiro argumento é o nome do evento comum chamado.
+		return all(1)
+	case CodePicture:
+		// Só o modo "texto" (tipo 2) exibe string; nos outros o argumento é um arquivo.
+		if len(cmd.Args) > 0 && (cmd.Args[0]>>4)&0x07 == 2 {
+			return []int{0}
+		}
+	}
+	return nil
 }

@@ -221,3 +221,78 @@ func TestWolfFileCoder_ShiftJIS(t *testing.T) {
 		t.Errorf("ShiftJIS decode mismatch: got %q, want %q", readText, japaneseText)
 	}
 }
+
+func mapWithCommands(cmds ...*WolfCommand) []byte {
+	m := &WolfMap{EncodingType: 85, IsUTF8: true, Version: 1, Width: 1, Height: 1, NoTiles: true,
+		Events: []*WolfMapEvent{{ID: 1, Name: "EV", Pages: []*WolfMapPage{{ID: 0, Commands: cmds}}}}}
+	raw, err := m.Save()
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+func extractedSources(t *testing.T, raw []byte) []string {
+	t.Helper()
+	segs, err := NewExtractor().Extract("Map001.mps", raw, "ja")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, s := range segs {
+		out = append(out, s.Source())
+	}
+	return out
+}
+
+func TestMapCommandsFollowPythonTranslationRules(t *testing.T) {
+	raw := mapWithCommands(
+		&WolfCommand{CID: CodeStringCondition, Args: []uint32{0}, StringArgs: []string{"Yes please"}},
+		&WolfCommand{CID: CodeComment, Args: []uint32{0}, StringArgs: []string{"Developer note here"}},
+		&WolfCommand{CID: CodePicture, Args: []uint32{0x00}, StringArgs: []string{"Some picture name"}},
+		&WolfCommand{CID: CodePicture, Args: []uint32{0x20}, StringArgs: []string{"Rendered text"}},
+		&WolfCommand{CID: CodeSetString, Args: []uint32{0}, StringArgs: []string{"Assigned text", "Second arg text"}},
+		&WolfCommand{CID: CodeCallCommonByName, Args: []uint32{0}, StringArgs: []string{"歩行グラフィック：向き変更", "Check it"}},
+		&WolfCommand{CID: CodeCallCommonEvent, Args: []uint32{0}, StringArgs: []string{"Param text"}},
+	)
+	got := extractedSources(t, raw)
+	want := []string{"Rendered text", "Assigned text", "Check it", "Param text"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("extraiu %q, esperava %q", got, want)
+	}
+}
+
+func TestCallByNameNeverRewritesTheEventName(t *testing.T) {
+	raw := mapWithCommands(&WolfCommand{CID: CodeCallCommonByName, Args: []uint32{0}, StringArgs: []string{"歩行グラフィック：向き変更", "Check it"}})
+	ext := NewExtractor()
+	segs, _ := ext.Extract("Map001.mps", raw, "ja")
+	var resolved []*model.Segment
+	for _, s := range segs {
+		resolved = append(resolved, s.WithTarget("Verifique"))
+	}
+	out, err := ext.Inject("Map001.mps", raw, resolved, "pt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadWolfMap(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := m.Events[0].Pages[0].Commands[0].StringArgs
+	if args[0] != "歩行グラフィック：向き変更" || args[1] != "Verifique" {
+		t.Errorf("argumentos após injeção: %q", args)
+	}
+}
+
+func TestWolfFiltersFromPythonSuite(t *testing.T) {
+	for _, w := range []string{"Attack", "Potion", "Yes", "No", "Wait.", `\c[2]Hello\c[0]`} {
+		if !IsTranslatable(w) {
+			t.Errorf("%q deveria ser traduzível", w)
+		}
+	}
+	for _, w := range []string{"true", "false", "null", "se_attack_01", "bgm/battle.ogg", `\s[1]`, "SystemFile/[SE]Cancel.ogg\r\n80\r\n100"} {
+		if IsTranslatable(w) {
+			t.Errorf("%q não deveria ser traduzível", w)
+		}
+	}
+}
