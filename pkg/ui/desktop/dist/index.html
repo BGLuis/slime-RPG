@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Slime RPG</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Header / Stepper Superior -->
+    <header class="app-header">
+      <div class="brand">
+        <span class="slime-logo">Slime</span>
+      </div>
+      <nav class="stepper-nav" id="stepperNav">
+        <div class="step-item active" data-step="1">
+          <span class="step-dot">●</span>
+          <span class="step-label">1 Jogo</span>
+        </div>
+        <span class="step-sep">›</span>
+        <div class="step-item" data-step="2">
+          <span class="step-dot">●</span>
+          <span class="step-label">2 Configurar</span>
+        </div>
+        <span class="step-sep">›</span>
+        <div class="step-item" data-step="3">
+          <span class="step-dot">●</span>
+          <span class="step-label">3 Tradução</span>
+        </div>
+        <span class="step-sep">›</span>
+        <div class="step-item" data-step="4">
+          <span class="step-dot">●</span>
+          <span class="step-label">4 Resultado</span>
+        </div>
+      </nav>
+      <div class="window-controls">
+        <span class="app-version">v0.1.0</span>
+      </div>
+    </header>
+
+    <!-- Conteúdo Principal Dinâmico -->
+    <main class="app-content">
+      <!-- TELA 1: ABRIR JOGO -->
+      <section id="viewStep1" class="view-panel active">
+        <div class="view-intro">
+          <h2>Qual jogo vamos traduzir?</h2>
+          <p class="subtitle">O Slime procurou na pasta atual, no clipboard e nos jogos recentes.</p>
+        </div>
+
+        <div class="drop-zone" id="dropZone">
+          <div class="drop-card" id="detectedCard">
+            <div class="drop-icon">🎮</div>
+            <div class="drop-info">
+              <div class="drop-title" id="detectedTitle">› Jogo detectado aqui</div>
+              <div class="drop-details">
+                <span class="badge" id="detectedEngine">RPG Maker MZ</span>
+                <span class="badge-subtle" id="detectedPath">www/data</span>
+                <span class="badge-subtle" id="detectedLang">Japonês provável</span>
+              </div>
+            </div>
+            <button class="btn btn-primary" id="btnChooseDetected">Usar este jogo ›</button>
+          </div>
+          <div class="drop-alt">
+            <button class="btn btn-secondary" id="btnBrowseFolder">Navegar nas pastas…</button>
+            <span class="muted-text">ou arraste a pasta do jogo para cá</span>
+          </div>
+        </div>
+
+        <div class="recent-section">
+          <h3>JOGOS RECENTES</h3>
+          <div class="table-container">
+            <table class="data-table">
+              <tbody>
+                <tr class="clickable-row">
+                  <td><strong>Aventura do Slime</strong></td>
+                  <td class="muted-text">~/Jogos/Aventura do Slime</td>
+                  <td><span class="badge">RPG Maker MZ</span></td>
+                  <td class="muted-text">ja → pt · há 2 dias</td>
+                </tr>
+                <tr class="clickable-row">
+                  <td><strong>Torre de Cristal</strong></td>
+                  <td class="muted-text">~/Jogos/torre-cristal</td>
+                  <td><span class="badge">WOLF RPG</span></td>
+                  <td class="muted-text">ja → pt · 3 parciais</td>
+                </tr>
+                <tr class="clickable-row">
+                  <td><strong>Planilha de diálogos</strong></td>
+                  <td class="muted-text">~/Projetos/mod/dialogos.csv</td>
+                  <td><span class="badge">CSV</span></td>
+                  <td class="muted-text">en → pt · nunca</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="hint-text">Dica: <code>slime translate -i &lt;pasta&gt;</code> faz o mesmo sem perguntas no terminal.</div>
+        </div>
+      </section>
+
+      <!-- TELA 2: CONFIGURAR & ESTIMATIVA -->
+      <section id="viewStep2" class="view-panel">
+        <div class="config-layout">
+          <!-- Coluna Esquerda: Opções -->
+          <div class="config-col card">
+            <h3 id="configGameTitle">Configurar · Aventura do Slime</h3>
+            <p class="subtitle" id="configGameSubtitle">RPG Maker MZ · www/data · 142 arquivos</p>
+
+            <div class="form-group">
+              <label>Serviço de Tradução</label>
+              <div class="segmented-control" id="providerPicker">
+                <button class="segment-btn active" data-provider="google">Google Translate</button>
+                <button class="segment-btn" data-provider="deepl">DeepL</button>
+                <button class="segment-btn" data-provider="ollama">Ollama</button>
+              </div>
+              <span class="field-hint" id="providerHint">Grátis e sem chave de API; pode limitar requisições em grandes lotes.</span>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label>Idioma de Origem</label>
+                <select id="sourceLang" class="form-select">
+                  <option value="ja" selected>Japonês (detectado)</option>
+                  <option value="en">Inglês</option>
+                  <option value="auto">Detectar automaticamente</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Idioma de Destino</label>
+                <select id="targetLang" class="form-select">
+                  <option value="pt" selected>Português (Brasil)</option>
+                  <option value="es">Espanhol</option>
+                  <option value="en">Inglês</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="checkIncremental" checked>
+                <span>Só o que mudou <span class="muted-text">(12 de 142 arquivos)</span></span>
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" id="checkProxies">
+                <span>Usar rotação de proxies se o Google limitar conexões</span>
+              </label>
+            </div>
+
+            <details class="advanced-details">
+              <summary>▸ Opções Avançadas</summary>
+              <div class="advanced-body">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="checkBackup" checked>
+                  <span>Criar backup local antes de alterar arquivos</span>
+                </label>
+                <div class="form-group" style="margin-top: 8px;">
+                  <label>Pasta de Saída (opcional)</label>
+                  <input type="text" id="customOutputDir" class="form-input" placeholder="Padrão: na própria pasta do jogo">
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Coluna Direita: Estimativa Pré-Voo -->
+          <div class="estimate-col card">
+            <h3>Estimativa Pré-Voo</h3>
+            <div class="estimate-highlight">
+              <span class="estimate-big-num" id="estToTranslate">230</span>
+              <span class="estimate-big-label">textos para traduzir</span>
+            </div>
+
+            <div class="progress-box">
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="estCacheProgress" style="width: 80%;"></div>
+              </div>
+              <div class="progress-meta" id="estCacheLabel">950 de 1.180 já na memória (80%)</div>
+            </div>
+
+            <div class="stat-grid">
+              <div class="stat-item">
+                <span class="stat-label">Arquivos</span>
+                <span class="stat-value" id="estFiles">12 de 142</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Tempo aprox.</span>
+                <span class="stat-value" id="estTime">menos de 1 min</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Custo</span>
+                <span class="stat-value" id="estCost">grátis</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Backup</span>
+                <span class="stat-value" id="estBackup">…/Aventura do Slime-ja</span>
+              </div>
+            </div>
+
+            <div class="warning-callout">
+              <span class="callout-icon">▲</span>
+              <span>O tempo é uma estimativa: provedores gratuitos podem acionar rate limit temporário.</span>
+            </div>
+
+            <button class="btn btn-primary btn-cta" id="btnStartTranslate">
+              ▶ Traduzir textos
+            </button>
+            <div class="btn-subtext">ctrl+enter ou clique para iniciar</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TELA 3: TRADUÇÃO EM ANDAMENTO -->
+      <section id="viewStep3" class="view-panel">
+        <div class="running-header card">
+          <div class="running-title-row">
+            <div>
+              <h2 id="runningTitle">Traduzindo Aventura do Slime</h2>
+              <span class="subtitle" id="runningSubtitle">Google Translate · ja → pt · incremental</span>
+            </div>
+            <div class="phase-stepper">
+              <span class="phase-pill done">✓ Varredura</span>
+              <span class="phase-sep">─</span>
+              <span class="phase-pill active">● Tradução</span>
+              <span class="phase-sep">─</span>
+              <span class="phase-pill">3 Salvar</span>
+            </div>
+          </div>
+
+          <div class="progress-container">
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill" id="runProgressBar" style="width: 86%;"></div>
+            </div>
+            <div class="progress-meta-row">
+              <span id="runProgressText">1.020 de 1.180 segmentos · 950 da memória · 70 traduzidos</span>
+              <span id="runProgressPercent" class="percent-bold">86%</span>
+            </div>
+          </div>
+
+          <div class="alert-banner warning" id="rateLimitBanner">
+            <span class="alert-icon">▲</span>
+            <span class="alert-text">O Google limitou as requisições (HTTP 429). Retomando automaticamente em 30 s.</span>
+          </div>
+
+          <div class="counters-strip">
+            <div class="counter-chip"><span class="dot success"></span> <span id="cntSuccess">5</span> concluídos</div>
+            <div class="counter-chip"><span class="dot info"></span> <span id="cntCache">3</span> cache</div>
+            <div class="counter-chip"><span class="dot warning"></span> <span id="cntProcessing">2</span> processando</div>
+            <div class="counter-chip"><span class="dot muted"></span> <span id="cntQueue">1</span> na fila</div>
+            <div class="counter-chip"><span class="dot error"></span> <span id="cntErrors">0</span> erros</div>
+          </div>
+
+          <div class="running-actions">
+            <button class="btn btn-secondary" id="btnPauseResume">Pausar</button>
+            <button class="btn btn-secondary" id="btnCancelJob">Cancelar</button>
+            <button class="btn btn-primary" id="btnOpenReview">Revisar Traduções (Opcional)</button>
+          </div>
+        </div>
+
+        <div class="files-card card">
+          <h3>Arquivos em Processamento</h3>
+          <div class="table-container">
+            <table class="data-table" id="filesTable">
+              <thead>
+                <tr>
+                  <th>ARQUIVO</th>
+                  <th>STATUS</th>
+                  <th>MENSAGEM</th>
+                  <th>PROGRESSO</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>www/data/Map014.json</code></td>
+                  <td><span class="tag tag-processing">● processando</span></td>
+                  <td>esperando liberar (429)</td>
+                  <td>31 / 48</td>
+                </tr>
+                <tr>
+                  <td><code>www/data/CommonEvents.json</code></td>
+                  <td><span class="tag tag-processing">● processando</span></td>
+                  <td>212 de 340 segmentos</td>
+                  <td>212 / 340</td>
+                </tr>
+                <tr>
+                  <td><code>www/data/Map020.json</code></td>
+                  <td><span class="tag tag-queue">● na fila</span></td>
+                  <td>na fila</td>
+                  <td>0 / 22</td>
+                </tr>
+                <tr>
+                  <td><code>www/data/Map003.json</code></td>
+                  <td><span class="tag tag-warning">● parcial</span></td>
+                  <td>2 falas com problema</td>
+                  <td>55 / 57</td>
+                </tr>
+                <tr>
+                  <td><code>www/data/Items.json</code></td>
+                  <td><span class="tag tag-success">● concluído</span></td>
+                  <td>380 vieram da memória</td>
+                  <td>410 / 410</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- TELA 3.5: REVISÃO DE SEGMENTOS -->
+      <section id="viewStepReview" class="view-panel">
+        <div class="review-header card">
+          <div class="review-title-row">
+            <div>
+              <h2>Revisar traduções</h2>
+              <span class="subtitle">Opcional · Nada vai para o jogo até você concluir.</span>
+            </div>
+            <button class="btn btn-primary" id="btnFinishReview">Concluir Revisão e Salvar ›</button>
+          </div>
+
+          <div class="filter-strip">
+            <div class="chips-group" id="reviewFilterChips">
+              <button class="chip-btn active" data-filter="all">Todos 1.180</button>
+              <button class="chip-btn" data-filter="issues">Com problema 3</button>
+              <button class="chip-btn" data-filter="partial">Parciais 2</button>
+              <button class="chip-btn" data-filter="edited">Editados 1</button>
+              <button class="chip-btn" data-filter="locked">Bloqueados 4</button>
+              <button class="chip-btn" data-filter="memory">Da memória 950</button>
+            </div>
+            <input type="text" class="search-input" id="reviewSearch" placeholder="/ buscar por texto ou arquivo…">
+          </div>
+        </div>
+
+        <div class="review-master-detail">
+          <!-- Coluna Esquerda: Lista de Segmentos -->
+          <div class="master-list card">
+            <div class="segment-item active" data-id="seg1">
+              <div class="segment-meta">
+                <span class="tag tag-error">● erro</span>
+                <span class="segment-coord">Map003 · ev 3 · cmd 12</span>
+              </div>
+              <div class="segment-code-tokens">\N[1]  \V[12]</div>
+              <div class="segment-preview">\N[1] conseguiu 12 moedas de ouro!</div>
+            </div>
+
+            <div class="segment-item" data-id="seg2">
+              <div class="segment-meta">
+                <span class="tag tag-warning">● parcial</span>
+                <span class="segment-coord">Map003 · ev 7 · cmd 4</span>
+              </div>
+              <div class="segment-code-tokens">\C[2]伝説の剣\C[0]</div>
+              <div class="segment-preview muted-text">— sem tradução —</div>
+            </div>
+
+            <div class="segment-item" data-id="seg3">
+              <div class="segment-meta">
+                <span class="tag tag-warning">● parcial</span>
+                <span class="segment-coord">Map014 · ev 1 · cmd 9</span>
+              </div>
+              <div class="segment-code-tokens">\V[3]</div>
+              <div class="segment-preview muted-text">— sem tradução (rate limit) —</div>
+            </div>
+          </div>
+
+          <!-- Coluna Direita: Detalhe do Segmento -->
+          <div class="detail-panel card">
+            <div class="detail-header">
+              <span class="detail-title">Map003.json#event:3/page:0/cmd:12</span>
+              <span class="badge">Diálogo · herói \N[1]</span>
+            </div>
+
+            <div class="detail-field">
+              <label>Texto de Origem (Japonês)</label>
+              <div class="source-box" id="reviewDetailSource">
+                \N[1]は\V[12]ゴールドを手に入れた！
+              </div>
+            </div>
+
+            <div class="detail-field">
+              <label>Códigos Protegidos Detectados</label>
+              <div class="tokens-row">
+                <span class="token-pill valid">\N[1] ✓</span>
+                <span class="token-pill invalid">\V[12] ✗ ausente na tradução</span>
+              </div>
+            </div>
+
+            <div class="detail-field">
+              <label>Tradução Atual</label>
+              <textarea id="reviewDetailTarget" class="translation-editor" rows="3">\N[1] conseguiu 12 moedas de ouro!</textarea>
+              <div class="field-hint error-hint">O provedor traduziu a variável \V[12] para o número literal "12". Restaure o código.</div>
+            </div>
+
+            <div class="detail-field suggestion-box">
+              <div class="sugg-header">
+                <span>Da memória de tradução · Map001</span>
+                <button class="btn btn-secondary btn-sm" id="btnApplySuggestion">Usar sugestão</button>
+              </div>
+              <div class="sugg-text">\N[1] recebeu \V[12] moedas de ouro!</div>
+            </div>
+
+            <div class="detail-footer">
+              <label class="checkbox-label">
+                <input type="checkbox" id="checkLockSegment">
+                <span>Bloquear este segmento para nunca ser sobrescrito por máquina</span>
+              </label>
+              <button class="btn btn-primary" id="btnSaveSegment">Salvar Alteração</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TELA 4: RESULTADO -->
+      <section id="viewStep4" class="view-panel">
+        <div class="result-card card">
+          <div class="result-hero">
+            <div class="result-check">✓</div>
+            <h2>Jogo traduzido com sucesso</h2>
+            <p class="subtitle" id="resultSubtitle">
+              Aventura do Slime está em português. 11 dos 12 arquivos alterados ficaram completos.
+            </p>
+          </div>
+
+          <div class="counters-strip">
+            <div class="counter-chip"><span class="dot success"></span> 11 completos</div>
+            <div class="counter-chip"><span class="dot warning"></span> 1 parcial</div>
+            <div class="counter-chip"><span class="dot success"></span> 228 novos na memória</div>
+            <div class="counter-chip"><span class="dot info"></span> 1 editado manualmente</div>
+          </div>
+
+          <div class="alert-banner warning">
+            <span class="alert-icon">▲</span>
+            <span>Map003.json ficou com 1 fala parcial: o jogo executará mostrando o texto de origem com segurança.</span>
+          </div>
+
+          <div class="result-paths-box">
+            <h3>Onde ficou cada coisa</h3>
+            <table class="paths-table">
+              <tbody>
+                <tr>
+                  <td><strong>Jogo traduzido</strong></td>
+                  <td class="path-val" id="resGamePath">~/Jogos/Aventura do Slime</td>
+                  <td><button class="btn btn-secondary btn-sm" onclick="app.openFolder('game')">Abrir Pasta</button></td>
+                </tr>
+                <tr>
+                  <td><strong>Backup original</strong></td>
+                  <td class="path-val" id="resBackupPath">~/Jogos/Aventura do Slime-ja</td>
+                  <td><button class="btn btn-secondary btn-sm" onclick="app.openFolder('backup')">Abrir Backup</button></td>
+                </tr>
+                <tr>
+                  <td><strong>Registro de integridade</strong></td>
+                  <td class="path-val" id="resMetaPath">.slime/meta.json</td>
+                  <td><span class="muted-text">gerado</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="cli-command-box">
+            <span class="cli-label">Comando equivalente para automação via terminal:</span>
+            <code>slime translate -i ~/Jogos/Aventura-do-Slime --service google --from ja --to pt --incremental</code>
+          </div>
+
+          <div class="result-actions">
+            <button class="btn btn-secondary" id="btnNewGame">Traduzir Outro Jogo</button>
+            <button class="btn btn-secondary" id="btnVerifyIntegrity">Verificar Integridade</button>
+            <button class="btn btn-primary" id="btnOpenGameFolder">Abrir Pasta do Jogo</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Rodapé Fixo com Atalhos Globais -->
+    <footer class="app-footer">
+      <div class="footer-shortcuts" id="footerShortcuts">
+        <span><kbd>↑↓</kbd> mover</span>
+        <span><kbd>enter</kbd> escolher</span>
+        <span><kbd>ctrl+enter</kbd> traduzir</span>
+        <span><kbd>esc</kbd> voltar</span>
+      </div>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

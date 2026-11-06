@@ -47,6 +47,31 @@ func TestEventBus_PublishSubscribe(t *testing.T) {
 	}
 }
 
+func TestEventBus_TypedEvents(t *testing.T) {
+	bus := event.NewBus()
+	defer bus.Close()
+
+	ch := bus.SubscribeEvents(10)
+
+	bus.PublishEvent(event.EventPhaseChanged, event.PhaseChangedEvent{
+		Phase:   event.PhaseTranslating,
+		Message: "Starting translation batch",
+	})
+
+	select {
+	case env := <-ch:
+		if env.Type != event.EventPhaseChanged {
+			t.Fatalf("expected EventPhaseChanged, got %v", env.Type)
+		}
+		p, ok := env.Data.(event.PhaseChangedEvent)
+		if !ok || p.Phase != event.PhaseTranslating {
+			t.Fatalf("unexpected event data: %+v", env.Data)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timeout waiting for typed event")
+	}
+}
+
 func TestEventBus_Unsubscribe(t *testing.T) {
 	bus := event.NewBus()
 	ch := bus.Subscribe(5)
