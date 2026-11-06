@@ -2,6 +2,8 @@ package masking_test
 
 import (
 	"errors"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -113,5 +115,25 @@ func TestMaskAvoidsPlaceholderAlreadyInSource(t *testing.T) {
 	masked, tokens := m.Mask(`literal __XTOK_0__ and \N[1]`)
 	if _, clash := tokens["__XTOK_0__"]; clash {
 		t.Errorf("placeholder gerado colide com texto literal: %q %v", masked, tokens)
+	}
+}
+
+func TestNotPrecededByEmulatesLookbehind(t *testing.T) {
+	m := masking.NotPrecededBy(regexp.MustCompile(`!?(?:[vVsS]|ss|sv)\[\s*\d+\s*\]`), "!", masking.IsWordOrBackslash)
+	cases := map[string][]string{
+		"Você tem v[1] moedas":   {"v[1]"},
+		"!s[2] ativo":            {"!s[2]"},
+		`\v[3] já é código`:      nil,
+		"prev[4] não é variável": nil,
+		"x!v[5]":                 {"!v[5]"},
+	}
+	for text, want := range cases {
+		var got []string
+		for _, loc := range m.FindAllStringIndex(text, -1) {
+			got = append(got, text[loc[0]:loc[1]])
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%q: got %q, want %q", text, got, want)
+		}
 	}
 }

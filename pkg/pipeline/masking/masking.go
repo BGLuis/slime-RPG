@@ -32,9 +32,15 @@ func DefaultRPGPatterns() []*regexp.Regexp {
 	}
 }
 
+// Matcher localiza trechos protegidos num texto. *regexp.Regexp já o satisfaz;
+// os demais cobrem o que o RE2 não expressa (lookbehind, parênteses balanceados).
+type Matcher interface {
+	FindAllStringIndex(s string, n int) [][]int
+}
+
 // Masker gerencia a proteção e desmascaramento de trechos protegidos (tokens) em textos.
 type Masker struct {
-	patterns []*regexp.Regexp
+	patterns []Matcher
 }
 
 // NewMasker cria um novo mascarador com os padrões de regex especificados.
@@ -42,7 +48,19 @@ func NewMasker(patterns []*regexp.Regexp) *Masker {
 	if len(patterns) == 0 {
 		patterns = DefaultRPGPatterns()
 	}
-	return &Masker{patterns: patterns}
+	matchers := make([]Matcher, len(patterns))
+	for i, p := range patterns {
+		matchers[i] = p
+	}
+	return &Masker{patterns: matchers}
+}
+
+// NewMaskerWith cria um mascarador a partir de matchers arbitrários.
+func NewMaskerWith(matchers ...Matcher) *Masker {
+	if len(matchers) == 0 {
+		return NewMasker(nil)
+	}
+	return &Masker{patterns: matchers}
 }
 
 // Mask substitui todos os trechos do texto que correspondem aos padrões configurados
@@ -59,7 +77,7 @@ func (m *Masker) Mask(text string) (string, map[string]string) {
 	result := text
 
 	for _, pattern := range m.patterns {
-		result = pattern.ReplaceAllStringFunc(result, func(match string) string {
+		result = replaceAll(pattern, result, func(match string) string {
 			if _, ok := tokenMap[match]; ok {
 				return match
 			}
@@ -91,6 +109,25 @@ func (m *Masker) Mask(text string) (string, map[string]string) {
 	}
 
 	return result, tokenMap
+}
+
+func replaceAll(m Matcher, s string, repl func(string) string) string {
+	locs := m.FindAllStringIndex(s, -1)
+	if len(locs) == 0 {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, loc := range locs {
+		if loc[0] < last || loc[1] <= loc[0] {
+			continue
+		}
+		b.WriteString(s[last:loc[0]])
+		b.WriteString(repl(s[loc[0]:loc[1]]))
+		last = loc[1]
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }
 
 // Unmask restaura os placeholders do texto traduzido. Aceita placeholders com caixa
