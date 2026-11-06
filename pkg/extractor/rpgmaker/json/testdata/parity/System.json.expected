@@ -1,0 +1,68 @@
+{
+ "sources": [
+  "%1には効かなかった！",
+  "G",
+  "Lv",
+  "レベル",
+  "剣",
+  "勇者の旅",
+  "常時ダッシュ",
+  "戦う",
+  "最大HP",
+  "武器",
+  "炎",
+  "物理",
+  "盾",
+  "魔法"
+ ],
+ "result": {
+  "gameTitle": "PT<勇者の旅>",
+  "currencyUnit": "PT<G>",
+  "elements": [
+   "",
+   "PT<物理>",
+   "PT<炎>"
+  ],
+  "skillTypes": [
+   "",
+   "PT<魔法>"
+  ],
+  "weaponTypes": [
+   "",
+   "PT<剣>"
+  ],
+  "armorTypes": [
+   "",
+   "PT<盾>"
+  ],
+  "equipTypes": [
+   "",
+   "PT<武器>"
+  ],
+  "switches": [
+   "",
+   "スイッチ"
+  ],
+  "variables": [
+   "",
+   "変数"
+  ],
+  "terms": {
+   "basic": [
+    "PT<レベル>",
+    "PT<Lv>"
+   ],
+   "commands": [
+    "PT<戦う>",
+    null
+   ],
+   "params": [
+    "PT<最大HP>"
+   ],
+   "messages": {
+    "actionFailure": "PT<%1には効かなかった！>",
+    "alwaysDash": "PT<常時ダッシュ>"
+   }
+  }
+ }
+}

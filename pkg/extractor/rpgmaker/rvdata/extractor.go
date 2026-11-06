@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/BGLuis/slime-rpg/pkg/extractor/rpgmaker/rpgtext"
 	"github.com/BGLuis/slime-rpg/pkg/model"
 )
 
@@ -23,33 +24,33 @@ func (e *Extractor) CanHandle(filePath string) bool {
 	return ext == ".rvdata2" || ext == ".rvdata" || ext == ".rxdata"
 }
 
-// Atributos traduzíveis por classe. Nomes de eventos, eventos comuns, tilesets e
-// animações ficam de fora: são internos do editor e scripts às vezes os usam como chave.
-var classAttributes = map[string][]string{
-	"RPG::Actor":   {"@name", "@nickname", "@description", "@profile"},
-	"RPG::Class":   {"@name", "@description"},
-	"RPG::Item":    {"@name", "@description"},
-	"RPG::Weapon":  {"@name", "@description"},
-	"RPG::Armor":   {"@name", "@description"},
-	"RPG::Skill":   {"@name", "@description", "@message1", "@message2"},
-	"RPG::State":   {"@name", "@description", "@message1", "@message2", "@message3", "@message4"},
-	"RPG::Enemy":   {"@name", "@description"},
-	"RPG::MapInfo": {"@name"},
-	"RPG::Map":     {"@display_name"},
-	"RPG::System":  {"@game_title", "@currency_unit", "@elements", "@skill_types", "@weapon_types", "@armor_types"},
-}
+// Atributos traduzíveis por classe, os mesmos que a versão Python normaliza do
+// RVData. Nomes de eventos, eventos comuns, tilesets e animações ficam de fora:
+// são internos do editor e scripts às vezes os usam como chave.
+var (
+	dbAttributes    = []string{"@name", "@nickname", "@description", "@profile", "@message1", "@message2", "@message3", "@message4", "@note"}
+	dbClasses       = []string{"RPG::Actor", "RPG::Class", "RPG::Item", "RPG::Weapon", "RPG::Armor", "RPG::Skill", "RPG::State", "RPG::Enemy"}
+	classAttributes = map[string][]string{
+		"RPG::MapInfo": {"@name"},
+		"RPG::Map":     {"@display_name"},
+		"RPG::System":  {"@game_title", "@currency_unit", "@elements", "@skill_types", "@weapon_types", "@armor_types"},
+	}
+)
 
 // Termos de interface do VX Ace (Terms), do VX (Terms) e do XP (Words): todo
 // atributo de texto, isolado ou em lista, é visível ao jogador.
 var allStringAttributeClasses = []string{"RPG::System::Terms", "RPG::System::Words"}
 
-// slot é um texto traduzível localizado no grafo de objetos Ruby.
+// slot é um trecho traduzível de uma string do grafo de objetos Ruby. Vários
+// trechos podem estar na mesma string (loc), como título e fala em "<Nome>fala".
 type slot struct {
 	id   string
+	loc  string
 	text string
+	sp   rpgtext.Span
 	kind model.SegmentKind
 	ctx  map[string]any
-	set  func(translated string)
+	set  func(full string)
 }
 
 // Extract extrai diálogos, escolhas e termos dos objetos Ruby Marshal.
@@ -62,12 +63,12 @@ func (e *Extractor) Extract(filePath string, data []byte, srcLang string) ([]*mo
 
 	var segments []*model.Segment
 	visit(root, "", func(s slot) {
-		if strings.TrimSpace(s.text) == "" {
+		if strings.TrimSpace(s.sp.Source) == "" {
 			return
 		}
 		ctx := s.ctx
 		ctx["file"] = base
-		seg, err := model.NewSegment(fmt.Sprintf("%s#%s", base, s.id), s.text, s.kind, ctx, nil)
+		seg, err := model.NewSegment(fmt.Sprintf("%s#%s", base, s.id), s.sp.Source, s.kind, ctx, nil)
 		if err == nil {
 			segments = append(segments, seg)
 		}
@@ -80,7 +81,7 @@ func (e *Extractor) Inject(filePath string, originalData []byte, segments []*mod
 	base := filepath.Base(filePath)
 	trMap := make(map[string]string, len(segments))
 	for _, s := range segments {
-		if s.IsResolved() && s.Target() != "" {
+		if s.IsResolved() && s.Target() != "" && s.Target() != s.Source() {
 			trMap[s.ID()] = s.Target()
 		}
 	}
@@ -92,11 +93,36 @@ func (e *Extractor) Inject(filePath string, originalData []byte, segments []*mod
 	if err != nil {
 		return nil, err
 	}
+
+	type pending struct {
+		text  string
+		set   func(string)
+		edits []slot
+	}
+	byLoc := make(map[string]*pending)
+	var order []string
 	visit(root, "", func(s slot) {
-		if tr, ok := trMap[fmt.Sprintf("%s#%s", base, s.id)]; ok {
-			s.set(tr)
+		if _, ok := trMap[fmt.Sprintf("%s#%s", base, s.id)]; !ok {
+			return
 		}
+		p, ok := byLoc[s.loc]
+		if !ok {
+			p = &pending{text: s.text, set: s.set}
+			byLoc[s.loc] = p
+			order = append(order, s.loc)
+		}
+		p.edits = append(p.edits, s)
 	})
+	for _, loc := range order {
+		p := byLoc[loc]
+		sort.Slice(p.edits, func(i, j int) bool { return p.edits[i].sp.Start > p.edits[j].sp.Start })
+		text := p.text
+		for _, ed := range p.edits {
+			tr := trMap[fmt.Sprintf("%s#%s", base, ed.id)]
+			text = text[:ed.sp.Start] + ed.sp.Encode(tr) + text[ed.sp.End:]
+		}
+		p.set(text)
+	}
 
 	writer := NewWriter()
 	if err := writer.Write(root); err != nil {
@@ -156,7 +182,15 @@ func visitObject(obj *RubyObject, path string, fn func(slot)) {
 	}
 
 	attrs := classAttributes[obj.ClassName]
-	if slices.Contains(allStringAttributeClasses, obj.ClassName) {
+	isDB := slices.Contains(dbClasses, obj.ClassName)
+	switch {
+	case isDB:
+		// Como no Python, registros sem nome são entradas vazias do banco.
+		if name, _ := stringVal(obj.Attributes["@name"]); name == "" {
+			return
+		}
+		attrs = dbAttributes
+	case slices.Contains(allStringAttributeClasses, obj.ClassName):
 		attrs = sortedKeys(obj.Attributes)
 	}
 	for _, attr := range attrs {
@@ -165,50 +199,103 @@ func visitObject(obj *RubyObject, path string, fn func(slot)) {
 			continue
 		}
 		kind := model.KindMenu
-		if attr == "@description" || attr == "@profile" {
+		if attr == "@description" || attr == "@profile" || attr == "@note" {
 			kind = model.KindDB
+		}
+		ctx := func() map[string]any { return map[string]any{"attr": attr} }
+		spansOf := func(text string) []rpgtext.Span {
+			if attr == "@note" {
+				return rpgtext.NoteSpans(text)
+			}
+			if rpgtext.IsTechnicalOrCode(text, rpgtext.Dialogue) {
+				return nil
+			}
+			return []rpgtext.Span{rpgtext.Whole(text)}
 		}
 		if list, ok := val.([]any); ok {
 			for i := range list {
-				stringSlot(list, i, fmt.Sprintf("%s/%s/%d", path, attr, i), kind, map[string]any{"attr": attr}, fn)
+				listSlots(list, i, fmt.Sprintf("%s/%s/%d", path, attr, i), kind, ctx, spansOf, fn)
 			}
 			continue
 		}
 		if text, ok := stringVal(val); ok {
-			fn(slot{
-				id: fmt.Sprintf("%s/%s", path, attr), text: text, kind: kind,
-				ctx: map[string]any{"attr": attr},
-				set: func(tr string) { obj.Attributes[attr] = withText(val, tr) },
-			})
+			emit(fn, fmt.Sprintf("%s/%s", path, attr), text, spansOf(text), kind, ctx,
+				func(tr string) { obj.Attributes[attr] = withText(val, tr) })
 		}
 	}
 }
 
+// visitCommand aplica aos comandos de evento as mesmas estratégias do MV/MZ, como
+// a versão Python faz ao normalizar o RVData.
 func visitCommand(cmd *RubyObject, path string, fn func(slot)) {
 	code := getIntAttr(cmd, "@code")
 	params, ok := cmd.Attributes["@parameters"].([]any)
 	if !ok || len(params) == 0 {
 		return
 	}
+	ctx := func() map[string]any { return map[string]any{"code": code} }
+	param := func(i int, id string, kind model.SegmentKind, spans func(string) []rpgtext.Span) {
+		if i < len(params) {
+			listSlots(params, i, id, kind, ctx, spans, fn)
+		}
+	}
+	one := func(f func(string) (rpgtext.Span, bool)) func(string) []rpgtext.Span {
+		return func(s string) []rpgtext.Span {
+			if sp, ok := f(s); ok {
+				return []rpgtext.Span{sp}
+			}
+			return nil
+		}
+	}
+
 	switch code {
-	case 401, 405: // Show Text e Scroll Text
-		stringSlot(params, 0, path+"/p:0", model.KindDialogue, map[string]any{"code": code}, fn)
-	case 102: // Show Choices
+	case 401, 405: // Mostrar texto e texto de rolagem
+		param(0, path+"/p:0", model.KindDialogue, rpgtext.ShowTextSpans)
+	case 101: // O parâmetro 0 é o arquivo da face
+		for i := 1; i < len(params); i++ {
+			param(i, fmt.Sprintf("%s/p:%d", path, i), model.KindDialogue, rpgtext.ShowTextSpans)
+		}
+	case 320, 324, 325: // Mudar nome, apelido e perfil
+		param(1, path+"/p:1", model.KindDialogue, rpgtext.ShowTextSpans)
+	case 102: // Mostrar escolhas
 		if choices, ok := params[0].([]any); ok {
 			for idx := range choices {
-				stringSlot(choices, idx, fmt.Sprintf("%s/choice:%d", path, idx), model.KindChoice, map[string]any{"code": code, "choice": idx}, fn)
+				listSlots(choices, idx, fmt.Sprintf("%s/choice:%d", path, idx), model.KindChoice, ctx, one(rpgtext.ChoiceSpan), fn)
+			}
+		}
+	case 402: // Ramo de escolha
+		param(1, path+"/p:1", model.KindChoice, one(rpgtext.ChoiceSpan))
+	case 355, 655: // Script
+		param(0, path+"/p:0", model.KindScript, rpgtext.ScriptSpans)
+	case 356: // Comando de plugin
+		param(0, path+"/p:0", model.KindScript, one(rpgtext.PluginMVSpan))
+	case 122: // Controle de variáveis com operando script
+		if len(params) >= 5 {
+			if op, ok := intVal(params[3]); ok && op == 4 {
+				param(4, path+"/p:4", model.KindScript, one(rpgtext.ControlVarSpan))
 			}
 		}
 	}
 }
 
-func stringSlot(list []any, idx int, id string, kind model.SegmentKind, ctx map[string]any, fn func(slot)) {
+// listSlots emite os trechos da string list[idx].
+func listSlots(list []any, idx int, id string, kind model.SegmentKind, ctx func() map[string]any, spans func(string) []rpgtext.Span, fn func(slot)) {
 	text, ok := stringVal(list[idx])
 	if !ok {
 		return
 	}
 	orig := list[idx]
-	fn(slot{id: id, text: text, kind: kind, ctx: ctx, set: func(tr string) { list[idx] = withText(orig, tr) }})
+	emit(fn, id, text, spans(text), kind, ctx, func(tr string) { list[idx] = withText(orig, tr) })
+}
+
+func emit(fn func(slot), id, text string, spans []rpgtext.Span, kind model.SegmentKind, ctx func() map[string]any, set func(string)) {
+	for i, sp := range spans {
+		sid := id
+		if len(spans) > 1 {
+			sid = fmt.Sprintf("%s/%d", id, i)
+		}
+		fn(slot{id: sid, loc: id, text: text, sp: sp, kind: kind, ctx: ctx(), set: set})
+	}
 }
 
 // withText devolve a tradução no mesmo tipo da string original, preservando os
@@ -240,18 +327,18 @@ func sortedKeys(m map[string]any) []string {
 }
 
 func getIntAttr(ro *RubyObject, attr string) int64 {
-	val, ok := ro.Attributes[attr]
-	if !ok {
-		return 0
-	}
-	switch v := val.(type) {
+	n, _ := intVal(ro.Attributes[attr])
+	return n
+}
+
+func intVal(v any) (int64, bool) {
+	switch n := v.(type) {
 	case int:
-		return int64(v)
+		return int64(n), true
 	case int32:
-		return int64(v)
+		return int64(n), true
 	case int64:
-		return v
-	default:
-		return 0
+		return n, true
 	}
+	return 0, false
 }

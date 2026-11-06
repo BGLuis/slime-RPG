@@ -1,0 +1,111 @@
+{
+ "sources": [
+  "いいえ",
+  "こんにちは",
+  "こんにちは、\\C[2]勇者\\C[0]さん！",
+  "はい",
+  "はい",
+  "ショップ",
+  "スクリプトの文",
+  "ボブ",
+  "元気？",
+  "新しい名前",
+  "秘密"
+ ],
+ "result": {
+  "displayName": "",
+  "events": [
+   null,
+   {
+    "id": 1,
+    "name": "EV001",
+    "pages": [
+     {
+      "id": 0,
+      "list": [
+       {
+        "code": 401,
+        "indent": 0,
+        "parameters": [
+         "PT<こんにちは、\\C[2]勇者\\C[0]さん！>"
+        ]
+       },
+       {
+        "code": 401,
+        "indent": 0,
+        "parameters": [
+         "<PT<ボブ>>PT<元気？>"
+        ]
+       },
+       {
+        "code": 401,
+        "indent": 0,
+        "parameters": [
+         "name: PT<ショップ>"
+        ]
+       },
+       {
+        "code": 102,
+        "indent": 0,
+        "parameters": [
+         [
+          "PT<はい>",
+          "PT<いいえ>",
+          "show_if(v[1] > 0) PT<秘密>"
+         ],
+         1
+        ]
+       },
+       {
+        "code": 402,
+        "indent": 0,
+        "parameters": [
+         0,
+         "PT<はい>"
+        ]
+       },
+       {
+        "code": 108,
+        "indent": 0,
+        "parameters": [
+         "コメント"
+        ]
+       },
+       {
+        "code": 355,
+        "indent": 0,
+        "parameters": [
+         "$gameMessage.add('PT<スクリプトの文>');"
+        ]
+       },
+       {
+        "code": 122,
+        "indent": 0,
+        "parameters": [
+         5,
+         5,
+         0,
+         4,
+         "'PT<こんにちは>'"
+        ]
+       },
+       {
+        "code": 320,
+        "indent": 0,
+        "parameters": [
+         1,
+         "PT<新しい名前>"
+        ]
+       },
+       {
+        "code": 0,
+        "indent": 0,
+        "parameters": []
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

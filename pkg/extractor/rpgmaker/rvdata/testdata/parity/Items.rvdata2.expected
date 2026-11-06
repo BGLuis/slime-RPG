@@ -1,0 +1,22 @@
+{
+ "sources": [
+  "HPを回復する",
+  "ポーション",
+  "詳しい説明"
+ ],
+ "result": [
+  null,
+  {
+   "id": 1,
+   "name": "PT<ポーション>",
+   "description": "PT<HPを回復する>",
+   "note": "<Desc: PT<詳しい説明>>\n<Custom: 1>"
+  },
+  {
+   "id": 2,
+   "name": "",
+   "description": "名前なし",
+   "note": ""
+  }
+ ]
+}

@@ -1,0 +1,329 @@
+{
+ "sources": [
+  "Don't go!",
+  "Hello world",
+  "WordWrap",
+  "\\picture[yes]",
+  "「はい」",
+  "いいえ",
+  "こんにちは",
+  "こんにちは、\\C[2]勇者\\C[0]さん！",
+  "はい",
+  "はい",
+  "アリス",
+  "コマンド",
+  "ショップ",
+  "スクリプトの文",
+  "プラグインの文",
+  "プロフィール文",
+  "ボブ",
+  "ルミナ",
+  "ルートの文",
+  "ルートの文",
+  "二つ名",
+  "元気？",
+  "新しい名前",
+  "案内",
+  "浮かぶ文字 24",
+  "秘密",
+  "秘密",
+  "長い文章です"
+ ],
+ "result": {
+  "displayName": "",
+  "events": [
+   null,
+   {
+    "id": 1,
+    "name": "EV001",
+    "note": "",
+    "pages": [
+     {
+      "list": [
+       {
+        "code": 101,
+        "indent": 0,
+        "parameters": [
+         "Actor1",
+         0,
+         0,
+         2,
+         "PT<アリス>"
+        ]
+       },
+       {
+        "code": 401,
+        "indent": 0,
+        "parameters": [
+         "PT<こんにちは、\\C[2]勇者\\C[0]さん！>"
+        ]
+       },
+       {
+        "code": 401,
+        "indent": 0,
+        "parameters": [
+         "<PT<ボブ>>PT<元気？>"
+        ]
+       },
+       {
+        "code": 401,
+        "indent": 0,
+        "parameters": [
+         "<<PT<案内>>>"
+        ]
+       },
+       {
+        "code": 401,
+        "indent": 0,
+        "parameters": [
+         "name: PT<ショップ>"
+        ]
+       },
+       {
+        "code": 401,
+        "indent": 0,
+        "parameters": [
+         "\\C[2]\\I[3]"
+        ]
+       },
+       {
+        "code": 401,
+        "indent": 0,
+        "parameters": [
+         "<PT<WordWrap>>PT<長い文章です>"
+        ]
+       },
+       {
+        "code": 102,
+        "indent": 0,
+        "parameters": [
+         [
+          "PT<はい>",
+          "PT<いいえ>",
+          "show_if(v[1] > 0) PT<秘密>",
+          "\\picture[yes]"
+         ],
+         1,
+         0,
+         2,
+         0
+        ]
+       },
+       {
+        "code": 402,
+        "indent": 0,
+        "parameters": [
+         0,
+         "PT<はい>"
+        ]
+       },
+       {
+        "code": 402,
+        "indent": 0,
+        "parameters": [
+         2,
+         "show_if(v[1] > 0) PT<秘密>"
+        ]
+       },
+       {
+        "code": 108,
+        "indent": 0,
+        "parameters": [
+         "コメントは訳さない"
+        ]
+       },
+       {
+        "code": 408,
+        "indent": 0,
+        "parameters": [
+         "コメント続き"
+        ]
+       },
+       {
+        "code": 118,
+        "indent": 0,
+        "parameters": [
+         "ラベル"
+        ]
+       },
+       {
+        "code": 355,
+        "indent": 0,
+        "parameters": [
+         "$gameMessage.add('PT<スクリプトの文>');"
+        ]
+       },
+       {
+        "code": 655,
+        "indent": 0,
+        "parameters": [
+         "this.addCommand(\"PT<コマンド>\", 'cmd', true);"
+        ]
+       },
+       {
+        "code": 355,
+        "indent": 0,
+        "parameters": [
+         "$gameScreen.OriginalMessage(\"PT<ルミナ>\", \"PT<「はい」>\", 0, 2);"
+        ]
+       },
+       {
+        "code": 355,
+        "indent": 0,
+        "parameters": [
+         "$gameVariables.setValue(1, 2);"
+        ]
+       },
+       {
+        "code": 355,
+        "indent": 0,
+        "parameters": [
+         "var mes = 'PT<Don\\'t go!>';"
+        ]
+       },
+       {
+        "code": 356,
+        "indent": 0,
+        "parameters": [
+         "D_TEXT PT<浮かぶ文字 24>"
+        ]
+       },
+       {
+        "code": 356,
+        "indent": 0,
+        "parameters": [
+         "ShowInfo 123"
+        ]
+       },
+       {
+        "code": 357,
+        "indent": 0,
+        "parameters": [
+         "TextPlugin",
+         "show",
+         "表示",
+         {
+          "text": "PT<プラグインの文>",
+          "fileName": "pic1",
+          "align": "center",
+          "speed": "10"
+         }
+        ]
+       },
+       {
+        "code": 122,
+        "indent": 0,
+        "parameters": [
+         5,
+         5,
+         0,
+         4,
+         "'PT<こんにちは>'"
+        ]
+       },
+       {
+        "code": 122,
+        "indent": 0,
+        "parameters": [
+         6,
+         6,
+         0,
+         4,
+         "\"Easy\""
+        ]
+       },
+       {
+        "code": 122,
+        "indent": 0,
+        "parameters": [
+         7,
+         7,
+         0,
+         4,
+         "$gameVariables.value(2) + 1"
+        ]
+       },
+       {
+        "code": 122,
+        "indent": 0,
+        "parameters": [
+         8,
+         8,
+         0,
+         4,
+         "'PT<Hello world>'"
+        ]
+       },
+       {
+        "code": 320,
+        "indent": 0,
+        "parameters": [
+         1,
+         "PT<新しい名前>"
+        ]
+       },
+       {
+        "code": 324,
+        "indent": 0,
+        "parameters": [
+         1,
+         "PT<二つ名>"
+        ]
+       },
+       {
+        "code": 325,
+        "indent": 0,
+        "parameters": [
+         1,
+         "PT<プロフィール文>"
+        ]
+       },
+       {
+        "code": 205,
+        "indent": 0,
+        "parameters": [
+         -1,
+         {
+          "list": [
+           {
+            "code": 45,
+            "parameters": [
+             "TickerManager.show('PT<ルートの文>');"
+            ]
+           },
+           {
+            "code": 0
+           }
+          ],
+          "repeat": false,
+          "skippable": false,
+          "wait": true
+         }
+        ]
+       },
+       {
+        "code": 505,
+        "indent": 0,
+        "parameters": [
+         {
+          "code": 45,
+          "parameters": [
+           "TickerManager.show('PT<ルートの文>');"
+          ]
+         }
+        ]
+       },
+       {
+        "code": 0,
+        "indent": 0,
+        "parameters": []
+       }
+      ]
+     }
+    ],
+    "x": 0,
+    "y": 0
+   }
+  ]
+ }
+}
