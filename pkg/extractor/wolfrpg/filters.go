@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/BGLuis/slime-rpg/pkg/pipeline/masking"
 )
 
 var (
@@ -136,4 +138,19 @@ func hasCJK(s string) bool {
 		}
 	}
 	return false
+}
+
+// MaskMatchers devolve os códigos de controle do WOLF RPG protegidos na tradução
+// (mesmos padrões da versão Python). \r[base,leitura] (ruby) fica de fora: é texto
+// visível e precisa ser traduzido.
+func MaskMatchers() []masking.Matcher {
+	return []masking.Matcher{
+		regexp.MustCompile(`(?i)\\[cvs]\s*\[[^\]]*\]`),
+		regexp.MustCompile(`(?i)\\(?:cself|self)\s*\[[^\]]*\]`),
+		regexp.MustCompile(`(?i)\\font\s*\[[^\]]*\]`),
+		regexp.MustCompile(`(?i)\\[wt]\s*\[[^\]]*\]`),
+		regexp.MustCompile(`(?i)\\(?:[a-qs-z][a-z]{0,4}|r[a-z]{1,4})\s*\[[^\]]*\]`),
+		regexp.MustCompile(`(?i)</?[a-z][a-z0-9]*(?:\s+[^>]*)?/?>`),
+		regexp.MustCompile(`(?i)%[0-9]*[sdif]`),
+	}
 }
