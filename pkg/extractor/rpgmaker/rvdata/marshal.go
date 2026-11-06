@@ -367,7 +367,6 @@ type Writer struct {
 	buf       bytes.Buffer
 	objects   []any
 	ptrMap    map[uintptr]int
-	strMap    map[string]int
 	symbols   []string
 	symbolMap map[string]int
 }
@@ -377,7 +376,6 @@ func NewWriter() *Writer {
 	w := &Writer{
 		objects:   make([]any, 0),
 		ptrMap:    make(map[uintptr]int),
-		strMap:    make(map[string]int),
 		symbols:   make([]string, 0),
 		symbolMap: make(map[string]int),
 	}
@@ -418,6 +416,9 @@ func (w *Writer) Write(v any) error {
 		w.writeFixnum(val)
 		return nil
 	case float64:
+		// Float ocupa um índice na tabela de objetos do Ruby (o Reader também o
+		// conta); sem isso, todo TYPE_LINK gravado depois aponta para o objeto errado.
+		w.objects = append(w.objects, val)
 		w.buf.WriteByte(TypeFloat)
 		s := strconv.FormatFloat(val, 'g', -1, 64)
 		w.writeBlob([]byte(s))
@@ -425,13 +426,10 @@ func (w *Writer) Write(v any) error {
 	case RubySymbol:
 		return w.writeSymbol(val.Name)
 	case string:
-		// String Go nativa é gravada como TYPE_IVAR + TYPE_STRING com :E => true (UTF-8)
-		if idx, ok := w.strMap[val]; ok {
-			w.buf.WriteByte(TypeLink)
-			w.writeFixnum(int64(idx))
-			return nil
-		}
-		w.strMap[val] = len(w.objects)
+		// String Go nativa é gravada como TYPE_IVAR + TYPE_STRING com :E => true (UTF-8).
+		// Strings iguais continuam objetos distintos: o Reader converte toda string
+		// UTF-8 em string Go, e ligá-las por valor faria o Ruby compartilhar (e
+		// mutar em conjunto) strings que eram independentes no arquivo original.
 		w.objects = append(w.objects, val)
 
 		w.buf.WriteByte(TypeIVAR)
@@ -477,8 +475,10 @@ func (w *Writer) Write(v any) error {
 		}
 		return nil
 	case []any:
+		// Slices vazios compartilham o mesmo endereço em Go (zerobase): só um slice
+		// não vazio identifica um Array Ruby compartilhado.
 		ptr := reflect.ValueOf(val).Pointer()
-		if ptr != 0 {
+		if len(val) > 0 {
 			if idx, ok := w.ptrMap[ptr]; ok {
 				w.buf.WriteByte(TypeLink)
 				w.writeFixnum(int64(idx))
