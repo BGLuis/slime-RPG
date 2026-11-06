@@ -1,182 +1,210 @@
 # System Architecture — Slime (Extractor & Translation)
 
-This document provides a comprehensive technical overview of the architecture, design principles, software patterns, and data flow of **Slime**.
+**Slime** is a modular Python toolkit that extracts the text of video games and structured datasets (RPG Maker, WOLF RPG Editor, CSV, JSON), masks variable tokens, translates it, and writes it back. Game engines and translation providers are plugins registered in `src/factory.py`, so the core flow does not change when one is added.
 
 ---
 
 ## 1. System Overview
 
-**Slime** is a modular Python toolkit designed to extract, sanitize, mask variable tokens, translate, and reinject text into video games and structured datasets (supporting RPG Maker, WOLF RPG Editor, CSV, and JSON).
-
-The system design relies on decoupled contracts, allowing new game engines and translation providers to be plugged in as extensions without modifying the core pipeline.
+Slime runs as one local process, started from the CLI/TUI (`main.py`, `src/cli.py`) or the PyQt5 GUI (`src/gui.py`). It reads a game folder, writes the translated files to an output folder, and keeps every translation it has made in a local SQLite memory. The figure shows what it touches.
 
 ```mermaid
 flowchart TD
-    subgraph InputLayer ["1. Input & Workspace"]
-        GAME["Game Directory / Files"]
-        WS["src/workspace.py (Workspace & Hardlink Backup)"]
-        GD["src/services/GameDetector.py (Engine Auto-Detection)"]
-    end
-
-    subgraph ExtractionLayer ["2. Extraction & Adapters"]
-        FCT["src/factory.py (ExtractorFactory)"]
-        EXT["src/extractor/BaseExtractor.py"]
-        ADAPT["src/extractor/FormatAdapter.py"]
-        STRAT["src/extractor/EventCommandStrategy.py"]
-        SEG["src/extractor/Segment.py (Immutable Text Model)"]
-    end
-
-    subgraph TranslationLayer ["3. Masking & Translation"]
-        PIPE["src/pipeline.py (Protection Pipeline)"]
-        MASK["src/utils/TextsUtils.py (Token Masking)"]
-        TM["src/translate/TranslationMemory.py (SQLite Memory)"]
-        PROV["src/translate/BaseTranslate.py (ThreadPool Parallel)"]
-        PROXY["src/services/ProxyManager.py (Proxy Pool & Cooldown)"]
-    end
-
-    subgraph OutputLayer ["4. Output & Validation"]
-        REINSERT["FormatAdapter.apply_segments()"]
-        META["src/services/GameMetadata.py (.slime Metadata)"]
-        OUT["Translated Game Files"]
-    end
-
-    GAME --> WS
-    WS --> GD
-    GD --> FCT
-    FCT --> EXT
-    EXT --> ADAPT
-    ADAPT --> STRAT
-    STRAT --> SEG
-    SEG --> PIPE
-    PIPE --> MASK
-    MASK --> TM
-    TM -. Cache Miss .-> PROV
-    PROV --> PROXY
-    PROV --> MASK
-    MASK --> REINSERT
-    REINSERT --> META
-    META --> OUT
+  accTitle: Slime and what it touches
+  accDescr: A translator drives Slime, which reads and writes the game folder, keeps a SQLite translation memory, and calls Google, DeepL, or a local Ollama server; Google calls go through public proxies when rate-limited.
+  %% @user: external
+  %% @slime: main.py#main
+  %% @gameDir: src/workspace.py#Workspace
+  %% @memoryDb: src/translate/TranslationMemory.py#TranslationMemory
+  %% @google: src/translate/GoogleTranslate.py#GoogleTranslate
+  %% @deepl: src/translate/DeeplTranslate.py#DeeplTranslate
+  %% @ollama: src/translate/OllamaTranslate.py#OllamaTranslate
+  %% @proxies: src/services/ProxyManager.py#ProxyManager
+  subgraph client ["You"]
+    user([Translator])
+  end
+  subgraph service ["Slime"]
+    slime[Slime]
+  end
+  subgraph datastore ["On disk"]
+    gameDir[("Game folder")]
+    memoryDb[("Translation memory")]
+  end
+  subgraph external ["Remote and local services"]
+    google{{Google Translate}}
+    deepl{{DeepL API}}
+    ollama{{Ollama server}}
+    proxies{{Public proxy lists}}
+  end
+  user -->|"CLI, TUI or GUI"| slime
+  slime -->|"reads originals, writes translated copy"| gameDir
+  slime -->|"looks up and stores translations"| memoryDb
+  slime -.->|"HTTPS"| google
+  slime -.->|"HTTPS"| deepl
+  slime -.->|"local HTTP"| ollama
+  google -.->|"rotates when rate-limited"| proxies
 ```
 
 ---
 
-## 2. Core Architectural Patterns
+## 2. Module Map
 
-### 2.1 Factory Method & Inversion of Control (`src/factory.py`)
-Decoupled extension points are managed via decorators and Python entry points:
-* `@register_extractor(name, aliases=...)`: Registers engine and file format extractors.
-* `@register_translator(name, aliases=...)`: Registers translation providers.
-* **Dynamic Discovery:** Automatically resolves plugins declared in `pyproject.toml` (`slime.extractors` and `slime.providers`), with a local module fallback.
+Dependencies between the modules that own a responsibility; utilities every module imports (`src/utils/`, `src/exceptions.py`, `src/i18n.py`) are left out. The figure answers "who calls whom"; the patterns below say why.
 
-### 2.2 Segment Model & Immutability (`src/extractor/Segment.py`)
-All extracted text units map to a standardized `Segment` object:
-* **Deterministic ID:** Generated via a stable hierarchical path (e.g., `map001:ev002:p0:cmd401:idx3`), ensuring exact 1:1 round-trip tracking.
-* **Immutability:** Internal context maps use `MappingProxyType` to prevent thread-safety hazards and accidental state mutations across workers.
-* **Explicit Context (`kind`):** Categorizes strings into semantic roles (`dialogue`, `choice`, `item_name`, `system`, etc.), enabling domain-specific translation prompt tuning.
+```mermaid
+flowchart TD
+  accTitle: Module dependencies of one translation run
+  accDescr: main builds a job; the job creates plugins through the factory and drives an extractor; the extractor translates through the pipeline and the engine, which call the provider and the translation memory.
+  %% @main: main.py#main
+  %% @job: src/job.py#TranslationJob
+  %% @factory: src/factory.py#ExtractorFactory
+  %% @workspace: src/workspace.py#Workspace
+  %% @extractor: src/extractor/BaseExtractor.py#BaseExtractor
+  %% @pipeline: src/pipeline.py#TranslationPipeline
+  %% @engine: src/translate/TranslationEngine.py#TranslationEngine
+  %% @translator: src/translate/BaseTranslate.py#BaseTranslate
+  %% @memory: src/translate/TranslationMemory.py#TranslationMemory
+  main[main.py] --> job[TranslationJob]
+  job -->|"creates plugins"| factory[Factories]
+  job -->|"temp and output folders"| workspace[Workspace]
+  job -->|"process_files, import_files"| extractor[BaseExtractor]
+  extractor -->|"per file"| pipeline[TranslationPipeline]
+  extractor -->|"cache misses, all files"| engine[TranslationEngine]
+  pipeline -->|"translate_batch"| translator[BaseTranslate]
+  engine -->|"batches"| translator
+  translator --> memory[(TranslationMemory)]
+  engine --> memory
+```
 
-### 2.3 Format Adapter Pattern (`src/extractor/FormatAdapter.py`)
-Decouples file storage formats from translation domain logic:
-* `extract_segments(data, file_name) -> List[Segment]`: Extracts text segments from an in-memory parsed tree.
-* `apply_segments(data, segments) -> Any`: Applies translated texts back into the original data structure.
-* **Memory Optimization:** Avoids expensive `copy.deepcopy` calls on large JSON trees by tracking dirty state and structural hashes.
+### 2.1 Factory & plugin registration (`src/factory.py`)
+* `@register_extractor(name, aliases=...)` and `@register_translator(name, aliases=...)` register engines, formats and providers.
+* `discover_extractors` / `discover_translators` import the local modules first, then load the `slime.extractors` and `slime.providers` entry points declared in `pyproject.toml`.
 
-### 2.4 Strategy Pattern for Event Walking (`src/extractor/EventCommandStrategy.py`)
-Unified walker logic for traversing complex command graphs:
-* `RPGMakerExtractor`: Strategy handling RPG Maker event opcodes (101/401 messages, 102 choices, 320 actor names, 355/356/357 script calls).
-* `WolfRPGExtractor`: Strategy handling WOLF RPG Editor opcodes (101 messages, 102 choices, database references).
+### 2.2 Segment model (`src/extractor/Segment.py`)
+* A `Segment` is a frozen unit of text with an `id`, a `source`, a `context` and `constraints`.
+* `context` and `constraints` are wrapped in `SegmentContext`, a read-only mapping over `MappingProxyType`, so workers cannot mutate each other's state.
+* `context["kind"]` is mandatory: `Segment.__post_init__` raises `ValueError` without it.
 
-### 2.5 Pipeline & Chain of Responsibility (`src/pipeline.py`)
-Text segment translation follows an ordered, isolated chain:
-1. **Sanitization:** Fixes common encoding anomalies, unescaped characters, and mojibake.
-2. **Masking:** Detects in-text variables and escape codes (`\V[1]`, `\N[2]`, `\C[3]`, `<center>`) and replaces them with opaque placeholders (`__XTOK_0__`).
-3. **Translation Memory / Provider Dispatch:** Fast-lane memory query (RAM + SQLite); on cache miss, batches are routed to the provider.
-4. **Unmasking:** Restores original variable codes at corresponding translated positions.
-5. **Post-Processing & Casing Fix:** Restores uppercase/lowercase invariants on engine-specific codes.
+### 2.3 Format adapters (`src/extractor/FormatAdapter.py`)
+`FormatAdapter` is a Protocol that separates file formats from translation logic: `JsonFormatAdapter` and `EvtextFormatAdapter` are the built-in ones, and RPG Maker (`RVDataAdapter`) and WOLF (`WolfBinaryAdapter`) ship their own. A JSON file that was loaded and not changed (`_is_dirty` false) is written back byte for byte.
 
-### 2.6 Concurrency & Thread Pool (`src/translate/BaseTranslate.py`)
-* Concurrent batch translation via `ThreadPoolExecutor`.
-* Dynamic request throttling (`MAX_REQUESTS_SIMULTANEOUSLY`) ensures maximum network utilization without triggering provider rate limits.
+### 2.4 Event command strategies (`src/extractor/EventCommandStrategy.py`)
+`EventCommandStrategy` is the base class of one-opcode handlers, and `walk_event_commands` traverses a command list with them. The RPG Maker strategies live in `rpgmaker/RPGEventStrategy.py` (message 101/401, choices 102, name change 320, script 355, plugin commands 356/357 in `RPGEventCodes.py`); the WOLF ones in `wolfrpg/WolfEventStrategy.py`.
+
+### 2.5 Translation pipeline (`src/pipeline.py`)
+`BaseExtractor._pipeline_translate` runs one file through an ordered chain of steps. If every string is already in the memory (or in this session's translations), the first step resolves the file and the others return immediately.
+
+```mermaid
+flowchart TD
+  accTitle: Steps a file's text goes through, and when the provider is skipped
+  accDescr: The cache lookup resolves the file when every string is known; otherwise tokens are masked, the provider translates, tokens are restored, engine fixes apply, and new pairs are stored.
+  %% @lookup: src/pipeline.py#CacheLookupStep
+  %% @allCached: src/pipeline.py#CacheLookupStep
+  %% @done: src/pipeline.py#CacheLookupStep
+  %% @patterns: src/pipeline.py#GetPatternsStep
+  %% @mask: src/pipeline.py#MaskingStep
+  %% @translate: src/pipeline.py#TranslationStep
+  %% @unmask: src/pipeline.py#UnmaskingStep
+  %% @fix: src/pipeline.py#FixingStep
+  %% @store: src/pipeline.py#CacheStoreStep
+  lookup[Look up memory] --> allCached{Every string known?}
+  allCached -->|"yes"| done([Text resolved])
+  allCached -->|"no"| patterns[Get engine patterns]
+  patterns --> mask[Mask tokens]
+  mask --> translate[Translate misses]
+  translate --> unmask[Unmask tokens]
+  unmask --> fix[Engine fixes]
+  fix --> store[Store new pairs]
+```
+
+* **Masking** replaces escape codes and variables (`\V[1]`, `\N[2]`, `<center>`) with placeholders such as `__XTOK_<n>__` (`TextsUtils.mask_tokens_in_structure`); unmasking failures propagate so a placeholder is never written to a game file.
+* **Translate** is skipped in offline / memory-only mode and when the circuit breaker is open.
+* **Store** never saves a pair that still contains a placeholder or whose translation equals the source.
+
+### 2.6 Concurrency (`src/translate/TranslationEngine.py`, `src/extractor/BaseExtractor.py`)
+* `BaseExtractor.process_files` runs a slow pool (`EXTRACTOR_MAX_WORKERS`, default 8) and a fast pool (`EXTRACTOR_FASTLANE_WORKERS`, default 16). A prescan sends files fully covered by the memory to the fast pool.
+* `TranslationEngine` batches the remaining unique strings across files and runs the batches in a `ThreadPoolExecutor` capped by the provider's `MAX_REQUESTS_SIMULTANEOUSLY` (4 for Google, 10 for Ollama).
 
 ---
 
 ## 3. Translation Providers
 
-Slime supports three interchangeable translation backends:
+Providers implement the `TranslationProvider` protocol (`src/translate/Provider.py`) through `BaseTranslate`:
 
-| Provider | Module | Strategy | Best For |
-| :--- | :--- | :--- | :--- |
-| **Google Translate** | `src/translate/GoogleTranslate.py` | Public endpoint with delimiter-joined batches | High-volume translation and rapid initial pass |
-| **DeepL API** | `src/translate/DeeplTranslate.py` | Official REST API with formality tuning | High-fidelity literary and nuanced dialogue |
-| **Ollama (Local LLM)** | `src/translate/OllamaTranslate.py` | Local execution (Llama 3, Mistral, Gemma 2) | Contextual, character-aware translation with game synopsis |
+| Provider | Module | Strategy |
+| :--- | :--- | :--- |
+| **Google Translate** | `src/translate/GoogleTranslate.py` | Public endpoint, batched, proxy pool when rate-limited |
+| **DeepL API** | `src/translate/DeeplTranslate.py` | Official REST API (free or paid endpoint) |
+| **Ollama** | `src/translate/OllamaTranslate.py` | Local LLM chosen by `OLLAMA_MODEL`, prompted with the game synopsis |
 
-### Persistent Translation Memory (`TranslationMemory.py`)
-* Local SQLite storage (`cache/memory.db`).
-* Compound primary key: `(source_hash, lang_source, lang_target, engine)`.
-* Configured in WAL mode (*Write-Ahead Logging*) with connection pooling safe for concurrent multithreading.
+### Persistent Translation Memory (`src/translate/TranslationMemory.py`)
+* SQLite database `memory.db`; its location comes from `get_memory_db_path` (`SLIME_MEMORY_DB`, then the user data directory, with a legacy `cache/memory.db` fallback).
+* One `segment` row per `(src_lang, tgt_lang, source_hash, engine)` (unique index), with an FTS5 index over the source text; `game_segment` links games to hashes.
+* WAL mode: writes go through one connection per database file, shared by every thread and serialized by its lock; each thread reads through its own read-only connection, without the lock.
 
----
-
-## 4. Network Resilience & Proxy Pool (`ProxyManager.py`)
-
-For public endpoints subject to throttling:
-* Rotating pool supporting HTTP, HTTPS, and SOCKS proxies.
-* Automatic detection of HTTP 429 (*Too Many Requests*) and 503 (*Service Unavailable*).
-* Dynamic cooldown on degraded proxies, transparently retrying requests on healthy nodes without job interruptions.
+## 4. Proxy Pool (`src/services/ProxyManager.py`)
+* Used by `GoogleTranslate` only. When Google answers HTTP 429 to the direct IP, the manager blocks the direct IP with an exponentially growing cooldown and routes requests through validated HTTP proxies fetched from public lists, then retries the direct IP.
+* Provider-level retries for other transient statuses (408, 429, 5xx) are in `BaseExtractor.process_file`.
 
 ---
 
 ## 5. Codebase Directory Structure
 
 ```text
-├── main.py                     # CLI entry point, argument parsing, job coordinator
-├── pyproject.toml              # Packaging metadata, dependencies, entry points
+├── main.py                     # CLI entry point, argument parsing, backup helpers
+├── pyproject.toml              # Packaging metadata, dependencies, plugin entry points
 ├── src/
-│   ├── factory.py              # Inversion of control and dynamic plugin registration
-│   ├── pipeline.py             # Sanitization, token masking, and translation pipeline
-│   ├── workspace.py            # Workspace management and non-destructive backups
-│   ├── job.py                  # Translation job coordination and lifecycle
-│   ├── cli.py                  # Terminal User Interface (Textual TUI)
-│   ├── gui.py                  # Graphical User Interface (PyQt5)
-│   ├── extractor/
-│   │   ├── BaseExtractor.py    # Abstract extractor base class and observers
-│   │   ├── Segment.py          # Immutable text segment data model
-│   │   ├── FormatAdapter.py    # File format adapter contract
-│   │   ├── DetectionResult.py  # Game engine detection result models
-│   │   ├── EventCommandStrategy.py # Generic event command walker
-│   │   ├── CSVExtractor.py     # Delimited tabular data extractor
-│   │   ├── JsonExtractor.py    # Generic JSON tree extractor
-│   │   ├── rpgmaker/           # RPG Maker extractors and RVData adapters
-│   │   └── wolfrpg/            # WOLF RPG extractors, Huffman decoding, and archives
-│   ├── translate/
-│   │   ├── BaseTranslate.py    # Base provider with integrated ThreadPool
-│   │   ├── GoogleTranslate.py  # Google provider with proxy pool support
-│   │   ├── DeeplTranslate.py   # DeepL API provider
-│   │   ├── OllamaTranslate.py  # Local LLM provider with synopsis context
-│   │   └── TranslationMemory.py# Persistent SQLite translation cache
-│   ├── services/
-│   │   ├── GameDetector.py     # Game engine auto-detection service
-│   │   ├── GameMetadata.py     # Integrity tracking and .slime metadata
-│   │   ├── ProxyManager.py     # Proxy rotation and cooldown manager
-│   │   ├── SettingsStore.py    # Local settings persistence (SQLite)
-│   │   └── FileNameTranslator.py# Automatic map and asset file name translator
-│   └── utils/
-│       ├── TextsUtils.py       # Token masking and mojibake correction
-│       ├── RubyMarshal.py      # Ruby Marshal binary parser and serializer
-│       ├── LanguageCodes.py    # ISO language code normalization
-│       └── ClipboardUtils.py   # Clipboard integration utilities
-└── tests/                      # Automated test suite (pytest)
+│   ├── factory.py              # Plugin registration and discovery
+│   ├── pipeline.py             # Cache lookup, masking, translation, unmasking, fixing
+│   ├── workspace.py            # Temp working folders and atomic commit to the output
+│   ├── job.py                  # TranslationJob: wires plugins, runs, records metadata
+│   ├── cli.py / gui.py         # Textual terminal UI / PyQt5 GUI
+│   ├── extractor/              # BaseExtractor, Segment, FormatAdapter, CSV/JSON extractors
+│   │   ├── rpgmaker/           # RPG Maker extractor, strategies, RVData adapter
+│   │   └── wolfrpg/            # WOLF RPG extractor, strategies, Huffman, archives
+│   ├── translate/              # BaseTranslate, TranslationEngine, providers, TranslationMemory
+│   ├── services/               # GameDetector, GameMetadata, ProxyManager, SettingsStore, FileNameTranslator
+│   └── utils/                  # TextsUtils, RubyMarshal, LanguageCodes, paths, ClipboardUtils
+└── tests/                      # pytest suite
 ```
 
 ---
 
 ## 6. Execution Lifecycle
 
-1. **Initialization:** The CLI or GUI invokes `src/workspace.py` to prepare working folders (`input/`, `output/`, `.backup/`). Multimedia assets receive hardlinks to avoid disk duplication.
-2. **Engine Detection:** `GameDetector.detect_game_environment` inspects files and queries registered extractors for a match.
-3. **Segment Extraction:** The matched extractor calls its `FormatAdapter`, generating deterministic `Segment` items.
-4. **Token Masking:** `TextsUtils` replaces escape sequences, variables, and formatting tags with opaque placeholders.
-5. **Translation:**
-   * `TranslationMemory` checks for pre-existing translations under the same source hash and engine.
-   * New segments are batched and dispatched through the `BaseTranslate` thread pool.
-6. **Unmasking & Reinjection:** Original tokens are restored, and `FormatAdapter.apply_segments` writes the translated strings back into the game structure.
-7. **Audit & Metadata:** `GameMetadata` computes SHA-256 hashes and writes verification records to `.slime/meta.json`.
+`GameDetector.detect_game_environment` asks every registered extractor's `detect` for a score and keeps the best; `main.run_workflow` uses it to fill in `--input` when it is missing. Then `TranslationJob.run` does the work; the figure uses the module-map ids.
+
+```mermaid
+sequenceDiagram
+  accTitle: One translation run
+  accDescr: main starts the job; the extractor looks up the memory, has the engine translate the misses, finishes each file through the pipeline, and the job then writes the files and the metadata.
+  %% @main: main.py#main
+  %% @job: src/job.py#TranslationJob
+  %% @extractor: src/extractor/BaseExtractor.py#BaseExtractor
+  %% @engine: src/translate/TranslationEngine.py#TranslationEngine
+  %% @pipeline: src/pipeline.py#TranslationPipeline
+  %% @translator: src/translate/BaseTranslate.py#BaseTranslate
+  %% @memory: src/translate/TranslationMemory.py#TranslationMemory
+  %% @meta: src/services/GameMetadata.py#save_meta
+  participant main
+  participant job
+  participant extractor
+  participant engine
+  participant pipeline
+  participant translator
+  participant memory
+  participant meta
+  main->>job: run
+  job->>extractor: process_files
+  extractor->>memory: look up every string
+  extractor->>engine: cache misses of all files
+  engine->>translator: batches, in parallel
+  translator-->>engine: translations
+  engine->>memory: store new pairs
+  extractor->>pipeline: finish each file
+  job->>extractor: import_files
+  job->>meta: save .slime/meta.json
+```
+
+* Before extraction, `main.ensure_backup` copies the input to `<input>-<source lang>`, hardlinking when it can (`main.py:133`); `Workspace` only provides the temp `process/` and `output/` folders and commits atomically (`Workspace.commit`).
+* `GameMetadata` hashes every output file with SHA-256 and writes `.slime/meta.json`; `--verify-game` and the retranslate-changed mode read it back.
