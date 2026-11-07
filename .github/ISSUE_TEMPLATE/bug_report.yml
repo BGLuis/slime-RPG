@@ -10,8 +10,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: Python / Docker version
-      description: What version of Python or Docker are you using?
+      label: Slime version and OS
+      description: Output of `slime version`, and your operating system (or Docker image tag).
     validations:
       required: true
   - type: textarea
