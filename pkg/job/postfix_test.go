@@ -68,13 +68,6 @@ func runScenario(t *testing.T, code int, params string, damage func(string) stri
 	return string(doc.Events[1].Pages[0].List[0].Parameters), prov.seen
 }
 
-func writeFile(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 type fixCase struct {
 	Name       string  `json:"name"`
 	Translated string  `json:"translated"`

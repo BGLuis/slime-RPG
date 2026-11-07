@@ -3,6 +3,7 @@ package desktop
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -37,6 +38,10 @@ type JobStartOptions struct {
 	ApiKey      string `json:"apiKey"`
 	Model       string `json:"model"`
 	Endpoint    string `json:"endpoint"`
+
+	// Extractor força o extrator; vazio mantém a detecção automática.
+	Extractor        string            `json:"extractor"`
+	ExtractorOptions map[string]string `json:"extractorOptions"`
 }
 
 // EstimateResult encapsula a estimativa pré-voo calculada para a tela Configurar.
@@ -54,11 +59,11 @@ type EstimateResult struct {
 
 // SlimeService é o serviço de ponte exposto para a UI MyGo via IPC fortemente tipado.
 type SlimeService struct {
-	mu           sync.Mutex
-	currentDir   string
-	activeJob    *job.Job
-	jobCancel    context.CancelFunc
-	mem          *memory.TranslationMemory
+	mu         sync.Mutex
+	currentDir string
+	activeJob  *job.Job
+	jobCancel  context.CancelFunc
+	mem        *memory.TranslationMemory
 }
 
 // NewSlimeService inicializa o serviço bridge.
@@ -77,6 +82,17 @@ func (s *SlimeService) DetectGame(dir string) (*detector.DetectionResult, error)
 		dir = "."
 	}
 	return detector.Detect(dir)
+}
+
+// ExtractorSchema devolve os campos de opções do extrator (nome ou engine detectada)
+// para a tela Configurar desenhar o formulário.
+func (s *SlimeService) ExtractorSchema(name string) job.ConfigSchema {
+	return job.ExtractorSchema(name)
+}
+
+// ProviderSchema devolve os campos de credencial exigidos pelo provedor.
+func (s *SlimeService) ProviderSchema(name string) job.ConfigSchema {
+	return job.ProviderSchema(name)
 }
 
 // Estimate calcula o resumo de segmentos e arquivos antes de iniciar a tradução.
@@ -107,6 +123,9 @@ func (s *SlimeService) Estimate(opts JobStartOptions) (EstimateResult, error) {
 		TargetLang:    opts.TargetLang,
 		Incremental:   opts.Incremental,
 		BackupEnabled: true,
+
+		Extractor:        opts.Extractor,
+		ExtractorOptions: opts.ExtractorOptions,
 	}, nil, mem, prov)
 
 	snap, err := j.Estimate(context.Background())
@@ -179,6 +198,9 @@ func (s *SlimeService) StartJob(opts JobStartOptions) (job.Snapshot, error) {
 		TargetLang:    opts.TargetLang,
 		Incremental:   opts.Incremental,
 		BackupEnabled: true,
+
+		Extractor:        opts.Extractor,
+		ExtractorOptions: opts.ExtractorOptions,
 	}, bus, mem, prov)
 	s.activeJob = j
 
@@ -290,7 +312,11 @@ func (s *SlimeService) OpenFolder(path string) error {
 func (s *SlimeService) resolveProvider(opts JobStartOptions) provider.Provider {
 	switch opts.Provider {
 	case "deepl":
-		return deepl.NewDeepLTranslator(opts.ApiKey)
+		key := opts.ApiKey
+		if key == "" {
+			key = os.Getenv("DEEPL_API_KEY")
+		}
+		return deepl.NewDeepLTranslator(key)
 	case "ollama":
 		model := opts.Model
 		if model == "" {

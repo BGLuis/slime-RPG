@@ -39,7 +39,7 @@ func TestRPGMakerPlanIncludesPluginsJS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := ForDetection(det)
+	plan, err := ForDetection(det, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestWolfPlanCoversBasicDataAndMapData(t *testing.T) {
 		touch(t, filepath.Join(game, f))
 	}
 	det, _ := detector.Detect(game)
-	plan, err := ForDetection(det)
+	plan, err := ForDetection(det, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestPackedWolfGameReportsWhatToDo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ForDetection(det); !errors.Is(err, ErrPackedWolf) {
+	if _, err := ForDetection(det, nil); !errors.Is(err, ErrPackedWolf) {
 		t.Errorf("esperava ErrPackedWolf, obteve %v", err)
 	}
 }

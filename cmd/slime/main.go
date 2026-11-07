@@ -65,6 +65,8 @@ COMANDOS:
 OPÇÕES DE TRADUÇÃO:
   -i, --input        Pasta raiz do jogo ou arquivo (padrão: pasta atual)
   -o, --output       Pasta de destino (padrão: a própria entrada)
+  -e, --extractor    Força o extrator: rpgmaker, wolfrpg, csv, json (padrão: detecção automática)
+  --opt chave=valor  Opção do extrator; repita para várias (ver OPÇÕES DOS EXTRATORES)
   -t, --translator   Provedor: google, deepl, ollama (padrão: google)
   -s, --source       Idioma de origem (padrão: ja)
   -d, --target       Idioma de destino (padrão: pt)
@@ -80,6 +82,12 @@ OPÇÕES DE TRADUÇÃO:
   --json             Emite eventos em JSON Lines para automação
   --tui / --gui      Força a interface de terminal ou desktop
   -h, --help         Exibe esta mensagem
+
+OPÇÕES DOS EXTRATORES (--opt chave=valor):
+  csv.columns=value,text     Colunas a traduzir, separadas por vírgula (vazio: automático)
+  csv.delimiter=;            Delimitador do CSV; use \t para tab (vazio: automático)
+  json.keys=text,name        Chaves JSON a traduzir; * ou all para todas (vazio: padrão)
+  wolf.preserve_title, wolf.target_font, wolf.repack_mode   Reservadas para o Wolf RPG
 
 MEMÓRIA DE TRADUÇÃO:
   slime tm                                              # total de entradas
@@ -102,6 +110,8 @@ EXEMPLOS:
   slime --gui                             # Janela desktop
   slime translate -i ./MeuJogo -d pt      # Tradução headless
   slime -i ./MeuJogo -t deepl --no-backup
+  slime -i ./textos -e json --opt json.keys=text,name
+  slime -i ./loc.csv --opt csv.delimiter=';' --opt csv.columns=Text
 `, version)
 }
 
@@ -178,6 +188,25 @@ type translateOptions struct {
 	noBackup, memoryOnly, switchEngine        bool
 	incremental, noProxy, dryRun, jsonOutput  bool
 	tui, gui, review                          bool
+	extractor                                 string
+	extOpts                                   optionList
+}
+
+// optionList acumula flags --opt chave=valor repetidas.
+type optionList map[string]string
+
+func (l *optionList) String() string { return fmt.Sprint(map[string]string(*l)) }
+
+func (l *optionList) Set(v string) error {
+	key, value, ok := strings.Cut(v, "=")
+	if !ok || strings.TrimSpace(key) == "" {
+		return fmt.Errorf("use chave=valor (recebido %q)", v)
+	}
+	if *l == nil {
+		*l = optionList{}
+	}
+	(*l)[strings.TrimSpace(key)] = value
+	return nil
 }
 
 func (o *translateOptions) register(fs *flag.FlagSet) {
@@ -193,6 +222,8 @@ func (o *translateOptions) register(fs *flag.FlagSet) {
 	}
 	str(&o.input, ".", "Pasta do jogo ou arquivo", "i", "input")
 	str(&o.output, "", "Pasta de destino", "o", "output")
+	str(&o.extractor, "", "Força o extrator: rpgmaker, wolfrpg, csv, json", "e", "extractor")
+	fs.Var(&o.extOpts, "opt", "Opção do extrator chave=valor (repetível)")
 	str(&o.translator, "google", "Provedor de tradução", "t", "translator", "service")
 	str(&o.source, "ja", "Idioma de origem", "s", "source", "from")
 	str(&o.target, "pt", "Idioma de destino", "d", "target", "to")
@@ -233,10 +264,20 @@ func newProvider(o translateOptions) (provider.Provider, error) {
 }
 
 func runHeadless(o translateOptions) int {
+	if err := formats.ValidateOptions(o.extOpts); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	det, err := detector.Detect(o.input)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Erro ao detectar jogo em %s: %v\n", o.input, err)
 		return 1
+	}
+	if o.extractor != "" {
+		if det, err = formats.ForceExtractor(det, o.extractor); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 	}
 	if !o.jsonOutput {
 		fmt.Printf("Jogo detectado: %s (%s)\n", det.GameName, det.Engine)
@@ -272,6 +313,9 @@ func runHeadless(o translateOptions) int {
 		MemoryOnly:    o.memoryOnly,
 		SwitchEngine:  o.switchEngine,
 		Review:        reviewHook(o),
+
+		Extractor:        o.extractor,
+		ExtractorOptions: o.extOpts,
 	}, bus, mem, prov)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
