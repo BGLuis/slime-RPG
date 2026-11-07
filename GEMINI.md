@@ -1,6 +1,6 @@
 # Diretrizes do Projeto: Slime RPG (Go Edition)
 
-Contexto específico da branch de portabilidade para Go (`feat/go-port`). As regras gerais de trabalho ficam no `GEMINI.md` global; aqui entra o que vale para este projeto.
+Contexto específico deste projeto, que é a versão Go do Slime RPG. A versão Python foi aposentada e fica na branch `legacy/python`. As regras gerais de trabalho ficam no `GEMINI.md` global; aqui entra o que vale para este projeto.
 
 ## Visão Geral da Arquitetura (Go)
 Este projeto é uma ferramenta modular desenvolvida em Go para extrair, mascarar variáveis (códigos protegidos), traduzir e reinjetar textos em jogos e formatos estruturados (RPG Maker, Wolf RPG, CSV, JSON).
