@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/BGLuis/slime-rpg/pkg/detector"
@@ -25,9 +26,6 @@ import (
 var (
 	// ErrUnsupported indica que a detecção não encontrou um formato traduzível.
 	ErrUnsupported = errors.New("no supported game format found")
-	// ErrPackedWolf indica um jogo WOLF RPG só com contêineres .wolf, que a versão
-	// Go ainda não desempacota.
-	ErrPackedWolf = errors.New("WOLF RPG game ships only packed .wolf archives: unpack them first (e.g. with UberWolf or WolfDec) so Data/ has loose files")
 )
 
 // Format é o contrato comum dos extratores. rel é o caminho relativo à raiz do
@@ -47,6 +45,15 @@ type Format interface {
 type File struct {
 	Rel    string // relativo à raiz, com '/'
 	Format Format
+	// Read, quando definido, lê o conteúdo de um arquivo que só existe dentro de
+	// um contêiner (ex.: .wolf) e não na pasta do jogo.
+	Read func() ([]byte, error)
+}
+
+// Rewriter é implementado pelos formatos que alteram arquivos mesmo sem
+// segmentos traduzíveis (ex.: a fonte do Game.dat do WOLF RPG).
+type Rewriter interface {
+	Rewrite(rel string, data []byte) (out []byte, changed bool, err error)
 }
 
 // Plan descreve o que um job processa.
@@ -54,6 +61,32 @@ type Plan struct {
 	Root   string // pasta de trabalho: entrada do workspace e base do backup e do metadado
 	Format Format
 	Files  []File
+
+	packed  *wolfrpg.Packed
+	wolf    *wolfrpg.Extractor
+	dataRel string
+}
+
+// Close libera os contêineres abertos pelo plano.
+func (p *Plan) Close() {
+	if p.packed != nil {
+		p.packed.Close()
+		p.packed = nil
+	}
+}
+
+// Repack gera o Data.wolf com os arquivos traduzidos em processDir quando o
+// modo de reempacotamento do WOLF RPG está ligado. Sem o modo, não faz nada.
+// Devolve o caminho relativo à raiz do que foi gerado.
+func (p *Plan) Repack(processDir string) (string, error) {
+	if p.wolf == nil || !p.wolf.RepackMode {
+		return "", nil
+	}
+	rel := filepath.ToSlash(filepath.Join(p.dataRel, "Data.wolf"))
+	if p.packed == nil {
+		return "", nil
+	}
+	return rel, p.packed.Repack(p.dataRel, processDir, filepath.Join(processDir, filepath.FromSlash(rel)))
 }
 
 // Includes indica se o arquivo faz parte do plano.
@@ -62,15 +95,14 @@ func (p *Plan) Includes(rel string) bool {
 	return found
 }
 
-// Chaves de opções dos extratores (job.Config.ExtractorOptions). As chaves wolf.*
-// são reservadas: o plano as repassa ao formato Wolf, que as interpreta.
+// Chaves de opções dos extratores (job.Config.ExtractorOptions).
 const (
-	OptCSVColumns      = "csv.columns"   // nomes separados por vírgula
-	OptCSVDelimiter    = "csv.delimiter" // um caractere; `\t` vale tab
-	OptJSONKeys        = "json.keys"     // chaves separadas por vírgula; "*" ou "all" = todas
-	OptWolfPreserveTit = "wolf.preserve_title"
-	OptWolfTargetFont  = "wolf.target_font"
-	OptWolfRepackMode  = "wolf.repack_mode"
+	OptCSVColumns      = "csv.columns"         // nomes separados por vírgula
+	OptCSVDelimiter    = "csv.delimiter"       // um caractere; `\t` vale tab
+	OptJSONKeys        = "json.keys"           // chaves separadas por vírgula; "*" ou "all" = todas
+	OptWolfPreserveTit = "wolf.preserve_title" // booleano; padrão true (não invalida saves)
+	OptWolfTargetFont  = "wolf.target_font"    // nome da fonte; vazio mantém a do jogo
+	OptWolfRepackMode  = "wolf.repack_mode"    // booleano; true gera Data/Data.wolf
 )
 
 // KnownOptions lista as chaves aceitas em ExtractorOptions.
@@ -86,12 +118,47 @@ func ValidateOptions(opts map[string]string) error {
 			return fmt.Errorf("unknown extractor option %q (known: %s)", k, strings.Join(KnownOptions, ", "))
 		}
 	}
+	for _, k := range []string{OptWolfPreserveTit, OptWolfRepackMode} {
+		if v := opts[k]; strings.TrimSpace(v) != "" {
+			if _, valid := parseBool(v); !valid {
+				return fmt.Errorf("invalid %s %q: use true or false", k, v)
+			}
+		}
+	}
 	if v := opts[OptCSVDelimiter]; v != "" {
 		if _, ok := parseDelimiter(v); !ok {
 			return fmt.Errorf("invalid %s %q: use a single character or \\t", OptCSVDelimiter, v)
 		}
 	}
 	return nil
+}
+
+// wolfOptions traduz as chaves wolf.* para o formato de ApplyOptions, com os
+// booleanos já normalizados para "true"/"false". Valor vazio mantém o padrão.
+func wolfOptions(opts map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, k := range []string{OptWolfPreserveTit, OptWolfTargetFont, OptWolfRepackMode} {
+		v := opts[k]
+		if strings.TrimSpace(v) == "" {
+			continue
+		}
+		if k != OptWolfTargetFont {
+			b, _ := parseBool(v)
+			v = strconv.FormatBool(b)
+		}
+		out[strings.TrimPrefix(k, "wolf.")] = v
+	}
+	return out
+}
+
+func parseBool(v string) (value, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "sim", "s", "y", "on":
+		return true, true
+	case "false", "0", "no", "nao", "não", "n", "off":
+		return false, true
+	}
+	return false, false
 }
 
 // parseDelimiter aceita um único caractere ou as sequências literais `\t` e `\n`,
@@ -207,13 +274,36 @@ func ForDetection(det *detector.DetectionResult, opts map[string]string) (*Plan,
 	}
 	if w, ok := format.(wolf); ok {
 		w.x.Dir = plan.Root
-		if len(plan.Files) == 0 && hasPackedWolf(scanDirs(det)) {
-			return nil, ErrPackedWolf
+		plan.wolf = w.x
+		if err := plan.addPacked(scanDirs(det), format, w.x); err != nil {
+			return nil, err
 		}
 	}
 	slices.SortFunc(plan.Files, func(a, b File) int { return strings.Compare(a.Rel, b.Rel) })
 	plan.Files = slices.CompactFunc(plan.Files, func(a, b File) bool { return a.Rel == b.Rel })
 	return plan, nil
+}
+
+// addPacked inclui no plano os arquivos que só existem dentro de contêineres
+// .wolf. Eles são lidos sob demanda; a pasta do jogo não é alterada.
+func (p *Plan) addPacked(dirs []string, format Format, x *wolfrpg.Extractor) error {
+	packed, err := wolfrpg.OpenPacked(p.Root, dirs)
+	if err != nil {
+		return err
+	}
+	p.packed = packed
+	x.Packed = packed
+	if rel, err := filepath.Rel(p.Root, dirs[0]); err == nil {
+		if rel != "." {
+			p.dataRel = filepath.ToSlash(rel)
+		}
+	}
+	for _, rel := range packed.Pending() {
+		if format.Handles(rel) {
+			p.Files = append(p.Files, File{Rel: rel, Format: format, Read: func() ([]byte, error) { return packed.Read(rel) }})
+		}
+	}
+	return nil
 }
 
 // ForEngine devolve o formato da engine detectada, já configurado com opts.
@@ -224,7 +314,10 @@ func ForEngine(engine detector.GameEngine, opts map[string]string) Format {
 	case detector.EngineRPGMakerVXAce, detector.EngineRPGMakerXP:
 		return rvData{x: rvdata.NewExtractor()}
 	case detector.EngineWolfRPG:
-		return wolf{x: wolfrpg.NewExtractor(), opts: opts}
+		x := wolfrpg.NewExtractor()
+		x.PreserveTitle = true
+		x.ApplyOptions(wolfOptions(opts))
+		return wolf{x: x}
 	case detector.EngineCSV:
 		x := csvx.NewCSVExtractor()
 		x.Columns = splitList(opts[OptCSVColumns])
@@ -325,11 +418,7 @@ func (f rvData) Inject(rel string, data []byte, segs []*model.Segment, _, tgt st
 }
 func (rvData) Masker() *masking.Masker { return masking.NewMaskerWith(rpgtext.MaskMatchers()...) }
 
-// wolf carrega as opções wolf.* sem interpretá-las: o comportamento fica no extrator.
-type wolf struct {
-	x    *wolfrpg.Extractor
-	opts map[string]string
-}
+type wolf struct{ x *wolfrpg.Extractor }
 
 func (wolf) Name() string              { return "wolfrpg" }
 func (wolf) Extensions() []string      { return []string{"mps", "dat", "txt"} }
@@ -340,7 +429,17 @@ func (f wolf) Extract(rel string, data []byte, src, _ string) ([]*model.Segment,
 func (f wolf) Inject(rel string, data []byte, segs []*model.Segment, _, tgt string) ([]byte, error) {
 	return f.x.Inject(rel, data, segs, tgt)
 }
-func (wolf) Masker() *masking.Masker { return masking.NewMaskerWith(wolfrpg.MaskMatchers()...) }
+func (f wolf) Rewrite(rel string, data []byte) ([]byte, bool, error) { return f.x.Rewrite(rel, data) }
+func (wolf) Masker() *masking.Masker                                 { return masking.NewMaskerWith(wolfrpg.MaskMatchers()...) }
+
+// WolfOptions devolve o extrator WOLF RPG para configurar PreserveTitle, TargetFont
+// e RepackMode; nil para os outros formatos.
+func WolfOptions(f Format) *wolfrpg.Extractor {
+	if w, ok := f.(wolf); ok {
+		return w.x
+	}
+	return nil
+}
 
 type csvFormat struct{ x *csvx.CSVExtractor }
 
@@ -389,14 +488,4 @@ func ExtensionsFor(name string) (string, []string) {
 		return "json", []string{"json"}
 	}
 	return "", nil
-}
-
-func hasPackedWolf(dirs []string) bool {
-	for _, dir := range dirs {
-		matches, _ := filepath.Glob(filepath.Join(dir, "*.wolf"))
-		if len(matches) > 0 {
-			return true
-		}
-	}
-	return false
 }

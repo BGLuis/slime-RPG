@@ -87,7 +87,9 @@ OPÇÕES DOS EXTRATORES (--opt chave=valor):
   csv.columns=value,text     Colunas a traduzir, separadas por vírgula (vazio: automático)
   csv.delimiter=;            Delimitador do CSV; use \t para tab (vazio: automático)
   json.keys=text,name        Chaves JSON a traduzir; * ou all para todas (vazio: padrão)
-  wolf.preserve_title, wolf.target_font, wolf.repack_mode   Reservadas para o Wolf RPG
+  wolf.preserve_title=true   Mantém o título do Game.dat para não invalidar saves (padrão: true)
+  wolf.target_font=Nome      Fonte gravada no Game.dat (vazio: mantém a do jogo)
+  wolf.repack_mode=false     true também gera Data/Data.wolf (padrão: arquivos soltos em Data/)
 
 MEMÓRIA DE TRADUÇÃO:
   slime tm                                              # total de entradas

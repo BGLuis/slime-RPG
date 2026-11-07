@@ -25,6 +25,15 @@ func ExtractorSchema(name string) ConfigSchema {
 			{Key: formats.OptJSONKeys, Label: "Chaves a traduzir", Type: "text",
 				Help: "Nomes separados por vírgula (ex: text,name,description) ou * para todas. Vazio = chaves padrão."},
 		}}
+	case "wolfrpg":
+		return ConfigSchema{Fields: []ConfigSchemaField{
+			{Key: formats.OptWolfPreserveTit, Label: "Manter título original", Type: "bool", Default: "true",
+				Help: "true mantém o título do Game.dat, o que evita invalidar saves existentes."},
+			{Key: formats.OptWolfTargetFont, Label: "Fonte", Type: "text",
+				Help: "Nome da fonte a gravar no Game.dat. Vazio = mantém a fonte do jogo."},
+			{Key: formats.OptWolfRepackMode, Label: "Reempacotar Data.wolf", Type: "bool", Default: "false",
+				Help: "false grava os arquivos traduzidos soltos em Data/; true também gera Data/Data.wolf."},
+		}}
 	}
 	return ConfigSchema{}
 }

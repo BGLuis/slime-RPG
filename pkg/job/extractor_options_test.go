@@ -119,7 +119,7 @@ func TestUnknownExtractorAndOptionAreRejected(t *testing.T) {
 }
 
 func TestExtractorSchemaKeysAreAccepted(t *testing.T) {
-	for _, name := range []string{"CSV", "json", "csv"} {
+	for _, name := range []string{"CSV", "json", "csv", "WOLF RPG"} {
 		for _, f := range ExtractorSchema(name).Fields {
 			if err := validateKnown(f.Key); err != nil {
 				t.Errorf("%s: %v", name, err)
