@@ -10,6 +10,7 @@ import (
 
 	"github.com/BGLuis/slime-rpg/pkg/detector"
 	"github.com/BGLuis/slime-rpg/pkg/event"
+	"github.com/BGLuis/slime-rpg/pkg/i18n"
 	"github.com/BGLuis/slime-rpg/pkg/job"
 	"github.com/BGLuis/slime-rpg/pkg/memory"
 	"github.com/BGLuis/slime-rpg/pkg/paths"
@@ -18,6 +19,7 @@ import (
 	"github.com/BGLuis/slime-rpg/pkg/provider/google"
 	"github.com/BGLuis/slime-rpg/pkg/provider/ollama"
 	"github.com/BGLuis/slime-rpg/pkg/provider/proxy"
+	"github.com/BGLuis/slime-rpg/pkg/settings"
 	"github.com/egoist/mygo"
 )
 
@@ -71,6 +73,46 @@ func NewSlimeService(initialDir string) *SlimeService {
 	return &SlimeService{
 		currentDir: initialDir,
 	}
+}
+
+// LanguageOption é um idioma de interface oferecido no seletor.
+type LanguageOption struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+// LanguageInfo entrega ao frontend o idioma ativo, as opções e as strings já traduzidas.
+type LanguageInfo struct {
+	Current string            `json:"current"`
+	Options []LanguageOption  `json:"options"`
+	Strings map[string]string `json:"strings"`
+}
+
+// GetLanguage devolve o idioma ativo da interface e a tabela de strings correspondente.
+func (s *SlimeService) GetLanguage() LanguageInfo {
+	cur := i18n.Current()
+	info := LanguageInfo{Current: string(cur), Strings: i18n.Table(cur)}
+	for _, l := range i18n.Supported {
+		info.Options = append(info.Options, LanguageOption{Code: string(l), Name: i18n.Names[l]})
+	}
+	return info
+}
+
+// SetLanguage persiste o idioma no settings.db (compartilhado com a versão Python).
+// O idioma só muda na próxima abertura; a mensagem de aviso já vem no novo idioma.
+func (s *SlimeService) SetLanguage(code string) (string, error) {
+	l, ok := i18n.Normalize(code)
+	if !ok {
+		return "", fmt.Errorf("%s", i18n.T("lang_invalid", code))
+	}
+	path, err := paths.SettingsDBPath()
+	if err != nil {
+		return "", err
+	}
+	if err := settings.SaveLanguage(path, l); err != nil {
+		return "", err
+	}
+	return i18n.TrIn(l, "ui_language_changed", i18n.Names[l]), nil
 }
 
 // DetectGame analisa o diretório fornecido e retorna o motor, data dir e idioma provável.

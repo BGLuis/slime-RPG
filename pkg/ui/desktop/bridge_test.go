@@ -3,10 +3,12 @@ package desktop
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BGLuis/slime-rpg/pkg/detector"
 	"github.com/BGLuis/slime-rpg/pkg/job"
+	"github.com/BGLuis/slime-rpg/pkg/settings"
 )
 
 func TestSlimeService_DetectAndLifecycle(t *testing.T) {
@@ -97,5 +99,30 @@ func TestSlimeService_DetectAndLifecycle(t *testing.T) {
 	// 7. ApplyCorrection em id inexistente deve falhar graciosamente
 	if err := svc.ApplyCorrection("non-existent-id", "Novo texto", false); err == nil {
 		t.Errorf("expected error applying correction on non existent id, got nil")
+	}
+}
+
+func TestSlimeService_Language(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.db")
+	t.Setenv("SLIME_SETTINGS_DB", path)
+	svc := NewSlimeService("")
+
+	info := svc.GetLanguage()
+	if len(info.Options) != 2 || info.Strings["ui_step_game"] == "" {
+		t.Fatalf("GetLanguage incompleto: %+v", info.Options)
+	}
+
+	msg, err := svc.SetLanguage("en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(msg, "Restart") {
+		t.Errorf("mensagem deveria vir em inglês: %q", msg)
+	}
+	if got := settings.StoredLanguage(path); got != "en" {
+		t.Errorf("armazenado = %q, quer en", got)
+	}
+	if _, err := svc.SetLanguage("xx"); err == nil {
+		t.Error("esperava erro para idioma inválido")
 	}
 }

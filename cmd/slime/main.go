@@ -20,6 +20,7 @@ import (
 	"github.com/BGLuis/slime-rpg/pkg/event"
 	"github.com/BGLuis/slime-rpg/pkg/filenames"
 	"github.com/BGLuis/slime-rpg/pkg/formats"
+	"github.com/BGLuis/slime-rpg/pkg/i18n"
 	"github.com/BGLuis/slime-rpg/pkg/job"
 	"github.com/BGLuis/slime-rpg/pkg/memory"
 	"github.com/BGLuis/slime-rpg/pkg/metadata"
@@ -29,6 +30,7 @@ import (
 	"github.com/BGLuis/slime-rpg/pkg/provider/google"
 	"github.com/BGLuis/slime-rpg/pkg/provider/ollama"
 	"github.com/BGLuis/slime-rpg/pkg/provider/proxy"
+	"github.com/BGLuis/slime-rpg/pkg/settings"
 	"github.com/BGLuis/slime-rpg/pkg/ui/desktop"
 	"github.com/BGLuis/slime-rpg/pkg/ui/tui"
 	tea "github.com/charmbracelet/bubbletea"
@@ -42,83 +44,15 @@ var (
 )
 
 // languages são os idiomas oferecidos pela versão Python.
-var languages = [][2]string{
-	{"pt", "Português"}, {"en", "Inglês"}, {"es", "Espanhol"}, {"fr", "Francês"},
-	{"it", "Italiano"}, {"ja", "Japonês"}, {"auto", "Automático (Detectar)"},
-}
+var languages = []string{"pt", "en", "es", "fr", "it", "ja", "auto"}
 
 func printUsage() {
-	fmt.Printf(`Slime RPG (Go Edition) v%s
-
-USO:
-  slime [comando] [opções]
-
-COMANDOS:
-  translate       Extrai, traduz e reinjeta textos no jogo (padrão)
-  verify          Confere a pasta traduzida contra o .slime/meta.json
-  adopt           Registra o metadado de um jogo já traduzido
-  filenames       Traduz os nomes dos arquivos de uma pasta
-  tm              Memória de Tradução: contagem, export/import TMX e glossário
-  list            Lista extratores, tradutores e idiomas suportados
-  version         Exibe informações detalhadas de versão e build
-
-OPÇÕES DE TRADUÇÃO:
-  -i, --input        Pasta raiz do jogo ou arquivo (padrão: pasta atual)
-  -o, --output       Pasta de destino (padrão: a própria entrada)
-  -e, --extractor    Força o extrator: rpgmaker, wolfrpg, csv, json (padrão: detecção automática)
-  --opt chave=valor  Opção do extrator; repita para várias (ver OPÇÕES DOS EXTRATORES)
-  -t, --translator   Provedor: google, deepl, ollama (padrão: google)
-  -s, --source       Idioma de origem (padrão: ja)
-  -d, --target       Idioma de destino (padrão: pt)
-  --synopsis         Sinopse do jogo para dar contexto ao Ollama
-  --model            Modelo do Ollama (padrão: $OLLAMA_MODEL ou qwen2.5)
-  --no-backup        Não criar o backup <pasta>-<origem>
-  --memory-only      Aplica só a Memória de Tradução, sem rede (alias: --offline)
-  --switch-engine    Ignora traduções automáticas de outros provedores na memória
-  --incremental      Traduz só arquivos novos ou alterados (padrão: true)
-  --no-proxy         Não usar o pool de proxies quando o Google bloquear o IP
-  --dry-run          Calcula a estimativa pré-voo sem alterar arquivos
-  --review           Pausa antes de gravar para inspecionar a pasta de processamento (só em terminal)
-  --json             Emite eventos em JSON Lines para automação
-  --tui / --gui      Força a interface de terminal ou desktop
-  -h, --help         Exibe esta mensagem
-
-OPÇÕES DOS EXTRATORES (--opt chave=valor):
-  csv.columns=value,text     Colunas a traduzir, separadas por vírgula (vazio: automático)
-  csv.delimiter=;            Delimitador do CSV; use \t para tab (vazio: automático)
-  json.keys=text,name        Chaves JSON a traduzir; * ou all para todas (vazio: padrão)
-  wolf.preserve_title=true   Mantém o título do Game.dat para não invalidar saves (padrão: true)
-  wolf.target_font=Nome      Fonte gravada no Game.dat (vazio: mantém a do jogo)
-  wolf.repack_mode=false     true também gera Data/Data.wolf (padrão: arquivos soltos em Data/)
-
-MEMÓRIA DE TRADUÇÃO:
-  slime tm                                              # total de entradas
-  slime tm export --src ja --tgt pt --out f.tmx [--status reviewed,locked]
-  slime tm import --file f.tmx [--engine human] [--status reviewed|locked|machine]
-  slime tm glossary --src ja --tgt pt --source "ルイ" --target "Rui"
-  slime tm glossary --src ja --tgt pt --list
-  slime tm repair [--db memory.db] [--apply]            # dry-run por padrão; --apply faz backup e grava
-  slime tm migrate-legacy --dir cache [--db memory.db]  # importa cache/<engine>/cache_<src>_<tgt>.json
-
-NOMES DE ARQUIVO:
-  slime filenames -i <pasta> [-o <saída>] [-t google -s ja -d pt] [--keep-original]
-
-VERIFICAÇÃO E ADOÇÃO:
-  slime verify <pasta-traduzida> [--original <pasta>]
-  slime adopt <pasta-traduzida> --original <pasta> -e <extrator> [-s en -d pt]
-
-EXEMPLOS:
-  slime                                   # TUI interativa na pasta atual
-  slime --gui                             # Janela desktop
-  slime translate -i ./MeuJogo -d pt      # Tradução headless
-  slime -i ./MeuJogo -t deepl --no-backup
-  slime -i ./textos -e json --opt json.keys=text,name
-  slime -i ./loc.csv --opt csv.delimiter=';' --opt csv.columns=Text
-`, version)
+	fmt.Print(i18n.T("usage", version))
 }
 
 func main() {
-	args := os.Args[1:]
+	args, langFlag := extractLangFlag(os.Args[1:])
+	i18n.Set(settings.ResolveLanguage(langFlag, os.Getenv))
 	cmd := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		cmd, args = args[0], args[1:]
@@ -142,9 +76,11 @@ func main() {
 	case "list":
 		printLists()
 		return
+	case "lang":
+		os.Exit(runLang(args))
 	case "", "translate":
 	default:
-		fmt.Fprintf(os.Stderr, "Comando desconhecido: %s\n\n", cmd)
+		fmt.Fprint(os.Stderr, i18n.T("unknown_command", cmd))
 		printUsage()
 		os.Exit(2)
 	}
@@ -161,7 +97,7 @@ func main() {
 
 	if o.gui {
 		if err := desktop.Run(o.input); err != nil {
-			fmt.Fprintf(os.Stderr, "Erro ao iniciar interface desktop: %v\n", err)
+			fmt.Fprint(os.Stderr, i18n.T("err_gui_start", err))
 			os.Exit(1)
 		}
 		return
@@ -171,7 +107,7 @@ func main() {
 	if (o.tui || (isTerminal && len(args) == 0 && cmd == "")) && !o.dryRun {
 		p := tea.NewProgram(tui.NewModel(o.input), tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Erro ao iniciar TUI: %v\n", err)
+			fmt.Fprint(os.Stderr, i18n.T("err_tui_start", err))
 			os.Exit(1)
 		}
 		return
@@ -202,7 +138,7 @@ func (l *optionList) String() string { return fmt.Sprint(map[string]string(*l)) 
 func (l *optionList) Set(v string) error {
 	key, value, ok := strings.Cut(v, "=")
 	if !ok || strings.TrimSpace(key) == "" {
-		return fmt.Errorf("use chave=valor (recebido %q)", v)
+		return errors.New(i18n.T("err_option_format", v))
 	}
 	if *l == nil {
 		*l = optionList{}
@@ -248,7 +184,7 @@ func newProvider(o translateOptions) (provider.Provider, error) {
 	case "deepl":
 		key := os.Getenv("DEEPL_API_KEY")
 		if key == "" {
-			return nil, errors.New("defina DEEPL_API_KEY para usar o DeepL")
+			return nil, errors.New(i18n.T("err_deepl_key"))
 		}
 		return deepl.NewDeepLTranslator(key), nil
 	case "ollama":
@@ -262,7 +198,7 @@ func newProvider(o translateOptions) (provider.Provider, error) {
 		pm.UsePublicSources()
 		return google.NewGoogleTranslator(pm), nil
 	}
-	return nil, fmt.Errorf("tradutor desconhecido: %s (use google, deepl ou ollama)", o.translator)
+	return nil, errors.New(i18n.T("err_unknown_translator", o.translator))
 }
 
 func runHeadless(o translateOptions) int {
@@ -272,7 +208,7 @@ func runHeadless(o translateOptions) int {
 	}
 	det, err := detector.Detect(o.input)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Erro ao detectar jogo em %s: %v\n", o.input, err)
+		fmt.Fprint(os.Stderr, i18n.T("err_detect", o.input, err))
 		return 1
 	}
 	if o.extractor != "" {
@@ -282,9 +218,9 @@ func runHeadless(o translateOptions) int {
 		}
 	}
 	if !o.jsonOutput {
-		fmt.Printf("Jogo detectado: %s (%s)\n", det.GameName, det.Engine)
-		fmt.Printf("Pasta de dados: %s (%d arquivos)\n", det.DataDir, det.FileCount)
-		fmt.Printf("Serviço: %s | Idiomas: %s → %s\n", o.translator, o.source, o.target)
+		fmt.Print(i18n.T("detected_game", det.GameName, det.Engine))
+		fmt.Print(i18n.T("detected_data", det.DataDir, det.FileCount))
+		fmt.Print(i18n.T("detected_service", o.translator, o.source, o.target))
 	}
 
 	var prov provider.Provider
@@ -326,16 +262,15 @@ func runHeadless(o translateOptions) int {
 	if o.dryRun {
 		est, err := j.Estimate(ctx)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Erro ao calcular estimativa: %v\n", err)
+			fmt.Fprint(os.Stderr, i18n.T("err_estimate", err))
 			return 1
 		}
 		if o.jsonOutput {
 			_ = json.NewEncoder(os.Stdout).Encode(est)
 		} else {
-			fmt.Println("\n--- Estimativa Pré-Voo ---")
-			fmt.Printf("Arquivos: %d (a processar: %d) | Segmentos: %d (na memória: %d)\n",
-				est.FilesTotal, est.FilesToProcess, est.SegmentsTotal, est.SegmentsCached)
-			fmt.Printf("Tempo estimado: %s | Backup: %s\n", est.EstimatedDuration, est.BackupPath)
+			fmt.Println(i18n.T("estimate_title"))
+			fmt.Print(i18n.T("estimate_files", est.FilesTotal, est.FilesToProcess, est.SegmentsTotal, est.SegmentsCached))
+			fmt.Print(i18n.T("estimate_time", est.EstimatedDuration, est.BackupPath))
 		}
 		return 0
 	}
@@ -365,7 +300,7 @@ func runHeadless(o translateOptions) int {
 	bus.UnsubscribeEvents(ch)
 
 	if runErr != nil {
-		fmt.Fprintf(os.Stderr, "Erro durante a tradução: %v\n", runErr)
+		fmt.Fprint(os.Stderr, i18n.T("err_run", runErr))
 	}
 	snap := j.Snapshot()
 	if !o.jsonOutput {
@@ -386,7 +321,7 @@ func reviewHook(o translateOptions) func(string) bool {
 }
 
 func confirmReview(in io.Reader, out io.Writer, dir string) bool {
-	fmt.Fprintf(out, "\nRevise os arquivos traduzidos em: %s\nEnter para gravar no jogo, 'n' para abortar: ", dir)
+	fmt.Fprint(out, i18n.T("review_prompt", dir))
 	line, _ := bufio.NewReader(in).ReadString('\n')
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer != "n" && answer != "no" && answer != "nao" && answer != "não"
@@ -395,17 +330,16 @@ func confirmReview(in io.Reader, out io.Writer, dir string) bool {
 func printEvent(env event.Envelope) {
 	switch e := env.Data.(type) {
 	case event.PhaseChangedEvent:
-		fmt.Printf("[FASE] %s: %s\n", e.Phase, e.Message)
+		fmt.Print(i18n.T("event_phase", e.Phase, e.Message))
 	case event.FileStatusEvent:
 		if e.Status == event.StatusWaiting || e.Status == event.StatusProcessing {
 			return
 		}
 		fmt.Printf("[%s] %s - %s\n", strings.ToUpper(string(e.Status)), e.File, e.Message)
 	case event.ProviderThrottledEvent:
-		fmt.Printf("[AVISO] %s: %s\n", e.Provider, e.Message)
+		fmt.Print(i18n.T("event_warn", e.Provider, e.Message))
 	case event.JobFinishedEvent:
-		fmt.Printf("[FIM] %d concluído(s), %d parcial(is), %d com erro em %s\n",
-			e.FilesComplete, e.FilesPartial, e.FilesError, e.Duration.Round(time.Millisecond))
+		fmt.Print(i18n.T("event_end", e.FilesComplete, e.FilesPartial, e.FilesError, e.Duration.Round(time.Millisecond)))
 	}
 }
 
@@ -421,29 +355,28 @@ func printSummary(snap job.Snapshot) {
 		}
 	}
 	if len(failed) > 0 {
-		fmt.Println("--- Arquivos com falha de processamento ---")
+		fmt.Println(i18n.T("summary_failed"))
 		for _, f := range failed {
 			fmt.Printf("  ✗ %s: %s\n", f.Path, f.Message)
 		}
 	}
 	if len(partial) > 0 {
-		fmt.Println("--- Arquivos com tradução parcial (<100%) ---")
+		fmt.Println(i18n.T("summary_partial"))
 		for _, f := range partial {
 			fmt.Printf("  • %s: %s\n", f.Path, f.Message)
 		}
 	}
-	fmt.Printf("Segmentos: %d (memória: %d, novos: %d) | Backup: %s | Metadado: %s\n",
-		snap.SegmentsTotal, snap.SegmentsCached, snap.SegmentsNew, snap.BackupPath, snap.MetaPath)
+	fmt.Print(i18n.T("summary_line", snap.SegmentsTotal, snap.SegmentsCached, snap.SegmentsNew, snap.BackupPath, snap.MetaPath))
 }
 
 func openMemory() (*memory.TranslationMemory, error) {
 	memPath, err := paths.MemoryDBPath()
 	if err != nil {
-		return nil, fmt.Errorf("erro ao resolver banco de memória: %w", err)
+		return nil, errors.New(i18n.T("err_memory_resolve", err))
 	}
 	mem, err := memory.New(memPath)
 	if err != nil {
-		return nil, fmt.Errorf("erro ao abrir banco de memória %s: %w", memPath, err)
+		return nil, errors.New(i18n.T("err_memory_open", memPath, err))
 	}
 	return mem, nil
 }
@@ -451,7 +384,7 @@ func openMemory() (*memory.TranslationMemory, error) {
 // runVerify equivale ao --verify-game da versão Python.
 func runVerify(args []string) int {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
-	original := fs.String("original", "", "Pasta com os arquivos originais")
+	original := fs.String("original", "", i18n.T("flag_original"))
 	dir, rest := splitPositional(args)
 	_ = fs.Parse(rest)
 	if dir == "" {
@@ -460,7 +393,7 @@ func runVerify(args []string) int {
 
 	report, err := metadata.Verify(dir, *original, nil)
 	if errors.Is(err, metadata.ErrNoMeta) {
-		fmt.Printf("Sem metadado em %s. Use 'slime adopt' para registrar o jogo.\n", dir)
+		fmt.Print(i18n.T("verify_no_meta", dir))
 		return 1
 	}
 	if err != nil {
@@ -472,7 +405,7 @@ func runVerify(args []string) int {
 			fmt.Printf("  [%s] %s\n", r.State, r.File)
 		}
 	}
-	fmt.Printf("Resumo: %s\n", formatSummary(metadata.Summarize(report)))
+	fmt.Print(i18n.T("verify_summary", formatSummary(metadata.Summarize(report))))
 	return 0
 }
 
@@ -480,28 +413,28 @@ func runVerify(args []string) int {
 // fora do Slime comparando-a com a pasta original.
 func runAdopt(args []string) int {
 	fs := flag.NewFlagSet("adopt", flag.ExitOnError)
-	original := fs.String("original", "", "Pasta com os arquivos originais")
+	original := fs.String("original", "", i18n.T("flag_original"))
 	var extractor, source, target string
 	for _, n := range []string{"e", "extractor"} {
-		fs.StringVar(&extractor, n, "", "Extrator: rpgmaker, wolfrpg, csv, json")
+		fs.StringVar(&extractor, n, "", i18n.T("flag_extractor"))
 	}
 	for _, n := range []string{"s", "source"} {
-		fs.StringVar(&source, n, "", "Idioma de origem")
+		fs.StringVar(&source, n, "", i18n.T("flag_source"))
 	}
 	for _, n := range []string{"d", "target"} {
-		fs.StringVar(&target, n, "", "Idioma de destino")
+		fs.StringVar(&target, n, "", i18n.T("flag_target"))
 	}
 	dir, rest := splitPositional(args)
 	_ = fs.Parse(rest)
 
 	name, exts := formats.ExtensionsFor(extractor)
 	if dir == "" || *original == "" || exts == nil {
-		fmt.Fprintln(os.Stderr, "adopt exige a pasta traduzida, --original e -e/--extractor (rpgmaker, wolfrpg, csv, json).")
+		fmt.Fprintln(os.Stderr, i18n.T("adopt_usage"))
 		return 1
 	}
 	for _, folder := range []string{dir, *original} {
 		if info, err := os.Stat(folder); err != nil || !info.IsDir() {
-			fmt.Fprintf(os.Stderr, "Pasta não existe: %s\n", folder)
+			fmt.Fprint(os.Stderr, i18n.T("adopt_no_dir", folder))
 			return 1
 		}
 	}
@@ -519,7 +452,7 @@ func runAdopt(args []string) int {
 	for _, f := range meta.Files {
 		states[f.Status]++
 	}
-	fmt.Printf("Metadado gravado em %s\n  %d arquivo(s) registrados: %s\n", path, len(meta.Files), formatSummary(states))
+	fmt.Print(i18n.T("adopt_saved", path, len(meta.Files), formatSummary(states)))
 	return 0
 }
 
@@ -593,12 +526,12 @@ func runTM(args []string) int {
 			return 1
 		}
 		path, _ := paths.MemoryDBPath()
-		fmt.Printf("Memória de Tradução (%s): %d entradas registradas.\n", path, count)
+		fmt.Print(i18n.T("tm_count", path, count))
 		return 0
 
 	case "export":
 		if *src == "" || *tgt == "" || *out == "" {
-			fmt.Fprintln(os.Stderr, "tm export exige --src, --tgt e --out")
+			fmt.Fprintln(os.Stderr, i18n.T("tm_export_need"))
 			return 2
 		}
 		var statuses []memory.Status
@@ -622,7 +555,7 @@ func runTM(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		fmt.Printf("%d segmentos exportados para %s\n", len(pairs), *out)
+		fmt.Print(i18n.T("tm_export_done", len(pairs), *out))
 		return 0
 
 	case "import":
@@ -631,7 +564,7 @@ func runTM(args []string) int {
 			st = memory.StatusReviewed
 		}
 		if *file == "" || (st != memory.StatusReviewed && st != memory.StatusLocked && st != memory.StatusMachine) {
-			fmt.Fprintln(os.Stderr, "tm import exige --file e --status reviewed, locked ou machine")
+			fmt.Fprintln(os.Stderr, i18n.T("tm_import_need"))
 			return 2
 		}
 		f, err := os.Open(*file)
@@ -653,12 +586,12 @@ func runTM(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		fmt.Printf("%d segmentos importados (status=%s), %d ignorados (incompletos)\n", len(units), st, skipped)
+		fmt.Print(i18n.T("tm_import_done", len(units), st, skipped))
 		return 0
 
 	case "glossary":
 		if *src == "" || *tgt == "" {
-			fmt.Fprintln(os.Stderr, "tm glossary exige --src e --tgt")
+			fmt.Fprintln(os.Stderr, i18n.T("tm_gloss_need"))
 			return 2
 		}
 		if *list {
@@ -673,17 +606,17 @@ func runTM(args []string) int {
 			return 0
 		}
 		if *source == "" || *target == "" {
-			fmt.Fprintln(os.Stderr, "Use --source e --target para travar um termo, ou --list para listar.")
+			fmt.Fprintln(os.Stderr, i18n.T("tm_gloss_terms"))
 			return 2
 		}
 		if err := mem.LockTerm(ctx, *src, *tgt, "glossary", *source, *target); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		fmt.Printf("Travado: %q -> %q\n", *source, *target)
+		fmt.Print(i18n.T("tm_locked", *source, *target))
 		return 0
 	}
-	fmt.Fprintf(os.Stderr, "Subcomando desconhecido: tm %s (use export, import ou glossary)\n", sub)
+	fmt.Fprint(os.Stderr, i18n.T("tm_unknown_sub", sub))
 	return 2
 }
 
@@ -715,17 +648,17 @@ func runTMRepair(args []string) int {
 		fmt.Fprintln(os.Stderr, "tm repair:", err)
 		return 1
 	}
-	verb := map[bool]string{false: "seriam afetadas", true: "afetadas"}[*apply]
-	fmt.Printf("Banco: %s\n", path)
+	verb := map[bool]string{false: i18n.T("tm_verb_would"), true: i18n.T("tm_verb_applied")}[*apply]
+	fmt.Print(i18n.T("tm_repair_db", path))
 	labels := map[string]string{
-		memory.RepairCase:   "Caixa de códigos de controle restaurada",
-		memory.RepairName:   "Tags \\NAME[...] normalizadas",
-		memory.RepairXTOK:   "Linhas com __XTOK_ removidas",
-		memory.RepairEngine: "Linhas de engines de teste removidas",
+		memory.RepairCase:   i18n.T("tm_repair_case"),
+		memory.RepairName:   i18n.T("tm_repair_name"),
+		memory.RepairXTOK:   i18n.T("tm_repair_xtok"),
+		memory.RepairEngine: i18n.T("tm_repair_engine"),
 	}
 	for _, c := range memory.RepairCategories {
 		cat := rep.Categories[c]
-		fmt.Printf("%s: %d linhas %s\n", labels[c], cat.Rows, verb)
+		fmt.Print(i18n.T("tm_repair_rows", labels[c], cat.Rows, verb))
 		for _, ex := range cat.Examples {
 			fmt.Printf("  #%d  %q\n", ex.ID, ex.Before)
 			if ex.After != "" {
@@ -733,11 +666,11 @@ func runTMRepair(args []string) int {
 			}
 		}
 	}
-	fmt.Printf("Linhas reviewed/locked %s: %d\n", verb, rep.ProtectedRows)
+	fmt.Print(i18n.T("tm_repair_prot", verb, rep.ProtectedRows))
 	if rep.Applied {
-		fmt.Printf("Backup: %s\n", rep.BackupPath)
+		fmt.Print(i18n.T("tm_repair_backup", rep.BackupPath))
 	} else {
-		fmt.Println("Dry-run: nada foi alterado. Use --apply para gravar.")
+		fmt.Println(i18n.T("tm_repair_dry"))
 	}
 	return 0
 }
@@ -749,7 +682,7 @@ func runTMMigrateLegacy(args []string) int {
 	dir := fs.String("dir", "", "Pasta de caches legados (<engine>/cache_<src>_<tgt>.json)")
 	_ = fs.Parse(args)
 	if *dir == "" {
-		fmt.Fprintln(os.Stderr, "tm migrate-legacy exige --dir")
+		fmt.Fprintln(os.Stderr, i18n.T("tm_migrate_need"))
 		return 2
 	}
 	path, err := resolveDB(*db)
@@ -768,8 +701,8 @@ func runTMMigrateLegacy(args []string) int {
 		fmt.Fprintln(os.Stderr, "tm migrate-legacy:", err)
 		return 1
 	}
-	fmt.Printf("%d arquivos, %d entradas importadas em %s\n", rep.Files, rep.Imported, path)
-	fmt.Printf("Puladas (tradução nula): %d; com source == target: %d\n", rep.SkippedNull, rep.Identity)
+	fmt.Print(i18n.T("tm_migrate_done", rep.Files, rep.Imported, path))
+	fmt.Print(i18n.T("tm_migrate_skip", rep.SkippedNull, rep.Identity))
 	return 0
 }
 
@@ -803,22 +736,69 @@ func runFilenames(args []string) int {
 		return 1
 	}
 	if keepOriginal {
-		fmt.Printf("Originais mantidos: %d\n", res.CopiedOriginals)
+		fmt.Print(i18n.T("filenames_kept", res.CopiedOriginals))
 	}
 	return 0
 }
 
 func printLists() {
-	fmt.Println("Extratores disponíveis:")
-	for _, e := range []string{"rpgmaker (RPG Maker MV/MZ/VX Ace/XP)", "wolfrpg (Wolf RPG)", "csv (CSV)", "json (Json)"} {
-		fmt.Println("  -", e)
+	fmt.Println(i18n.T("list_extractors"))
+	for _, e := range []string{"rpgmaker", "wolfrpg", "csv", "json"} {
+		fmt.Println("  -", i18n.T("extractor_"+e))
 	}
-	fmt.Println("Tradutores disponíveis:")
+	fmt.Println(i18n.T("list_translators"))
 	for _, t := range []string{"google", "deepl", "ollama"} {
 		fmt.Println("  -", t)
 	}
-	fmt.Println("Idiomas suportados:")
+	fmt.Println(i18n.T("list_languages"))
 	for _, l := range languages {
-		fmt.Printf("  - %s: %s\n", l[0], l[1])
+		fmt.Printf("  - %s: %s\n", l, i18n.T("lang_"+l))
 	}
+}
+
+// extractLangFlag remove --lang/-lang de args (global a todos os comandos) e
+// devolve o valor informado.
+func extractLangFlag(args []string) ([]string, string) {
+	rest := make([]string, 0, len(args))
+	lang := ""
+	for i := 0; i < len(args); i++ {
+		a := strings.TrimLeft(args[i], "-")
+		switch {
+		case strings.HasPrefix(args[i], "-") && a == "lang" && i+1 < len(args):
+			lang = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "-") && strings.HasPrefix(a, "lang="):
+			lang = strings.TrimPrefix(a, "lang=")
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+	return rest, lang
+}
+
+// runLang mostra o idioma da interface ou, com um código, grava a preferência
+// em settings.db (compartilhado com a versão Python).
+func runLang(args []string) int {
+	path, err := paths.SettingsDBPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if len(args) == 0 {
+		cur := i18n.Current()
+		fmt.Print(i18n.T("lang_current", cur, i18n.Names[cur]))
+		return 0
+	}
+	l, ok := i18n.Normalize(args[0])
+	if !ok {
+		fmt.Fprint(os.Stderr, i18n.T("lang_invalid", args[0]))
+		return 2
+	}
+	if err := settings.SaveLanguage(path, l); err != nil {
+		fmt.Fprint(os.Stderr, i18n.T("lang_save_fail", err))
+		return 1
+	}
+	i18n.Set(l)
+	fmt.Print(i18n.T("lang_saved", l))
+	return 0
 }

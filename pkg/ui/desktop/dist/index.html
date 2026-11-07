@@ -16,25 +16,26 @@
       <nav class="stepper-nav" id="stepperNav">
         <div class="step-item active" data-step="1">
           <span class="step-dot">●</span>
-          <span class="step-label">1 Jogo</span>
+          <span class="step-label" data-i18n="ui_step_game">1 Jogo</span>
         </div>
         <span class="step-sep">›</span>
         <div class="step-item" data-step="2">
           <span class="step-dot">●</span>
-          <span class="step-label">2 Configurar</span>
+          <span class="step-label" data-i18n="ui_step_configure">2 Configurar</span>
         </div>
         <span class="step-sep">›</span>
         <div class="step-item" data-step="3">
           <span class="step-dot">●</span>
-          <span class="step-label">3 Tradução</span>
+          <span class="step-label" data-i18n="ui_step_translate">3 Tradução</span>
         </div>
         <span class="step-sep">›</span>
         <div class="step-item" data-step="4">
           <span class="step-dot">●</span>
-          <span class="step-label">4 Resultado</span>
+          <span class="step-label" data-i18n="ui_step_result">4 Resultado</span>
         </div>
       </nav>
       <div class="window-controls">
+        <select id="uiLanguage" class="form-select" title="Idioma da interface" aria-label="Idioma da interface"></select>
         <span class="app-version">v0.1.0</span>
       </div>
     </header>
@@ -44,8 +45,8 @@
       <!-- TELA 1: ABRIR JOGO -->
       <section id="viewStep1" class="view-panel active">
         <div class="view-intro">
-          <h2>Qual jogo vamos traduzir?</h2>
-          <p class="subtitle">O Slime procurou na pasta atual, no clipboard e nos jogos recentes.</p>
+          <h2 data-i18n="ui_which_game">Qual jogo vamos traduzir?</h2>
+          <p class="subtitle" data-i18n="ui_which_game_sub">O Slime procurou na pasta atual, no clipboard e nos jogos recentes.</p>
         </div>
 
         <div class="drop-zone" id="dropZone">
@@ -59,16 +60,16 @@
                 <span class="badge-subtle" id="detectedLang">Japonês provável</span>
               </div>
             </div>
-            <button class="btn btn-primary" id="btnChooseDetected">Usar este jogo ›</button>
+            <button class="btn btn-primary" id="btnChooseDetected" data-i18n="ui_use_game">Usar este jogo ›</button>
           </div>
           <div class="drop-alt">
-            <button class="btn btn-secondary" id="btnBrowseFolder">Navegar nas pastas…</button>
-            <span class="muted-text">ou arraste a pasta do jogo para cá</span>
+            <button class="btn btn-secondary" id="btnBrowseFolder" data-i18n="ui_browse_folders">Navegar nas pastas…</button>
+            <span class="muted-text" data-i18n="ui_drop_hint">ou arraste a pasta do jogo para cá</span>
           </div>
         </div>
 
         <div class="recent-section">
-          <h3>JOGOS RECENTES</h3>
+          <h3 data-i18n="ui_recent_games">JOGOS RECENTES</h3>
           <div class="table-container">
             <table class="data-table">
               <tbody>
@@ -93,7 +94,7 @@
               </tbody>
             </table>
           </div>
-          <div class="hint-text">Dica: <code>slime translate -i &lt;pasta&gt;</code> faz o mesmo sem perguntas no terminal.</div>
+          <div class="hint-text" data-i18n-html="ui_tip">Dica: <code>slime translate -i &lt;pasta&gt;</code> faz o mesmo sem perguntas no terminal.</div>
         </div>
       </section>
 
@@ -106,35 +107,35 @@
             <p class="subtitle" id="configGameSubtitle">RPG Maker MZ · www/data · 142 arquivos</p>
 
             <div class="form-group">
-              <label>Serviço de Tradução</label>
+              <label data-i18n="ui_label_service">Serviço de Tradução</label>
               <div class="segmented-control" id="providerPicker">
                 <button class="segment-btn active" data-provider="google">Google Translate</button>
                 <button class="segment-btn" data-provider="deepl">DeepL</button>
                 <button class="segment-btn" data-provider="ollama">Ollama</button>
               </div>
-              <span class="field-hint" id="providerHint">Grátis e sem chave de API; pode limitar requisições em grandes lotes.</span>
+              <span class="field-hint" id="providerHint" data-i18n="ui_hint_google">Grátis e sem chave de API; pode limitar requisições em grandes lotes.</span>
             </div>
 
             <div class="form-group" id="apiKeyGroup" style="display: none;">
-              <label>Chave da API DeepL</label>
-              <input type="password" id="apiKeyInput" class="form-input" autocomplete="off" placeholder="Vazio: usa DEEPL_API_KEY do ambiente">
+              <label data-i18n="ui_label_deepl_key">Chave da API DeepL</label>
+              <input type="password" id="apiKeyInput" class="form-input" autocomplete="off" placeholder="Vazio: usa DEEPL_API_KEY do ambiente" data-i18n-placeholder="ui_deepl_key_placeholder">
             </div>
 
             <div class="form-row">
               <div class="form-group">
-                <label>Idioma de Origem</label>
+                <label data-i18n="ui_label_source">Idioma de Origem</label>
                 <select id="sourceLang" class="form-select">
-                  <option value="ja" selected>Japonês (detectado)</option>
-                  <option value="en">Inglês</option>
-                  <option value="auto">Detectar automaticamente</option>
+                  <option value="ja" selected data-i18n="ui_src_ja">Japonês (detectado)</option>
+                  <option value="en" data-i18n="ui_src_en">Inglês</option>
+                  <option value="auto" data-i18n="ui_src_auto">Detectar automaticamente</option>
                 </select>
               </div>
               <div class="form-group">
-                <label>Idioma de Destino</label>
+                <label data-i18n="ui_label_target">Idioma de Destino</label>
                 <select id="targetLang" class="form-select">
-                  <option value="pt" selected>Português (Brasil)</option>
-                  <option value="es">Espanhol</option>
-                  <option value="en">Inglês</option>
+                  <option value="pt" selected data-i18n="ui_tgt_pt">Português (Brasil)</option>
+                  <option value="es" data-i18n="ui_tgt_es">Espanhol</option>
+                  <option value="en" data-i18n="ui_tgt_en">Inglês</option>
                 </select>
               </div>
             </div>
@@ -142,23 +143,23 @@
             <div class="form-group">
               <label class="checkbox-label">
                 <input type="checkbox" id="checkIncremental" checked>
-                <span>Só o que mudou <span class="muted-text">(12 de 142 arquivos)</span></span>
+                <span><span data-i18n="ui_only_changed">Só o que mudou</span> <span class="muted-text">(12 de 142 arquivos)</span></span>
               </label>
               <label class="checkbox-label">
                 <input type="checkbox" id="checkProxies">
-                <span>Usar rotação de proxies se o Google limitar conexões</span>
+                <span data-i18n="ui_use_proxies">Usar rotação de proxies se o Google limitar conexões</span>
               </label>
             </div>
 
             <div id="extractorOptions"></div>
 
             <details class="advanced-details">
-              <summary>▸ Opções Avançadas</summary>
+              <summary data-i18n="ui_advanced">▸ Opções Avançadas</summary>
               <div class="advanced-body">
                 <div class="form-group">
-                  <label>Extrator</label>
+                  <label data-i18n="ui_label_extractor">Extrator</label>
                   <select id="extractorSelect" class="form-select">
-                    <option value="" selected>Automático (detectado)</option>
+                    <option value="" selected data-i18n="ui_extractor_auto">Automático (detectado)</option>
                     <option value="rpgmaker">RPG Maker</option>
                     <option value="wolfrpg">Wolf RPG</option>
                     <option value="csv">CSV</option>
@@ -167,11 +168,11 @@
                 </div>
                 <label class="checkbox-label">
                   <input type="checkbox" id="checkBackup" checked>
-                  <span>Criar backup local antes de alterar arquivos</span>
+                  <span data-i18n="ui_backup_check">Criar backup local antes de alterar arquivos</span>
                 </label>
                 <div class="form-group" style="margin-top: 8px;">
-                  <label>Pasta de Saída (opcional)</label>
-                  <input type="text" id="customOutputDir" class="form-input" placeholder="Padrão: na própria pasta do jogo">
+                  <label data-i18n="ui_output_dir">Pasta de Saída (opcional)</label>
+                  <input type="text" id="customOutputDir" class="form-input" placeholder="Padrão: na própria pasta do jogo" data-i18n-placeholder="ui_output_placeholder">
                 </div>
               </div>
             </details>
@@ -179,10 +180,10 @@
 
           <!-- Coluna Direita: Estimativa Pré-Voo -->
           <div class="estimate-col card">
-            <h3>Estimativa Pré-Voo</h3>
+            <h3 data-i18n="ui_estimate_title">Estimativa Pré-Voo</h3>
             <div class="estimate-highlight">
               <span class="estimate-big-num" id="estToTranslate">230</span>
-              <span class="estimate-big-label">textos para traduzir</span>
+              <span class="estimate-big-label" data-i18n="ui_est_to_translate">textos para traduzir</span>
             </div>
 
             <div class="progress-box">
@@ -194,32 +195,32 @@
 
             <div class="stat-grid">
               <div class="stat-item">
-                <span class="stat-label">Arquivos</span>
+                <span class="stat-label" data-i18n="ui_stat_files">Arquivos</span>
                 <span class="stat-value" id="estFiles">12 de 142</span>
               </div>
               <div class="stat-item">
-                <span class="stat-label">Tempo aprox.</span>
+                <span class="stat-label" data-i18n="ui_stat_time">Tempo aprox.</span>
                 <span class="stat-value" id="estTime">menos de 1 min</span>
               </div>
               <div class="stat-item">
-                <span class="stat-label">Custo</span>
+                <span class="stat-label" data-i18n="ui_stat_cost">Custo</span>
                 <span class="stat-value" id="estCost">grátis</span>
               </div>
               <div class="stat-item">
-                <span class="stat-label">Backup</span>
+                <span class="stat-label" data-i18n="ui_stat_backup">Backup</span>
                 <span class="stat-value" id="estBackup">…/Aventura do Slime-ja</span>
               </div>
             </div>
 
             <div class="warning-callout">
               <span class="callout-icon">▲</span>
-              <span>O tempo é uma estimativa: provedores gratuitos podem acionar rate limit temporário.</span>
+              <span data-i18n="ui_time_note">O tempo é uma estimativa: provedores gratuitos podem acionar rate limit temporário.</span>
             </div>
 
-            <button class="btn btn-primary btn-cta" id="btnStartTranslate">
+            <button class="btn btn-primary btn-cta" id="btnStartTranslate" data-i18n="ui_btn_translate">
               ▶ Traduzir textos
             </button>
-            <div class="btn-subtext">ctrl+enter ou clique para iniciar</div>
+            <div class="btn-subtext" data-i18n="ui_start_hint">ctrl+enter ou clique para iniciar</div>
           </div>
         </div>
       </section>
@@ -265,22 +266,22 @@
           </div>
 
           <div class="running-actions">
-            <button class="btn btn-secondary" id="btnPauseResume">Pausar</button>
-            <button class="btn btn-secondary" id="btnCancelJob">Cancelar</button>
-            <button class="btn btn-primary" id="btnOpenReview">Revisar Traduções (Opcional)</button>
+            <button class="btn btn-secondary" id="btnPauseResume" data-i18n="ui_btn_pause">Pausar</button>
+            <button class="btn btn-secondary" id="btnCancelJob" data-i18n="ui_btn_cancel">Cancelar</button>
+            <button class="btn btn-primary" id="btnOpenReview" data-i18n="ui_btn_open_review">Revisar Traduções (Opcional)</button>
           </div>
         </div>
 
         <div class="files-card card">
-          <h3>Arquivos em Processamento</h3>
+          <h3 data-i18n="ui_files_in_progress">Arquivos em Processamento</h3>
           <div class="table-container">
             <table class="data-table" id="filesTable">
               <thead>
                 <tr>
-                  <th>ARQUIVO</th>
-                  <th>STATUS</th>
-                  <th>MENSAGEM</th>
-                  <th>PROGRESSO</th>
+                  <th data-i18n="ui_col_file">ARQUIVO</th>
+                  <th data-i18n="ui_col_status">STATUS</th>
+                  <th data-i18n="ui_col_message">MENSAGEM</th>
+                  <th data-i18n="ui_col_progress">PROGRESSO</th>
                 </tr>
               </thead>
               <tbody>
@@ -325,10 +326,10 @@
         <div class="review-header card">
           <div class="review-title-row">
             <div>
-              <h2>Revisar traduções</h2>
-              <span class="subtitle">Opcional · Nada vai para o jogo até você concluir.</span>
+              <h2 data-i18n="ui_review_title">Revisar traduções</h2>
+              <span class="subtitle" data-i18n="ui_review_sub">Opcional · Nada vai para o jogo até você concluir.</span>
             </div>
-            <button class="btn btn-primary" id="btnFinishReview">Concluir Revisão e Salvar ›</button>
+            <button class="btn btn-primary" id="btnFinishReview" data-i18n="ui_review_finish">Concluir Revisão e Salvar ›</button>
           </div>
 
           <div class="filter-strip">
@@ -340,7 +341,7 @@
               <button class="chip-btn" data-filter="locked">Bloqueados 4</button>
               <button class="chip-btn" data-filter="memory">Da memória 950</button>
             </div>
-            <input type="text" class="search-input" id="reviewSearch" placeholder="/ buscar por texto ou arquivo…">
+            <input type="text" class="search-input" id="reviewSearch" placeholder="/ buscar por texto ou arquivo…" data-i18n-placeholder="ui_review_search">
           </div>
         </div>
 
@@ -406,7 +407,7 @@
             <div class="detail-field suggestion-box">
               <div class="sugg-header">
                 <span>Da memória de tradução · Map001</span>
-                <button class="btn btn-secondary btn-sm" id="btnApplySuggestion">Usar sugestão</button>
+                <button class="btn btn-secondary btn-sm" id="btnApplySuggestion" data-i18n="ui_review_use_suggestion">Usar sugestão</button>
               </div>
               <div class="sugg-text">\N[1] recebeu \V[12] moedas de ouro!</div>
             </div>
@@ -414,9 +415,9 @@
             <div class="detail-footer">
               <label class="checkbox-label">
                 <input type="checkbox" id="checkLockSegment">
-                <span>Bloquear este segmento para nunca ser sobrescrito por máquina</span>
+                <span data-i18n="ui_review_lock">Bloquear este segmento para nunca ser sobrescrito por máquina</span>
               </label>
-              <button class="btn btn-primary" id="btnSaveSegment">Salvar Alteração</button>
+              <button class="btn btn-primary" id="btnSaveSegment" data-i18n="ui_review_save">Salvar Alteração</button>
             </div>
           </div>
         </div>
@@ -427,7 +428,7 @@
         <div class="result-card card">
           <div class="result-hero">
             <div class="result-check">✓</div>
-            <h2>Jogo traduzido com sucesso</h2>
+            <h2 data-i18n="ui_result_title">Jogo traduzido com sucesso</h2>
             <p class="subtitle" id="resultSubtitle">
               Aventura do Slime está em português. 11 dos 12 arquivos alterados ficaram completos.
             </p>
@@ -446,7 +447,7 @@
           </div>
 
           <div class="result-paths-box">
-            <h3>Onde ficou cada coisa</h3>
+            <h3 data-i18n="ui_result_where">Onde ficou cada coisa</h3>
             <table class="paths-table">
               <tbody>
                 <tr>
@@ -469,14 +470,14 @@
           </div>
 
           <div class="cli-command-box">
-            <span class="cli-label">Comando equivalente para automação via terminal:</span>
+            <span class="cli-label" data-i18n="ui_result_cli">Comando equivalente para automação via terminal:</span>
             <code>slime translate -i ~/Jogos/Aventura-do-Slime --service google --from ja --to pt --incremental</code>
           </div>
 
           <div class="result-actions">
-            <button class="btn btn-secondary" id="btnNewGame">Traduzir Outro Jogo</button>
-            <button class="btn btn-secondary" id="btnVerifyIntegrity">Verificar Integridade</button>
-            <button class="btn btn-primary" id="btnOpenGameFolder">Abrir Pasta do Jogo</button>
+            <button class="btn btn-secondary" id="btnNewGame" data-i18n="ui_btn_new_game">Traduzir Outro Jogo</button>
+            <button class="btn btn-secondary" id="btnVerifyIntegrity" data-i18n="ui_btn_verify">Verificar Integridade</button>
+            <button class="btn btn-primary" id="btnOpenGameFolder" data-i18n="ui_btn_open_game">Abrir Pasta do Jogo</button>
           </div>
         </div>
       </section>
@@ -485,10 +486,10 @@
     <!-- Rodapé Fixo com Atalhos Globais -->
     <footer class="app-footer">
       <div class="footer-shortcuts" id="footerShortcuts">
-        <span><kbd>↑↓</kbd> mover</span>
-        <span><kbd>enter</kbd> escolher</span>
-        <span><kbd>ctrl+enter</kbd> traduzir</span>
-        <span><kbd>esc</kbd> voltar</span>
+        <span><kbd>↑↓</kbd> <span data-i18n="ui_kbd_move">mover</span></span>
+        <span><kbd>enter</kbd> <span data-i18n="ui_kbd_choose">escolher</span></span>
+        <span><kbd>ctrl+enter</kbd> <span data-i18n="ui_kbd_translate">traduzir</span></span>
+        <span><kbd>esc</kbd> <span data-i18n="ui_kbd_back">voltar</span></span>
       </div>
     </footer>
   </div>
