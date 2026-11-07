@@ -188,24 +188,24 @@ func writeWolfCommand(coder *WolfFileCoder, cmd *WolfCommand) {
 
 // WolfMapPage é a página de condições e comandos de um evento de mapa.
 type WolfMapPage struct {
-	ID                 int
-	Unknown1           uint32
-	GraphicName        string
-	GraphicDirection   byte
-	GraphicFrame       byte
-	GraphicOpacity     byte
-	GraphicRenderMode  byte
-	Conditions         []byte
-	Movement           []byte
-	Flags              byte
-	RouteFlags         byte
-	Route              []*WolfRouteCommand
-	Commands           []*WolfCommand
-	Features           uint32
-	ShadowGraphicNum   byte
-	CollisionWidth     byte
-	CollisionHeight    byte
-	PageTransfer       *byte
+	ID                int
+	Unknown1          uint32
+	GraphicName       string
+	GraphicDirection  byte
+	GraphicFrame      byte
+	GraphicOpacity    byte
+	GraphicRenderMode byte
+	Conditions        []byte
+	Movement          []byte
+	Flags             byte
+	RouteFlags        byte
+	Route             []*WolfRouteCommand
+	Commands          []*WolfCommand
+	Features          uint32
+	ShadowGraphicNum  byte
+	CollisionWidth    byte
+	CollisionHeight   byte
+	PageTransfer      *byte
 }
 
 func readWolfMapPage(coder *WolfFileCoder, pageID int) (*WolfMapPage, error) {

@@ -8,30 +8,30 @@ import (
 
 // Tokens de cor semânticos exatos definidos no Figma (WCAG 2.2 AA).
 const (
-	BgBase         = lipgloss.Color("#12131A")
-	BgSurface      = lipgloss.Color("#1A1B26")
-	BgRaised       = lipgloss.Color("#24263A")
-	BgAccentSubtle = lipgloss.Color("#06281D")
-	BgWarningSubtle= lipgloss.Color("#2A1D05")
-	BgErrorSubtle  = lipgloss.Color("#2B0F10")
-	BgInfoSubtle   = lipgloss.Color("#0F1B2D")
+	BgBase          = lipgloss.Color("#12131A")
+	BgSurface       = lipgloss.Color("#1A1B26")
+	BgRaised        = lipgloss.Color("#24263A")
+	BgAccentSubtle  = lipgloss.Color("#06281D")
+	BgWarningSubtle = lipgloss.Color("#2A1D05")
+	BgErrorSubtle   = lipgloss.Color("#2B0F10")
+	BgInfoSubtle    = lipgloss.Color("#0F1B2D")
 
-	BorderDefault  = lipgloss.Color("#33364D")
-	BorderStrong   = lipgloss.Color("#6B6F88")
-	BorderFocus    = lipgloss.Color("#22C98A")
+	BorderDefault = lipgloss.Color("#33364D")
+	BorderStrong  = lipgloss.Color("#6B6F88")
+	BorderFocus   = lipgloss.Color("#22C98A")
 
-	TextPrimary    = lipgloss.Color("#E6E7EE")
-	TextMuted      = lipgloss.Color("#9A9DB0")
-	TextDisabled   = lipgloss.Color("#6B6F88")
-	TextOnAccent   = lipgloss.Color("#0B0C10") // Contraste 7,3:1 sobre o verde
+	TextPrimary  = lipgloss.Color("#E6E7EE")
+	TextMuted    = lipgloss.Color("#9A9DB0")
+	TextDisabled = lipgloss.Color("#6B6F88")
+	TextOnAccent = lipgloss.Color("#0B0C10") // Contraste 7,3:1 sobre o verde
 
 	AccentSlime      = lipgloss.Color("#04B575")
 	AccentSlimeHover = lipgloss.Color("#22C98A")
 
-	StatusSuccess  = lipgloss.Color("#22C98A")
-	StatusWarning  = lipgloss.Color("#F59E0B")
-	StatusError    = lipgloss.Color("#F87171")
-	StatusInfo     = lipgloss.Color("#60A5FA")
+	StatusSuccess = lipgloss.Color("#22C98A")
+	StatusWarning = lipgloss.Color("#F59E0B")
+	StatusError   = lipgloss.Color("#F87171")
+	StatusInfo    = lipgloss.Color("#60A5FA")
 )
 
 // Símbolos seguros para terminal com largura monoestável (1 célula).

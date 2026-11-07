@@ -208,7 +208,7 @@ func TestWolfMap_LZ4Compression(t *testing.T) {
 
 func TestWolfFileCoder_ShiftJIS(t *testing.T) {
 	writer := NewWriterCoder(false) // ShiftJIS mode
-	japaneseText := "スライムRPG"   // "Slime RPG"
+	japaneseText := "スライムRPG"       // "Slime RPG"
 	writer.WriteString(japaneseText)
 
 	reader := NewReaderCoder(writer.Bytes(), false)

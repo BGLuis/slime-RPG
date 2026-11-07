@@ -52,21 +52,21 @@ type PhaseChangedEvent struct {
 
 // EstimateEvent resume os dados pré-voo para o painel de estimativa do Figma.
 type EstimateEvent struct {
-	FilesTotal       int           `json:"files_total"`
-	FilesToProcess   int           `json:"files_to_process"`
-	SegmentsTotal    int           `json:"segments_total"`
-	SegmentsCached   int           `json:"segments_cached"`
+	FilesTotal        int           `json:"files_total"`
+	FilesToProcess    int           `json:"files_to_process"`
+	SegmentsTotal     int           `json:"segments_total"`
+	SegmentsCached    int           `json:"segments_cached"`
 	EstimatedDuration time.Duration `json:"estimated_duration"`
-	BackupPath       string        `json:"backup_path"`
+	BackupPath        string        `json:"backup_path"`
 }
 
 // SegmentProgressEvent reporta o avanço global por segmento.
 type SegmentProgressEvent struct {
-	Done           int           `json:"done"`
-	Cached         int           `json:"cached"`
-	NewTranslated  int           `json:"new_translated"`
-	Total          int           `json:"total"`
-	ETA            time.Duration `json:"eta"`
+	Done          int           `json:"done"`
+	Cached        int           `json:"cached"`
+	NewTranslated int           `json:"new_translated"`
+	Total         int           `json:"total"`
+	ETA           time.Duration `json:"eta"`
 }
 
 // FileStatusEvent atualiza a linha de um arquivo na tabela.
@@ -88,8 +88,8 @@ type ProviderThrottledEvent struct {
 
 // ReviewRequestedEvent indica que a tradução foi pausada para inspeção opcional.
 type ReviewRequestedEvent struct {
-	TotalSegments        int `json:"total_segments"`
-	NeedsAttentionCount  int `json:"needs_attention_count"`
+	TotalSegments       int `json:"total_segments"`
+	NeedsAttentionCount int `json:"needs_attention_count"`
 }
 
 // JobFinishedEvent resume o encerramento da tradução para a tela de Resultado.
@@ -136,10 +136,10 @@ type Bus interface {
 }
 
 type memoryBus struct {
-	mu           sync.RWMutex
-	subscribers  map[chan ProgressEvent]struct{}
+	mu            sync.RWMutex
+	subscribers   map[chan ProgressEvent]struct{}
 	evSubscribers map[chan Envelope]struct{}
-	closed       bool
+	closed        bool
 }
 
 // NewBus inicializa um novo barramento de eventos concorrente.
