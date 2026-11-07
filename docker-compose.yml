@@ -1,0 +1,22 @@
+# Uso: docker compose run --rm slime translate -i /games/MeuJogo -s ja -d pt
+# Só CLI headless; a TUI funciona com `run` (tty), a interface desktop não existe no contêiner.
+services:
+  slime:
+    build: .
+    image: slime-rpg:latest
+    user: "${SLIME_UID:-10001}:${SLIME_GID:-10001}"
+    stdin_open: true
+    tty: true
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-}
+      - DEEPL_API_KEY=${DEEPL_API_KEY:-}
+      - SLIME_MEMORY_DB=/data/memory.db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - slime-data:/data
+      - ${SLIME_GAMES_DIR:-./games}:/games
+
+volumes:
+  slime-data:

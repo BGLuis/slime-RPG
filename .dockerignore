@@ -1,0 +1,12 @@
+.git
+.github
+bin/
+docs/
+*.md
+!README.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+cache/
+*.db
+*.db-*
