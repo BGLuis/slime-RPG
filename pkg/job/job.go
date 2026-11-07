@@ -59,6 +59,11 @@ type Config struct {
 	OutputDir       string            `json:"output_dir"`
 	ProviderOptions map[string]string `json:"provider_options"`
 
+	// Extractor força o extrator (rpgmaker, wolfrpg, csv, json) em vez da detecção automática.
+	Extractor string `json:"extractor"`
+	// ExtractorOptions configura os extratores (chaves em formats.KnownOptions; ver ExtractorSchema).
+	ExtractorOptions map[string]string `json:"extractor_options"`
+
 	// MemoryOnly traduz só com a Memória de Tradução, sem chamar o provedor (offline).
 	MemoryOnly bool `json:"memory_only"`
 	// SwitchEngine descarta traduções de máquina de outros provedores na memória.
@@ -548,7 +553,12 @@ func (j *Job) prepare() (*detector.DetectionResult, *formats.Plan, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	plan, err := formats.ForDetection(det)
+	if j.cfg.Extractor != "" {
+		if det, err = formats.ForceExtractor(det, j.cfg.Extractor); err != nil {
+			return nil, nil, err
+		}
+	}
+	plan, err := formats.ForDetection(det, j.cfg.ExtractorOptions)
 	if err != nil {
 		return nil, nil, err
 	}

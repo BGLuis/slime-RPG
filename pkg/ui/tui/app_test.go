@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -142,5 +144,22 @@ func TestModel_QuitKeys(t *testing.T) {
 	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if !m.quitting || cmd == nil {
 		t.Fatalf("expected quitting true and quit cmd on ctrl+c")
+	}
+}
+
+func TestConfigureShowsExtractorOptionsAndAcceptsInput(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.csv"), []byte("id,text\n1,hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := NewModel(dir)
+	m.view = ViewConfigure
+	if !strings.Contains(m.View(), "Delimitador") {
+		t.Fatal("a tela Configurar devia listar as opções do CSV detectado")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n', 'o', 't', 'e'}})
+	if got := m.fieldValues["csv.columns"]; got != "note" {
+		t.Errorf("csv.columns = %q, esperava note", got)
 	}
 }

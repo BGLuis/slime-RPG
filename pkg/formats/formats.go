@@ -62,9 +62,108 @@ func (p *Plan) Includes(rel string) bool {
 	return found
 }
 
+// Chaves de opções dos extratores (job.Config.ExtractorOptions). As chaves wolf.*
+// são reservadas: o plano as repassa ao formato Wolf, que as interpreta.
+const (
+	OptCSVColumns      = "csv.columns"   // nomes separados por vírgula
+	OptCSVDelimiter    = "csv.delimiter" // um caractere; `\t` vale tab
+	OptJSONKeys        = "json.keys"     // chaves separadas por vírgula; "*" ou "all" = todas
+	OptWolfPreserveTit = "wolf.preserve_title"
+	OptWolfTargetFont  = "wolf.target_font"
+	OptWolfRepackMode  = "wolf.repack_mode"
+)
+
+// KnownOptions lista as chaves aceitas em ExtractorOptions.
+var KnownOptions = []string{
+	OptCSVColumns, OptCSVDelimiter, OptJSONKeys,
+	OptWolfPreserveTit, OptWolfTargetFont, OptWolfRepackMode,
+}
+
+// ValidateOptions rejeita chaves desconhecidas e valores inválidos.
+func ValidateOptions(opts map[string]string) error {
+	for k := range opts {
+		if !slices.Contains(KnownOptions, k) {
+			return fmt.Errorf("unknown extractor option %q (known: %s)", k, strings.Join(KnownOptions, ", "))
+		}
+	}
+	if v := opts[OptCSVDelimiter]; v != "" {
+		if _, ok := parseDelimiter(v); !ok {
+			return fmt.Errorf("invalid %s %q: use a single character or \\t", OptCSVDelimiter, v)
+		}
+	}
+	return nil
+}
+
+// parseDelimiter aceita um único caractere ou as sequências literais `\t` e `\n`,
+// como a versão Python.
+func parseDelimiter(v string) (rune, bool) {
+	switch v {
+	case `\t`:
+		return '\t', true
+	case `\n`:
+		return '\n', true
+	}
+	r := []rune(v)
+	if len(r) != 1 {
+		return 0, false
+	}
+	return r[0], true
+}
+
+func splitList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// EngineFor devolve a engine que representa o extrator forçado (-e). O RPG Maker
+// mantém a variante já detectada quando há uma; senão assume MV/MZ.
+func EngineFor(name string, detected detector.GameEngine) (detector.GameEngine, bool) {
+	canonical, _ := ExtensionsFor(name)
+	switch canonical {
+	case "rpgmaker":
+		switch detected {
+		case detector.EngineRPGMakerMV, detector.EngineRPGMakerMZ, detector.EngineRPGMakerVXAce, detector.EngineRPGMakerXP:
+			return detected, true
+		}
+		return detector.EngineRPGMakerMV, true
+	case "wolfrpg":
+		return detector.EngineWolfRPG, true
+	case "csv":
+		return detector.EngineCSV, true
+	case "json":
+		return detector.EngineJSON, true
+	}
+	return detector.EngineUnknown, false
+}
+
+// ForceExtractor devolve uma cópia da detecção com o extrator imposto. Numa pasta,
+// a varredura passa a cobrir a pasta inteira quando a engine detectada era outra.
+func ForceExtractor(det *detector.DetectionResult, name string) (*detector.DetectionResult, error) {
+	engine, ok := EngineFor(name, det.Engine)
+	if !ok {
+		return nil, fmt.Errorf("unknown extractor %q (use rpgmaker, wolfrpg, csv or json)", name)
+	}
+	forced := *det
+	if engine != det.Engine {
+		if info, err := os.Stat(det.GamePath); err == nil && info.IsDir() {
+			forced.DataDir = det.GamePath
+		}
+		forced.Engine = engine
+	}
+	return &forced, nil
+}
+
 // ForDetection monta o plano para o jogo detectado. Um único arquivo vira um
-// plano com raiz na pasta que o contém.
-func ForDetection(det *detector.DetectionResult) (*Plan, error) {
+// plano com raiz na pasta que o contém. opts são as ExtractorOptions do job.
+func ForDetection(det *detector.DetectionResult, opts map[string]string) (*Plan, error) {
+	if err := ValidateOptions(opts); err != nil {
+		return nil, err
+	}
 	gamePath, err := filepath.Abs(det.GamePath)
 	if err != nil {
 		return nil, err
@@ -82,7 +181,7 @@ func ForDetection(det *detector.DetectionResult) (*Plan, error) {
 		return nil, err
 	}
 
-	format := ForEngine(det.Engine)
+	format := ForEngine(det.Engine, opts)
 	if format == nil {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupported, det.Engine)
 	}
@@ -117,19 +216,28 @@ func ForDetection(det *detector.DetectionResult) (*Plan, error) {
 	return plan, nil
 }
 
-// ForEngine devolve o formato da engine detectada.
-func ForEngine(engine detector.GameEngine) Format {
+// ForEngine devolve o formato da engine detectada, já configurado com opts.
+func ForEngine(engine detector.GameEngine, opts map[string]string) Format {
 	switch engine {
 	case detector.EngineRPGMakerMV, detector.EngineRPGMakerMZ:
 		return rpgMaker{x: rpgjson.NewMVExtractor()}
 	case detector.EngineRPGMakerVXAce, detector.EngineRPGMakerXP:
 		return rvData{x: rvdata.NewExtractor()}
 	case detector.EngineWolfRPG:
-		return wolf{x: wolfrpg.NewExtractor()}
+		return wolf{x: wolfrpg.NewExtractor(), opts: opts}
 	case detector.EngineCSV:
-		return csvFormat{x: csvx.NewCSVExtractor()}
+		x := csvx.NewCSVExtractor()
+		x.Columns = splitList(opts[OptCSVColumns])
+		if d, ok := parseDelimiter(opts[OptCSVDelimiter]); ok {
+			x.Delimiter = d
+		}
+		return csvFormat{x: x}
 	case detector.EngineJSON:
-		return jsonFormat{x: genericjson.NewJSONExtractor()}
+		x := genericjson.NewJSONExtractor()
+		if keys := splitList(opts[OptJSONKeys]); len(keys) > 0 {
+			x.SetKeys(keys)
+		}
+		return jsonFormat{x: x}
 	}
 	return nil
 }
@@ -217,7 +325,11 @@ func (f rvData) Inject(rel string, data []byte, segs []*model.Segment, _, tgt st
 }
 func (rvData) Masker() *masking.Masker { return masking.NewMaskerWith(rpgtext.MaskMatchers()...) }
 
-type wolf struct{ x *wolfrpg.Extractor }
+// wolf carrega as opções wolf.* sem interpretá-las: o comportamento fica no extrator.
+type wolf struct {
+	x    *wolfrpg.Extractor
+	opts map[string]string
+}
 
 func (wolf) Name() string              { return "wolfrpg" }
 func (wolf) Extensions() []string      { return []string{"mps", "dat", "txt"} }

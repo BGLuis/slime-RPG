@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/BGLuis/slime-rpg/pkg/detector"
@@ -24,17 +25,17 @@ const (
 
 // Model é o modelo de estado Bubble Tea unificado para a TUI.
 type Model struct {
-	view          ViewState
-	width         int
-	height        int
-	job           *job.Job
-	snapshot      job.Snapshot
-	eventChan     <-chan event.Envelope
+	view      ViewState
+	width     int
+	height    int
+	job       *job.Job
+	snapshot  job.Snapshot
+	eventChan <-chan event.Envelope
 
 	// Estado da Etapa 1 (Abrir Jogo)
-	detectedGame  *detector.DetectionResult
+	detectedGame        *detector.DetectionResult
 	selectedFolderIndex int
-	folderOptions []string
+	folderOptions       []string
 
 	// Estado da Etapa 2 (Configurar)
 	selectedProvider int
@@ -43,6 +44,8 @@ type Model struct {
 	targetLang       string
 	incremental      bool
 	enableProxies    bool
+	fieldValues      map[string]string // opções do extrator e chave do DeepL, por ConfigSchemaField.Key
+	fieldFocus       int               // índice em configFields(); -1 = nenhum campo em edição
 
 	// Estado da Etapa 3.5 (Revisar)
 	selectedFilter     int
@@ -74,6 +77,8 @@ func NewModel(initialDir string) *Model {
 		sourceLang:    "Japonês (detectado)",
 		targetLang:    "Português (Brasil)",
 		incremental:   true,
+		fieldValues:   map[string]string{},
+		fieldFocus:    -1,
 		filterLabels:  []string{"Todos 1.180", "Com problema 3", "Parciais 2", "Editados 1", "Bloqueados 4", "Da memória 950"},
 	}
 }
@@ -143,7 +148,46 @@ func (m *Model) updateOpenGame(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// configFields reúne os campos extras da tela Configurar: opções do extrator
+// detectado e, no DeepL sem DEEPL_API_KEY no ambiente, a chave da API.
+func (m *Model) configFields() []job.ConfigSchemaField {
+	var fields []job.ConfigSchemaField
+	if m.detectedGame != nil {
+		fields = append(fields, job.ExtractorSchema(string(m.detectedGame.Engine)).Fields...)
+	}
+	if m.providers[m.selectedProvider] == "DeepL" && os.Getenv("DEEPL_API_KEY") == "" {
+		fields = append(fields, job.ProviderSchema("deepl").Fields...)
+	}
+	return fields
+}
+
+// editField trata a digitação no campo em foco; devolve false se a tecla não é de edição.
+func (m *Model) editField(msg tea.KeyMsg, key string) bool {
+	switch msg.Type {
+	case tea.KeyBackspace:
+		if r := []rune(m.fieldValues[key]); len(r) > 0 {
+			m.fieldValues[key] = string(r[:len(r)-1])
+		}
+	case tea.KeyRunes, tea.KeySpace:
+		m.fieldValues[key] += string(msg.Runes)
+	default:
+		return false
+	}
+	return true
+}
+
 func (m *Model) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	fields := m.configFields()
+	if msg.String() == "tab" && len(fields) > 0 {
+		m.fieldFocus = (m.fieldFocus + 1) % (len(fields) + 1)
+		if m.fieldFocus == len(fields) {
+			m.fieldFocus = -1
+		}
+		return m, nil
+	}
+	if m.fieldFocus >= 0 && m.fieldFocus < len(fields) && m.editField(msg, fields[m.fieldFocus].Key) {
+		return m, nil
+	}
 	switch msg.String() {
 	case "left", "h":
 		if m.selectedProvider > 0 {
@@ -337,6 +381,9 @@ func (m *Model) renderConfigure() string {
 		"╰──────────────────────────────────╯",
 	}
 
+	left = append(left[:len(left)-1], m.renderFieldRows()...)
+	left = append(left, "╰────────────────────────────────────────────────────────╯")
+
 	for i := 0; i < len(left); i++ {
 		rLine := ""
 		if i < len(right) {
@@ -346,6 +393,34 @@ func (m *Model) renderConfigure() string {
 	}
 
 	return s.String()
+}
+
+func (m *Model) renderFieldRows() []string {
+	var rows []string
+	for i, f := range m.configFields() {
+		value := m.fieldValues[f.Key]
+		if f.Type == "secret" {
+			value = strings.Repeat("•", len([]rune(value)))
+		}
+		cursor := ""
+		if i == m.fieldFocus {
+			cursor = "▌"
+		}
+		rows = append(rows,
+			"│                                                        │",
+			fmt.Sprintf("│   %-52s │", f.Label),
+			fmt.Sprintf("│   %-52s │", "› "+value+cursor),
+			fmt.Sprintf("│   %-52s │", truncate(f.Help, 52)),
+		)
+	}
+	return rows
+}
+
+func truncate(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
 }
 
 func (m *Model) renderTranslating() string {

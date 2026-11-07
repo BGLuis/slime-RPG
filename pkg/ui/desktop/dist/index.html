@@ -115,6 +115,11 @@
               <span class="field-hint" id="providerHint">Grátis e sem chave de API; pode limitar requisições em grandes lotes.</span>
             </div>
 
+            <div class="form-group" id="apiKeyGroup" style="display: none;">
+              <label>Chave da API DeepL</label>
+              <input type="password" id="apiKeyInput" class="form-input" autocomplete="off" placeholder="Vazio: usa DEEPL_API_KEY do ambiente">
+            </div>
+
             <div class="form-row">
               <div class="form-group">
                 <label>Idioma de Origem</label>
@@ -145,9 +150,21 @@
               </label>
             </div>
 
+            <div id="extractorOptions"></div>
+
             <details class="advanced-details">
               <summary>▸ Opções Avançadas</summary>
               <div class="advanced-body">
+                <div class="form-group">
+                  <label>Extrator</label>
+                  <select id="extractorSelect" class="form-select">
+                    <option value="" selected>Automático (detectado)</option>
+                    <option value="rpgmaker">RPG Maker</option>
+                    <option value="wolfrpg">Wolf RPG</option>
+                    <option value="csv">CSV</option>
+                    <option value="json">JSON</option>
+                  </select>
+                </div>
                 <label class="checkbox-label">
                   <input type="checkbox" id="checkBackup" checked>
                   <span>Criar backup local antes de alterar arquivos</span>

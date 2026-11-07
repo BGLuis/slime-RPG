@@ -21,6 +21,9 @@
     targetLang: 'pt',
     incremental: true,
     useProxies: false,
+    extractor: '',
+    extractorOptions: {},
+    apiKey: '',
     paused: false,
     snapshot: null,
     reviewFilter: 'all',
@@ -48,6 +51,10 @@
     // Step 2
     providerPicker: document.getElementById('providerPicker'),
     providerHint: document.getElementById('providerHint'),
+    apiKeyGroup: document.getElementById('apiKeyGroup'),
+    apiKeyInput: document.getElementById('apiKeyInput'),
+    extractorSelect: document.getElementById('extractorSelect'),
+    extractorOptions: document.getElementById('extractorOptions'),
     sourceLang: document.getElementById('sourceLang'),
     targetLang: document.getElementById('targetLang'),
     checkIncremental: document.getElementById('checkIncremental'),
@@ -124,6 +131,42 @@
     setupMyGoIPCListeners();
   }
 
+  // Opções de extrator e chave de API enviadas junto de cada chamada de job
+  function extraJobOptions() {
+    return {
+      extractor: appState.extractor,
+      extractorOptions: appState.extractorOptions,
+      apiKey: appState.apiKey
+    };
+  }
+
+  // Desenha o formulário de opções a partir do schema do extrator (forçado ou detectado)
+  async function renderExtractorOptions() {
+    const name = appState.extractor || (appState.detectedGame && appState.detectedGame.engine) || '';
+    appState.extractorOptions = {};
+    dom.extractorOptions.replaceChildren();
+    const schema = await mygoCall('Slime.ExtractorSchema', name);
+    ((schema && schema.fields) || []).forEach(field => {
+      const group = document.createElement('div');
+      group.className = 'form-group';
+      const label = document.createElement('label');
+      label.textContent = field.label;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'form-input';
+      input.value = field.default || '';
+      input.addEventListener('change', () => {
+        appState.extractorOptions[field.key] = input.value;
+        refreshEstimate();
+      });
+      const hint = document.createElement('span');
+      hint.className = 'field-hint';
+      hint.textContent = field.help;
+      group.append(label, input, hint);
+      dom.extractorOptions.appendChild(group);
+    });
+  }
+
   // Atualiza Estimativa Pré-Voo
   async function refreshEstimate() {
     try {
@@ -132,7 +175,8 @@
         provider: appState.provider,
         sourceLang: appState.sourceLang,
         targetLang: appState.targetLang,
-        incremental: appState.incremental
+        incremental: appState.incremental,
+        ...extraJobOptions()
       });
 
       if (est) {
@@ -152,8 +196,9 @@
   // Event Listeners da UI
   function setupEventListeners() {
     // Step 1 -> Step 2
-    dom.btnChooseDetected.addEventListener('click', () => {
+    dom.btnChooseDetected.addEventListener('click', async () => {
       goToStep(2);
+      await renderExtractorOptions();
       refreshEstimate();
     });
 
@@ -171,8 +216,20 @@
         } else if (appState.provider === 'ollama') {
           dom.providerHint.textContent = 'LLM local privada e offline (ex: llama3, qwen2.5, gemma2).';
         }
+        dom.apiKeyGroup.style.display = appState.provider === 'deepl' ? '' : 'none';
         refreshEstimate();
       });
+    });
+
+    dom.apiKeyInput.addEventListener('change', (e) => {
+      appState.apiKey = e.target.value;
+      refreshEstimate();
+    });
+
+    dom.extractorSelect.addEventListener('change', async (e) => {
+      appState.extractor = e.target.value;
+      await renderExtractorOptions();
+      refreshEstimate();
     });
 
     // Checkboxes
@@ -190,7 +247,8 @@
           provider: appState.provider,
           sourceLang: appState.sourceLang,
           targetLang: appState.targetLang,
-          incremental: appState.incremental
+          incremental: appState.incremental,
+          ...extraJobOptions()
         });
       } catch (e) {
         console.error('Erro ao iniciar job:', e);
