@@ -43,9 +43,6 @@ var (
 	date    = "unknown"
 )
 
-// languages são os idiomas oferecidos pela versão Python.
-var languages = []string{"pt", "en", "es", "fr", "it", "ja", "auto"}
-
 func printUsage() {
 	fmt.Print(i18n.T("usage", version))
 }
@@ -751,7 +748,7 @@ func printLists() {
 		fmt.Println("  -", t)
 	}
 	fmt.Println(i18n.T("list_languages"))
-	for _, l := range languages {
+	for _, l := range i18n.TranslationLanguages {
 		fmt.Printf("  - %s: %s\n", l, i18n.T("lang_"+l))
 	}
 }
