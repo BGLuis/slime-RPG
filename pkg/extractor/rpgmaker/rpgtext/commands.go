@@ -263,6 +263,10 @@ func sanitizeScriptLiteral(text, quote, original string) string {
 		}
 	}
 
+	if preEscapedCodeRE.MatchString(original) {
+		s = doublePreEscapedCodes(s)
+	}
+
 	var b strings.Builder
 	backslashes := 0
 	for _, r := range s {
@@ -287,6 +291,23 @@ func sanitizeScriptLiteral(text, quote, original string) string {
 		}
 	}
 	return b.String()
+}
+
+var (
+	preEscapedCodeRE = regexp.MustCompile(`\\\\[A-Za-z]+\[[^\]]*\]`)
+	escapedCodeRunRE = regexp.MustCompile(`\\+[A-Za-z]+\[[^\]]*\]`)
+)
+
+// doublePreEscapedCodes devolve a barra dupla de códigos como \\C[2] quando o
+// tradutor a reduziu a uma barra só: dentro de um literal JS "\C[2]" vira "C[2]"
+// em execução e o código de cor se perde (ScriptStrategy._PRE_ESCAPED_FORMAT_CODE).
+func doublePreEscapedCodes(s string) string {
+	return escapedCodeRunRE.ReplaceAllStringFunc(s, func(m string) string {
+		if strings.HasPrefix(m, `\\`) {
+			return m
+		}
+		return `\` + m
+	})
 }
 
 func stripQuotePair(s string) string {

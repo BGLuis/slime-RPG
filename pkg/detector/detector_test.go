@@ -91,3 +91,23 @@ func TestRestrictedPaths(t *testing.T) {
 		t.Error("a raiz do repositório do Slime deveria ser recusada")
 	}
 }
+
+func TestGameNameSkipsDataFolders(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "MeuJogo")
+	data := filepath.Join(root, "www", "data")
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(data, "System.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{root, filepath.Join(root, "www"), data} {
+		res, err := Detect(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.GameName != "MeuJogo" {
+			t.Errorf("Detect(%s).GameName = %q, esperava MeuJogo (o Python grava \"www\")", path, res.GameName)
+		}
+	}
+}
