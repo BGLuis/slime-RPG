@@ -1,6 +1,8 @@
 version: '3'
 
 vars:
+  HOME:
+    sh: echo "$HOME"
   BINARY_NAME: slime
   BIN_DIR: bin
   MAIN_PKG: ./cmd/slime
@@ -10,6 +12,8 @@ vars:
     sh: git rev-parse --short HEAD 2>/dev/null || echo "none"
   DATE:
     sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
+  LOCAL_BIN: '{{.HOME}}/.local/bin'
+  ALIASES: slm sl
   LDFLAGS: -X main.version={{.VERSION}} -X main.commit={{.COMMIT}} -X main.date={{.DATE}}
 
 tasks:
@@ -81,3 +85,75 @@ tasks:
     desc: Remove binários compilados e artefatos temporários
     cmds:
       - rm -rf {{.BIN_DIR}}
+
+  install-cli:
+    desc: Compila e instala o comando slime e os atalhos (slm, sl) em ~/.local/bin
+    deps:
+      - build
+    cmds:
+      - mkdir -p "{{.LOCAL_BIN}}"
+      - install -m 755 "{{.BIN_DIR}}/{{.BINARY_NAME}}" "{{.LOCAL_BIN}}/{{.BINARY_NAME}}"
+      - echo "✓ Comando '{{.BINARY_NAME}}' instalado em {{.LOCAL_BIN}}/{{.BINARY_NAME}}"
+      - |
+        for alias in {{.ALIASES}}; do
+          ln -sf "{{.BINARY_NAME}}" "{{.LOCAL_BIN}}/$alias"
+          echo "✓ Atalho '$alias' instalado em {{.LOCAL_BIN}}/$alias -> {{.BINARY_NAME}}"
+        done
+        case ":$PATH:" in
+          *":{{.LOCAL_BIN}}:"*) ;;
+          *) echo "AVISO: '{{.LOCAL_BIN}}' pode não estar no seu PATH. Adicione-o ao ~/.bashrc ou ~/.zshrc." ;;
+        esac
+
+  uninstall-cli:
+    desc: Remove o comando slime e os atalhos de ~/.local/bin
+    cmds:
+      - rm -f "{{.LOCAL_BIN}}/{{.BINARY_NAME}}"
+      - |
+        for alias in {{.ALIASES}}; do
+          rm -f "{{.LOCAL_BIN}}/$alias"
+          echo "✓ Atalho '$alias' removido."
+        done
+      - echo "✓ Comandos desinstalados do terminal."
+
+  add-alias:
+    desc: "Cria um atalho extra para o slime (uso: task add-alias NAME=slx)"
+    requires:
+      vars: [NAME]
+    cmds:
+      - mkdir -p "{{.LOCAL_BIN}}"
+      - ln -sf "{{.BINARY_NAME}}" "{{.LOCAL_BIN}}/{{.NAME}}"
+      - echo "✓ Atalho '{{.NAME}}' instalado em {{.LOCAL_BIN}}/{{.NAME}} -> {{.BINARY_NAME}}"
+
+  remove-alias:
+    desc: "Remove um atalho do slime (uso: task remove-alias NAME=slx)"
+    requires:
+      vars: [NAME]
+    cmds:
+      - rm -f "{{.LOCAL_BIN}}/{{.NAME}}"
+      - echo "✓ Atalho '{{.NAME}}' removido de {{.LOCAL_BIN}}."
+
+  list-aliases:
+    desc: Lista os atalhos instalados que apontam para o slime
+    cmds:
+      - |
+        echo "Atalhos do Slime em {{.LOCAL_BIN}}:"
+        found=0
+        for f in "{{.LOCAL_BIN}}"/*; do
+          if [ -L "$f" ] && [ "$(basename "$(readlink -f "$f")")" = "{{.BINARY_NAME}}" ]; then
+            echo "  - $(basename "$f") -> $f"
+            found=1
+          fi
+        done
+        [ "$found" -eq 1 ] || echo "  (nenhum atalho encontrado)"
+
+  install-desktop:
+    desc: Instala o atalho de aplicativo e o menu de contexto "Translate Game Folder" (Linux)
+    deps:
+      - install-cli
+    cmds:
+      - bash scripts/linux_integration.sh install "{{.LOCAL_BIN}}/{{.BINARY_NAME}}"
+
+  uninstall-desktop:
+    desc: Remove o atalho de aplicativo e os menus de contexto instalados
+    cmds:
+      - bash scripts/linux_integration.sh uninstall "{{.LOCAL_BIN}}/{{.BINARY_NAME}}"

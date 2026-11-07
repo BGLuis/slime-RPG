@@ -286,3 +286,38 @@ func TestEstimateCountsCachedSegments(t *testing.T) {
 		t.Error("a estimativa não pode criar o backup")
 	}
 }
+
+func TestReviewRejectionWritesNothingAndApprovalCommits(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		approve bool
+	}{{"rejeitado", false}, {"aprovado", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			game := writeGame(t)
+			cfg := baseConfig(game)
+			var seenDir string
+			cfg.Review = func(dir string) bool {
+				seenDir = dir
+				return tc.approve
+			}
+			_, err := runJob(t, cfg, newMemory(t), &fakeProvider{})
+
+			mapOut := read(t, filepath.Join(game, "www", "data", "Map001.json"))
+			if seenDir == "" {
+				t.Fatal("Review não foi chamado")
+			}
+			if tc.approve {
+				if err != nil || !strings.Contains(mapOut, "PT[こんにちは]") {
+					t.Errorf("err=%v mapa=%s", err, mapOut)
+				}
+				return
+			}
+			if !errors.Is(err, ErrReviewRejected) {
+				t.Errorf("err = %v, esperava ErrReviewRejected", err)
+			}
+			if mapOut != mapJSON {
+				t.Errorf("rejeição não deveria gravar nada: %s", mapOut)
+			}
+		})
+	}
+}

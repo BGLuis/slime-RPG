@@ -29,6 +29,7 @@ var (
 	ErrSameLanguage      = errors.New("source and target languages must differ")
 	ErrNoProvider        = errors.New("a translation provider is required unless memory-only mode is enabled")
 	ErrRateLimited       = errors.New("provider rate limit reached: enable the proxy pool or use a VPN and run again")
+	ErrReviewRejected    = errors.New("translation rejected during manual review: no files were written")
 )
 
 // ConfigSchemaField define um campo de configuração dinâmica exposto por plugins de tradução.
@@ -63,6 +64,10 @@ type Config struct {
 	MemoryOnly bool `json:"memory_only"`
 	// SwitchEngine descarta traduções de máquina de outros provedores na memória.
 	SwitchEngine bool `json:"switch_engine"`
+
+	// Review, se definido, é chamado com a pasta de processamento depois da
+	// tradução e antes de gravar no jogo. Retornar false aborta sem gravar nada.
+	Review func(processDir string) bool `json:"-"`
 }
 
 // Validate aplica as mesmas regras do JobConfig da versão Python.
@@ -526,6 +531,10 @@ func (j *Job) Run(ctx context.Context) (err error) {
 
 	j.setPhase(event.PhaseCommitting, "Gravando arquivos traduzidos")
 	statuses := j.inject(ws, extracted, translations, cached)
+
+	if j.cfg.Review != nil && !j.cfg.Review(ws.ProcessDir()) {
+		return ErrReviewRejected
+	}
 
 	if _, err := ws.Commit(); err != nil {
 		return fmt.Errorf("failed to commit translated files: %w", err)
