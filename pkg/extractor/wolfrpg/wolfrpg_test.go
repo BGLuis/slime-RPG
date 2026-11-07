@@ -296,3 +296,18 @@ func TestWolfFiltersFromPythonSuite(t *testing.T) {
 		}
 	}
 }
+
+// Holy Sword Cecilia: "Recruit/Remove" é uma opção de escolha visível, e
+// "Data/BGM" e "Data/SE" são pastas lidas por um evento comum.
+func TestUIPairsAreTextButAssetFoldersAreNot(t *testing.T) {
+	for _, w := range []string{"Recruit/Remove", "Yes/No", "Sim / Não", "はい/いいえ"} {
+		if !IsTranslatable(w) {
+			t.Errorf("%q deveria ser traduzível", w)
+		}
+	}
+	for _, w := range []string{"Data/BGM", "Data/SE", `Data\SE`, "SE/Battle", "Picture/Stand"} {
+		if IsTranslatable(w) {
+			t.Errorf("%q não deveria ser traduzível", w)
+		}
+	}
+}

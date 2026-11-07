@@ -16,11 +16,12 @@ var (
 	}
 
 	technicalPrefixes = []string{
-		"system/", "graphic/", "picture/", "sound/", "bgm/", "bgs/", "se/", "mapdata/", "basicdata/", "chara/", "chipset/",
-		"system\\", "graphic\\", "picture\\", "sound\\", "bgm\\", "bgs\\", "se\\", "mapdata\\", "basicdata\\", "chara\\", "chipset\\",
+		"data/", "system/", "graphic/", "picture/", "sound/", "bgm/", "bgs/", "se/", "mapdata/", "basicdata/", "chara/", "chipset/",
+		"data\\", "system\\", "graphic\\", "picture\\", "sound\\", "bgm\\", "bgs\\", "se\\", "mapdata\\", "basicdata\\", "chara\\", "chipset\\",
 	}
 
 	reIdentifierWithUnderscore = regexp.MustCompile(`^[A-Za-z0-9]*_[A-Za-z0-9_]*$`)
+	reUIPair                   = regexp.MustCompile(`^\pL+(?:\s*/\s*\pL+)+$`)
 	reSlashPath                = regexp.MustCompile(`^[A-Za-z0-9_\-.]*[/\\]+[A-Za-z0-9_\-./\\]*$`)
 	reMathOrSymbols            = regexp.MustCompile(`^[0-9+\-*/=<>!&|~^%()\[\]\s]+$`)
 	reOnlyNumbers              = regexp.MustCompile(`^[0-9]+$`)
@@ -94,6 +95,12 @@ func IsTechnicalOrCode(text string) bool {
 	// Expressões numéricas ou puramente simbólicas
 	if reMathOrSymbols.MatchString(cleaned) || reOnlyNumbers.MatchString(cleaned) {
 		return true
+	}
+
+	// Pares de interface como Yes/No ou Recruit/Remove são texto visível. Pastas
+	// de recursos (Data/BGM, SE/...) já caíram nos prefixos técnicos acima.
+	if reUIPair.MatchString(cleaned) {
+		return false
 	}
 
 	// Identificadores curtos (ex: SE_01, bgm02, ev_flag) sem caracteres CJK nem espaços
