@@ -2,6 +2,7 @@ package wolfrpg
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -186,5 +187,26 @@ func TestRepackMergesArchiveLooseAndTranslatedFiles(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("%s = %q, esperava %q", k, got[k], v)
 		}
+	}
+}
+
+// Game.dat sem a assinatura conhecida (formato antigo ou cifrado, como o do Holy
+// Sword Cecilia) não tem texto a traduzir e fica intacto, como na versão Python.
+// Só é erro quando se pede para trocar a fonte, que não teria como ser gravada.
+func TestUnrecognizedGameDatIsSkippedUnlessFontIsRequested(t *testing.T) {
+	data := []byte{0x2c, 0x68, 0x1c, 0x00, 0x00, 0x36, 0xc2, 0x16, 0x69, 0x65}
+	x := NewExtractor()
+	segs, err := x.Extract("Data/BasicData/Game.dat", data, "ja")
+	if err != nil || len(segs) != 0 {
+		t.Fatalf("Extract = %d segmentos, %v", len(segs), err)
+	}
+	out, err := x.Inject("Data/BasicData/Game.dat", data, nil, "pt")
+	if err != nil || !bytes.Equal(out, data) {
+		t.Fatalf("Inject alterou o arquivo: %v", err)
+	}
+
+	x.TargetFont = "Tahoma"
+	if _, _, err := x.Rewrite("Data/BasicData/Game.dat", data); !errors.Is(err, ErrInvalidDatabase) {
+		t.Errorf("trocar a fonte de um Game.dat não reconhecido deveria falhar, err = %v", err)
 	}
 }

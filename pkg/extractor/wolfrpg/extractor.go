@@ -1,6 +1,7 @@
 package wolfrpg
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -251,6 +252,11 @@ func (e *Extractor) open(filePath string, data []byte) (*document, error) {
 
 	case lower == "game.dat":
 		g, err := LoadWolfGameDat(data)
+		if errors.Is(err, ErrInvalidDatabase) && e.TargetFont == "" {
+			// Game.dat de formato antigo ou cifrado: como na versão Python, não há
+			// texto a traduzir e o arquivo segue intacto.
+			return &document{walk: func(func(textSlot)) {}, save: func() []byte { return data }}, nil
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse %s: %w", base, err)
 		}
