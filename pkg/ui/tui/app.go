@@ -49,6 +49,8 @@ type Model struct {
 	detectedGame        *detector.DetectionResult
 	selectedFolderIndex int
 	folderOptions       []string
+	pathInput           bool
+	pathBuf             string
 
 	// Estado da Etapa 2 (Configurar)
 	selectedProvider int
@@ -59,6 +61,11 @@ type Model struct {
 	enableProxies    bool
 	fieldValues      map[string]string // opções do extrator e chave do DeepL, por ConfigSchemaField.Key
 	fieldFocus       int               // índice em configFields(); -1 = nenhum campo em edição
+	estimate         *event.EstimateEvent
+	estimating       bool
+	estimateErr      string
+	estimateSeq      int
+	estimateKey      string
 
 	// Estado da Etapa 3.5 (Revisar)
 	selectedFilter     int
@@ -78,38 +85,45 @@ func NewModel(initialDir string, opts ...Option) *Model {
 	if initialDir == "" {
 		initialDir = "."
 	}
-	det, _ := detector.Detect(initialDir)
-	sourceLang := "ja"
-	if det != nil && det.ProbableLang != "" {
-		sourceLang = det.ProbableLang
-	}
-
-	folderOpts := []string{"Digitar caminho…", "Navegar nas pastas…"}
-	if det != nil && det.Engine != detector.EngineUnknown {
-		folderOpts = append([]string{fmt.Sprintf("› Jogo detectado aqui   %s   %s", det.DataDir, det.Engine)}, folderOpts...)
-	}
-
 	m := &Model{
-		gamePath:      initialDir,
-		newProvider:   defaultProvider,
-		openMemory:    defaultMemory,
-		view:          ViewOpenGame,
-		width:         100,
-		height:        32,
-		detectedGame:  det,
-		folderOptions: folderOpts,
-		providers:     []string{"Google Translate", "DeepL", "Ollama", "Só memória"},
-		sourceLang:    sourceLang,
-		targetLang:    "pt",
-		incremental:   true,
-		fieldValues:   map[string]string{},
-		fieldFocus:    -1,
-		filterLabels:  []string{"Todos", "Parciais"},
+		newProvider:  defaultProvider,
+		openMemory:   defaultMemory,
+		view:         ViewOpenGame,
+		width:        100,
+		height:       32,
+		providers:    []string{"Google Translate", "DeepL", "Ollama", "Só memória"},
+		targetLang:   "pt",
+		incremental:  true,
+		fieldFocus:   -1,
+		filterLabels: []string{"Todos", "Parciais"},
 	}
+	det, _ := detector.Detect(initialDir)
+	m.setGame(initialDir, det)
 	for _, opt := range opts {
 		opt(m)
 	}
 	return m
+}
+
+// hasGame diz se há um jogo reconhecido na pasta escolhida.
+func (m *Model) hasGame() bool {
+	return m.detectedGame != nil && m.detectedGame.Engine != detector.EngineUnknown
+}
+
+// setGame troca o jogo escolhido e zera o que dependia do anterior.
+func (m *Model) setGame(path string, det *detector.DetectionResult) {
+	m.gamePath, m.detectedGame = path, det
+	m.fieldValues = map[string]string{}
+	m.fieldFocus = -1
+	m.sourceLang = "ja"
+	if det != nil && det.ProbableLang != "" {
+		m.sourceLang = det.ProbableLang
+	}
+	m.folderOptions = []string{"Digitar caminho…"}
+	if m.hasGame() {
+		m.folderOptions = append([]string{fmt.Sprintf("› Jogo detectado aqui   %s   %s", det.DataDir, det.Engine)}, m.folderOptions...)
+	}
+	m.selectedFolderIndex = 0
 }
 
 // Init inicializa os comandos iniciais do Bubble Tea.
@@ -128,6 +142,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case eventMsg:
 		return m, m.handleEvent(msg)
 
+	case estimateMsg:
+		m.handleEstimate(msg)
+		return m, nil
+
 	case runDoneMsg:
 		m.handleRunDone(msg)
 		return m, nil
@@ -139,7 +157,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		case "q":
-			if m.view == ViewOpenGame || m.view == ViewResult {
+			if (m.view == ViewOpenGame && !m.pathInput) || m.view == ViewResult {
 				m.stopJob()
 				m.quitting = true
 				return m, tea.Quit
@@ -148,6 +166,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch {
 			case m.editing:
 				m.editing = false
+				return m, nil
+			case m.pathInput:
+				m.pathInput = false
 				return m, nil
 			case m.view == ViewReviewing:
 				m.view = ViewResult
@@ -177,6 +198,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateOpenGame(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.pathInput {
+		switch msg.String() {
+		case "enter":
+			return m, m.openTypedPath()
+		case "backspace":
+			if r := []rune(m.pathBuf); len(r) > 0 {
+				m.pathBuf = string(r[:len(r)-1])
+			}
+		default:
+			if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+				m.pathBuf += string(msg.Runes)
+			}
+		}
+		return m, nil
+	}
 	switch msg.String() {
 	case "up", "k":
 		if m.selectedFolderIndex > 0 {
@@ -187,10 +223,29 @@ func (m *Model) updateOpenGame(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedFolderIndex++
 		}
 	case "enter":
-		// Avança para o Passo 2: Configurar
-		m.view = ViewConfigure
+		if m.hasGame() && m.selectedFolderIndex == 0 {
+			m.statusMsg = ""
+			return m, m.enterConfigure()
+		}
+		m.pathInput, m.pathBuf, m.statusMsg = true, "", ""
 	}
 	return m, nil
+}
+
+// openTypedPath detecta o jogo no caminho digitado e, se houver, segue para Configurar.
+func (m *Model) openTypedPath() tea.Cmd {
+	path := strings.TrimSpace(m.pathBuf)
+	if path == "" {
+		return nil
+	}
+	det, err := detector.Detect(path)
+	if err != nil || det == nil || det.Engine == detector.EngineUnknown {
+		m.statusMsg = "Nenhum jogo encontrado em " + path
+		return nil
+	}
+	m.setGame(path, det)
+	m.pathInput, m.statusMsg = false, ""
+	return m.enterConfigure()
 }
 
 // configFields reúne os campos extras da tela Configurar: opções do extrator
@@ -202,6 +257,9 @@ func (m *Model) configFields() []job.ConfigSchemaField {
 	}
 	if m.providers[m.selectedProvider] == "DeepL" && os.Getenv("DEEPL_API_KEY") == "" {
 		fields = append(fields, job.ProviderSchema("deepl").Fields...)
+	}
+	if providerIDs[m.selectedProvider] == "ollama" {
+		fields = append(fields, ollamaFields...)
 	}
 	return fields
 }
@@ -228,7 +286,7 @@ func (m *Model) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.fieldFocus == len(fields) {
 			m.fieldFocus = -1
 		}
-		return m, nil
+		return m, m.reestimate()
 	}
 	if m.fieldFocus >= 0 && m.fieldFocus < len(fields) && m.editField(msg, fields[m.fieldFocus].Key) {
 		return m, nil
@@ -242,6 +300,10 @@ func (m *Model) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selectedProvider < len(m.providers)-1 {
 			m.selectedProvider++
 		}
+	case "s":
+		m.sourceLang = nextLang(m.sourceLang)
+	case "d":
+		m.targetLang = nextLang(m.targetLang)
 	case " ":
 		m.incremental = !m.incremental
 	case "x":
@@ -256,7 +318,10 @@ func (m *Model) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewTranslating
 		return m, cmd
 	}
-	return m, nil
+	if m.fieldFocus >= len(m.configFields()) {
+		m.fieldFocus = -1
+	}
+	return m, m.reestimate()
 }
 
 func (m *Model) updateTranslating(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -430,77 +495,54 @@ func (m *Model) renderStepperHeader() string {
 func (m *Model) renderOpenGame() string {
 	var s strings.Builder
 	s.WriteString("   " + theme.StyleTitle.Render("Qual jogo vamos traduzir?") + "\n")
-	s.WriteString("   " + theme.StyleSubtitle.Render("O Slime procurou na pasta atual, no clipboard e nos jogos recentes.") + "\n\n")
+	s.WriteString("   " + theme.StyleSubtitle.Render("O Slime procurou um jogo na pasta atual.") + "\n\n")
 
-	// Caixa de seleção de pasta
 	s.WriteString("   ╭─ Escolha uma pasta ──────────────────────────────────────────────────────────────────────────╮\n")
 	for i, opt := range m.folderOptions {
 		prefix := "   "
 		if i == m.selectedFolderIndex {
 			prefix = " › "
 		}
-		s.WriteString(fmt.Sprintf("   │%s%-89s│\n", prefix, opt))
+		s.WriteString(fmt.Sprintf("   │%s%-89s│\n", prefix, truncate(opt, 89)))
 	}
 	s.WriteString("   ╰──────────────────────────────────────────────────────────────────────────────────────────────╯\n\n")
-
-	// Recentes
-	s.WriteString("   " + theme.StyleHeader.Render("RECENTES") + "\n")
-	s.WriteString("   ╭──────────────────────────────────────────────────────────────────────────────────────────────╮\n")
-	s.WriteString("   │ Aventura do Slime      ~/Jogos/Aventura do Slime        RPG Maker MZ   ja→pt · há 2 dias     │\n")
-	s.WriteString("   │ Torre de Cristal       ~/Jogos/torre-cristal            WOLF RPG       ja→pt · 3 parciais    │\n")
-	s.WriteString("   │ Planilha de diálogos   ~/Projetos/mod/dialogos.csv      CSV            en→pt · nunca         │\n")
-	s.WriteString("   ╰──────────────────────────────────────────────────────────────────────────────────────────────╯\n\n")
+	if m.pathInput {
+		s.WriteString("   Caminho do jogo: " + m.pathBuf + "▌\n\n")
+	}
 	s.WriteString("   " + theme.StyleMuted.Render("Dica: slime translate -i <pasta> faz o mesmo sem perguntas."))
 	return s.String()
 }
 
 func (m *Model) renderConfigure() string {
 	var s strings.Builder
-	gameTitle := "Aventura do Slime"
+	gameTitle, info := "(nenhum jogo)", ""
 	if m.detectedGame != nil {
 		gameTitle = m.detectedGame.GameName
+		info = fmt.Sprintf("%s · %s · %d arquivos", m.detectedGame.Engine, m.detectedGame.DataDir, m.detectedGame.FileCount)
 	}
 
 	left := []string{
 		fmt.Sprintf("╭─ Configurar · %s ───────────────────────╮", gameTitle),
-		"│ RPG Maker MZ · www/data · 142 arquivos                 │",
+		fmt.Sprintf("│ %-54s │", truncate(info, 54)),
 		"│                                                        │",
 		"│ " + theme.SymBarV + " Serviço                                              │",
 		"│ " + theme.SymBarV + " " + m.providerLine() + " │",
 		"│ " + theme.SymBarV + " Grátis e sem chave; pode limitar requisições.        │",
 		"│                                                        │",
-		"│   Idioma de origem                                     │",
-		"│   Japonês (detectado em 96% das falas)                 │",
+		"│   Idioma de origem (s)                                 │",
+		fmt.Sprintf("│   %-52s │", langLabel(m.sourceLang)),
 		"│                                                        │",
-		"│   Idioma de destino                                    │",
-		"│   Português (Brasil)                                   │",
+		"│   Idioma de destino (d)                                │",
+		fmt.Sprintf("│   %-52s │", langLabel(m.targetLang)),
 		"│                                                        │",
 		fmt.Sprintf("│   %-52s │", checkbox(m.incremental)+" Só o que mudou (espaço)"),
 		fmt.Sprintf("│   %-52s │", checkbox(m.enableProxies)+" Usar proxies se o Google bloquear o IP (x)"),
 		"│                                                        │",
-		"│   ▸ Avançado   backup ligado · saída na própria pasta  │",
+		"│   Backup ligado · saída na própria pasta               │",
 		"╰────────────────────────────────────────────────────────╯",
 	}
 
-	right := []string{
-		"╭─ Estimativa ─────────────────────╮",
-		"│ 230 textos para traduzir         │",
-		"│                                  │",
-		"│ " + theme.RenderProgressBar(0.80, 32) + " │",
-		"│ 950 de 1.180 já na memória (80%) │",
-		"│                                  │",
-		"│ Arquivos  12 de 142              │",
-		"│ Tempo     menos de 1 min         │",
-		"│ Custo     grátis                 │",
-		"│ Backup    …/" + gameTitle + "-ja │",
-		"│                                  │",
-		"│ O tempo é uma faixa: o Google    │",
-		"│ pode limitar no meio do caminho. │",
-		"│                                  │",
-		"│  " + theme.StyleBtnPrimary.Render("▶ Traduzir 230 textos") + "           │",
-		"│    ctrl+enter                    │",
-		"╰──────────────────────────────────╯",
-	}
+	right := m.renderEstimate()
 
 	left = append(left[:len(left)-1], m.renderFieldRows()...)
 	left = append(left, "╰────────────────────────────────────────────────────────╯")
@@ -547,9 +589,12 @@ func truncate(s string, n int) string {
 func (m *Model) renderFooter() string {
 	switch m.view {
 	case ViewOpenGame:
-		return "  ↑↓ mover · enter escolher · tab recentes · ctrl+v colar · ctrl+p comandos · q sair"
+		if m.pathInput {
+			return "  digite ou cole o caminho · enter abrir · esc cancelar"
+		}
+		return "  ↑↓ mover · enter escolher · q sair"
 	case ViewConfigure:
-		return "  tab próximo campo · ←→ serviço · espaço só o que mudou · x proxies · enter traduzir · esc voltar"
+		return "  tab campo · ←→ serviço · s/d idiomas · espaço incremental · x proxies · enter traduzir · esc voltar"
 	case ViewTranslating:
 		return "  p pausar/retomar · c cancelar · ctrl+c sair"
 	case ViewReviewing:

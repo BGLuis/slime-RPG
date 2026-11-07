@@ -1,13 +1,13 @@
 package tui
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/BGLuis/slime-rpg/pkg/detector"
 	"github.com/BGLuis/slime-rpg/pkg/event"
 	"github.com/BGLuis/slime-rpg/pkg/formats"
 	"github.com/BGLuis/slime-rpg/pkg/job"
@@ -25,7 +25,13 @@ import (
 var providerIDs = []string{"google", "deepl", "ollama", ""}
 
 // ProviderFactory cria o provedor escolhido na tela Configurar.
-type ProviderFactory func(id, apiKey string, proxies bool) (provider.Provider, error)
+type ProviderFactory func(p ProviderParams) (provider.Provider, error)
+
+// ProviderParams reúne o que a tela Configurar coletou para criar o provedor.
+type ProviderParams struct {
+	ID, APIKey, Model, Host string
+	Proxies                 bool
+}
 
 // MemoryOpener abre a Memória de Tradução usada pelo job.
 type MemoryOpener func() (*memory.TranslationMemory, error)
@@ -47,28 +53,27 @@ type runDoneMsg struct {
 	err error
 }
 
-func defaultProvider(id, apiKey string, proxies bool) (provider.Provider, error) {
-	switch id {
+func defaultProvider(p ProviderParams) (provider.Provider, error) {
+	switch p.ID {
 	case "deepl":
-		if apiKey == "" {
-			apiKey = os.Getenv("DEEPL_API_KEY")
-		}
-		if apiKey == "" {
+		key := cmp.Or(p.APIKey, os.Getenv("DEEPL_API_KEY"))
+		if key == "" {
 			return nil, errors.New("informe a chave da API do DeepL ou defina DEEPL_API_KEY")
 		}
-		return deepl.NewDeepLTranslator(apiKey), nil
+		return deepl.NewDeepLTranslator(key), nil
 	case "ollama":
-		endpoint := os.Getenv("OLLAMA_HOST")
-		if endpoint == "" {
-			endpoint = ollama.DefaultEndpoint
+		model := cmp.Or(p.Model, os.Getenv("OLLAMA_MODEL"))
+		if model == "" {
+			return nil, errors.New("informe o modelo do Ollama ou defina OLLAMA_MODEL")
 		}
-		return ollama.NewOllamaTranslator(endpoint, os.Getenv("OLLAMA_MODEL"), ""), nil
+		endpoint := cmp.Or(p.Host, os.Getenv("OLLAMA_HOST"), ollama.DefaultEndpoint)
+		return ollama.NewOllamaTranslator(endpoint, model, ""), nil
 	case "google":
-		pm := proxy.NewManager(proxies, nil)
+		pm := proxy.NewManager(p.Proxies, nil)
 		pm.UsePublicSources()
 		return google.NewGoogleTranslator(pm), nil
 	}
-	return nil, fmt.Errorf("provedor desconhecido: %q", id)
+	return nil, fmt.Errorf("provedor desconhecido: %q", p.ID)
 }
 
 func defaultMemory() (*memory.TranslationMemory, error) {
@@ -101,7 +106,7 @@ func (m *Model) extractorOptions() map[string]string {
 
 // startJob monta o job com o estado da tela Configurar e o dispara em segundo plano.
 func (m *Model) startJob() (tea.Cmd, error) {
-	if m.detectedGame == nil || m.detectedGame.Engine == detector.EngineUnknown {
+	if !m.hasGame() {
 		return nil, fmt.Errorf("nenhum jogo detectado em %s", m.gamePath)
 	}
 	opts := m.extractorOptions()
@@ -131,7 +136,10 @@ func (m *Model) startJob() (tea.Cmd, error) {
 	var prov provider.Provider
 	if !cfg.MemoryOnly {
 		var err error
-		if prov, err = m.newProvider(id, m.fieldValues["api_key"], m.enableProxies); err != nil {
+		if prov, err = m.newProvider(ProviderParams{
+			ID: id, APIKey: m.fieldValues["api_key"], Model: strings.TrimSpace(m.fieldValues["ollama_model"]),
+			Host: strings.TrimSpace(m.fieldValues["ollama_host"]), Proxies: m.enableProxies,
+		}); err != nil {
 			return nil, err
 		}
 	}

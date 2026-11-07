@@ -10,7 +10,8 @@ import (
 )
 
 func TestModel_StepTransitions(t *testing.T) {
-	m := NewModel(".")
+	game, _ := writeGame(t)
+	m := NewModel(game)
 	if m.view != ViewOpenGame {
 		t.Fatalf("expected initial view to be ViewOpenGame, got %v", m.view)
 	}
@@ -30,8 +31,8 @@ func TestModel_StepTransitions(t *testing.T) {
 	}
 
 	// Sem jogo detectado na pasta, Enter em Configurar não inicia nada.
-	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = newM.(*Model)
+	m.setGame(t.TempDir(), nil)
+	m.view = ViewConfigure
 	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = newM.(*Model)
 	if m.view != ViewConfigure || m.statusMsg == "" || m.job != nil {
@@ -55,7 +56,8 @@ func TestModel_StepTransitions(t *testing.T) {
 }
 
 func TestModel_KeyInteractions(t *testing.T) {
-	m := NewModel(".")
+	game, _ := writeGame(t)
+	m := NewModel(game)
 
 	// Navigation in Step 1
 	m.Update(tea.KeyMsg{Type: tea.KeyDown})

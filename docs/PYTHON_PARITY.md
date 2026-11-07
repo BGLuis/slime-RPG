@@ -57,7 +57,7 @@ Legenda: ✅ paridade · ⚠️ parcial ou diferente · ❌ falta no Go · ➖ n
 | `--memory-only`, `--switch-engine`, `--synopsis` | `cli.py` | ✅ |
 | Tradução de nomes de arquivo | `services/FileNameTranslator.py` | ✅ `slime filenames` |
 | Pausa para verificação antes de gravar | `job.py` (padrão; `--no-verify` desliga) | ✅ `--review`, opcional, para não travar automação e `--json` |
-| Modo interativo no terminal | `cli.py` (Textual) | ⚠️ a TUI roda o job de verdade (provedor, idiomas, incremental, proxies, opções do extrator, chave DeepL, modo só-memória; progresso, pausa/cancelamento, revisão e resultado com erros). Só abre o jogo da pasta atual (sem digitar/navegar caminho), os idiomas não são editáveis e o painel de estimativa da tela Configurar ainda é fixo. Testada com provedor falso, não numa sessão real de terminal. |
+| Modo interativo no terminal | `cli.py` (Textual) | ⚠️ a TUI roda o job de verdade: caminho do jogo digitado, idiomas editáveis (s/d), provedor (Google, DeepL, Ollama com modelo/endereço, só memória), incremental, proxies, opções do extrator, estimativa pré-voo, progresso, pausa/cancelamento, revisão e resultado com erros. Sem navegador de pastas nem histórico de jogos recentes. Testada com provedor falso, não numa sessão real de terminal. |
 | GUI com formulário de opções por extrator | `gui.py` | ✅ desktop (MyGo). Não foi aberto numa janela real. |
 | Idioma da interface PT/EN | `i18n.py` | ❌ só PT |
 | Preferências persistidas | `services/SettingsStore.py` | ❌ |
