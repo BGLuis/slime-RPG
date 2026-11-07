@@ -10,7 +10,8 @@ import (
 )
 
 func TestModel_StepTransitions(t *testing.T) {
-	m := NewModel(".")
+	game, _ := writeGame(t)
+	m := NewModel(game)
 	if m.view != ViewOpenGame {
 		t.Fatalf("expected initial view to be ViewOpenGame, got %v", m.view)
 	}
@@ -29,24 +30,18 @@ func TestModel_StepTransitions(t *testing.T) {
 		t.Fatalf("expected view ViewOpenGame after Esc, got %v", m.view)
 	}
 
-	// Step 1 -> Step 2 -> Step 3
+	// Sem jogo detectado na pasta, Enter em Configurar não inicia nada.
+	m.setGame(t.TempDir(), nil)
+	m.view = ViewConfigure
 	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = newM.(*Model)
-	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = newM.(*Model)
-	if m.view != ViewTranslating {
-		t.Fatalf("expected view ViewTranslating, got %v", m.view)
+	if m.view != ViewConfigure || m.statusMsg == "" || m.job != nil {
+		t.Fatalf("esperava permanecer em Configurar com aviso, view=%v status=%q", m.view, m.statusMsg)
 	}
 
-	// Step 3 -> Step 3.5 (Review) via 'r'
-	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	m = newM.(*Model)
-	if m.view != ViewReviewing {
-		t.Fatalf("expected view ViewReviewing, got %v", m.view)
-	}
-
-	// Step 3.5 -> Step 4 (Result) via Enter
-	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Revisar volta ao Resultado com Esc
+	m.view = ViewReviewing
+	newM, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	m = newM.(*Model)
 	if m.view != ViewResult {
 		t.Fatalf("expected view ViewResult, got %v", m.view)
@@ -61,7 +56,8 @@ func TestModel_StepTransitions(t *testing.T) {
 }
 
 func TestModel_KeyInteractions(t *testing.T) {
-	m := NewModel(".")
+	game, _ := writeGame(t)
+	m := NewModel(game)
 
 	// Navigation in Step 1
 	m.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -98,11 +94,6 @@ func TestModel_KeyInteractions(t *testing.T) {
 	m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if m.selectedFilter != 1 {
 		t.Errorf("expected selectedFilter 1 after Tab, got %d", m.selectedFilter)
-	}
-
-	m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if m.selectedSegmentIdx != 1 {
-		t.Errorf("expected selectedSegmentIdx 1 after Down, got %d", m.selectedSegmentIdx)
 	}
 }
 

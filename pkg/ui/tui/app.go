@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"github.com/BGLuis/slime-rpg/pkg/detector"
 	"github.com/BGLuis/slime-rpg/pkg/event"
 	"github.com/BGLuis/slime-rpg/pkg/job"
+	"github.com/BGLuis/slime-rpg/pkg/memory"
 	"github.com/BGLuis/slime-rpg/pkg/ui/theme"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -32,10 +34,23 @@ type Model struct {
 	snapshot  job.Snapshot
 	eventChan <-chan event.Envelope
 
+	// Execução do job
+	gamePath    string
+	newProvider ProviderFactory
+	openMemory  MemoryOpener
+	mem         *memory.TranslationMemory
+	cancel      context.CancelFunc
+	runErr      error
+	finished    bool
+	paused      bool
+	throttleMsg string
+
 	// Estado da Etapa 1 (Abrir Jogo)
 	detectedGame        *detector.DetectionResult
 	selectedFolderIndex int
 	folderOptions       []string
+	pathInput           bool
+	pathBuf             string
 
 	// Estado da Etapa 2 (Configurar)
 	selectedProvider int
@@ -46,12 +61,19 @@ type Model struct {
 	enableProxies    bool
 	fieldValues      map[string]string // opções do extrator e chave do DeepL, por ConfigSchemaField.Key
 	fieldFocus       int               // índice em configFields(); -1 = nenhum campo em edição
+	estimate         *event.EstimateEvent
+	estimating       bool
+	estimateErr      string
+	estimateSeq      int
+	estimateKey      string
 
 	// Estado da Etapa 3.5 (Revisar)
 	selectedFilter     int
 	filterLabels       []string
+	reviewItems        []job.ReviewItem
 	selectedSegmentIdx int
-	searchQuery        string
+	editing            bool
+	editBuf            string
 
 	// Mensagens de status / rodapé
 	statusMsg string
@@ -59,28 +81,49 @@ type Model struct {
 }
 
 // NewModel inicializa a TUI com detecção automática na pasta atual.
-func NewModel(initialDir string) *Model {
+func NewModel(initialDir string, opts ...Option) *Model {
+	if initialDir == "" {
+		initialDir = "."
+	}
+	m := &Model{
+		newProvider:  defaultProvider,
+		openMemory:   defaultMemory,
+		view:         ViewOpenGame,
+		width:        100,
+		height:       32,
+		providers:    []string{"Google Translate", "DeepL", "Ollama", "Só memória"},
+		targetLang:   "pt",
+		incremental:  true,
+		fieldFocus:   -1,
+		filterLabels: []string{"Todos", "Parciais"},
+	}
 	det, _ := detector.Detect(initialDir)
-
-	folderOpts := []string{"Digitar caminho…", "Navegar nas pastas…"}
-	if det != nil && det.Engine != detector.EngineUnknown {
-		folderOpts = append([]string{fmt.Sprintf("› Jogo detectado aqui   %s   %s", det.DataDir, det.Engine)}, folderOpts...)
+	m.setGame(initialDir, det)
+	for _, opt := range opts {
+		opt(m)
 	}
+	return m
+}
 
-	return &Model{
-		view:          ViewOpenGame,
-		width:         100,
-		height:        32,
-		detectedGame:  det,
-		folderOptions: folderOpts,
-		providers:     []string{"Google Translate", "DeepL", "Ollama"},
-		sourceLang:    "Japonês (detectado)",
-		targetLang:    "Português (Brasil)",
-		incremental:   true,
-		fieldValues:   map[string]string{},
-		fieldFocus:    -1,
-		filterLabels:  []string{"Todos 1.180", "Com problema 3", "Parciais 2", "Editados 1", "Bloqueados 4", "Da memória 950"},
+// hasGame diz se há um jogo reconhecido na pasta escolhida.
+func (m *Model) hasGame() bool {
+	return m.detectedGame != nil && m.detectedGame.Engine != detector.EngineUnknown
+}
+
+// setGame troca o jogo escolhido e zera o que dependia do anterior.
+func (m *Model) setGame(path string, det *detector.DetectionResult) {
+	m.gamePath, m.detectedGame = path, det
+	m.fieldValues = map[string]string{}
+	m.fieldFocus = -1
+	m.sourceLang = "ja"
+	if det != nil && det.ProbableLang != "" {
+		m.sourceLang = det.ProbableLang
 	}
+	m.folderOptions = []string{"Digitar caminho…"}
+	if m.hasGame() {
+		m.folderOptions = append([]string{fmt.Sprintf("› Jogo detectado aqui   %s   %s", det.DataDir, det.Engine)}, m.folderOptions...)
+	}
+	m.selectedFolderIndex = 0
 }
 
 // Init inicializa os comandos iniciais do Bubble Tea.
@@ -96,19 +139,42 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
+	case eventMsg:
+		return m, m.handleEvent(msg)
+
+	case estimateMsg:
+		m.handleEstimate(msg)
+		return m, nil
+
+	case runDoneMsg:
+		m.handleRunDone(msg)
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
+			m.stopJob()
 			m.quitting = true
 			return m, tea.Quit
 		case "q":
-			if m.view == ViewOpenGame || m.view == ViewResult {
+			if (m.view == ViewOpenGame && !m.pathInput) || m.view == ViewResult {
+				m.stopJob()
 				m.quitting = true
 				return m, tea.Quit
 			}
 		case "esc":
-			if m.view > ViewOpenGame && m.view != ViewTranslating {
-				m.view--
+			switch {
+			case m.editing:
+				m.editing = false
+				return m, nil
+			case m.pathInput:
+				m.pathInput = false
+				return m, nil
+			case m.view == ViewReviewing:
+				m.view = ViewResult
+				return m, nil
+			case m.view == ViewConfigure:
+				m.view = ViewOpenGame
 				return m, nil
 			}
 		}
@@ -132,6 +198,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateOpenGame(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.pathInput {
+		switch msg.String() {
+		case "enter":
+			return m, m.openTypedPath()
+		case "backspace":
+			if r := []rune(m.pathBuf); len(r) > 0 {
+				m.pathBuf = string(r[:len(r)-1])
+			}
+		default:
+			if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+				m.pathBuf += string(msg.Runes)
+			}
+		}
+		return m, nil
+	}
 	switch msg.String() {
 	case "up", "k":
 		if m.selectedFolderIndex > 0 {
@@ -142,10 +223,29 @@ func (m *Model) updateOpenGame(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedFolderIndex++
 		}
 	case "enter":
-		// Avança para o Passo 2: Configurar
-		m.view = ViewConfigure
+		if m.hasGame() && m.selectedFolderIndex == 0 {
+			m.statusMsg = ""
+			return m, m.enterConfigure()
+		}
+		m.pathInput, m.pathBuf, m.statusMsg = true, "", ""
 	}
 	return m, nil
+}
+
+// openTypedPath detecta o jogo no caminho digitado e, se houver, segue para Configurar.
+func (m *Model) openTypedPath() tea.Cmd {
+	path := strings.TrimSpace(m.pathBuf)
+	if path == "" {
+		return nil
+	}
+	det, err := detector.Detect(path)
+	if err != nil || det == nil || det.Engine == detector.EngineUnknown {
+		m.statusMsg = "Nenhum jogo encontrado em " + path
+		return nil
+	}
+	m.setGame(path, det)
+	m.pathInput, m.statusMsg = false, ""
+	return m.enterConfigure()
 }
 
 // configFields reúne os campos extras da tela Configurar: opções do extrator
@@ -157,6 +257,9 @@ func (m *Model) configFields() []job.ConfigSchemaField {
 	}
 	if m.providers[m.selectedProvider] == "DeepL" && os.Getenv("DEEPL_API_KEY") == "" {
 		fields = append(fields, job.ProviderSchema("deepl").Fields...)
+	}
+	if providerIDs[m.selectedProvider] == "ollama" {
+		fields = append(fields, ollamaFields...)
 	}
 	return fields
 }
@@ -183,7 +286,7 @@ func (m *Model) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.fieldFocus == len(fields) {
 			m.fieldFocus = -1
 		}
-		return m, nil
+		return m, m.reestimate()
 	}
 	if m.fieldFocus >= 0 && m.fieldFocus < len(fields) && m.editField(msg, fields[m.fieldFocus].Key) {
 		return m, nil
@@ -197,39 +300,113 @@ func (m *Model) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selectedProvider < len(m.providers)-1 {
 			m.selectedProvider++
 		}
+	case "s":
+		m.sourceLang = nextLang(m.sourceLang)
+	case "d":
+		m.targetLang = nextLang(m.targetLang)
 	case " ":
 		m.incremental = !m.incremental
+	case "x":
+		m.enableProxies = !m.enableProxies
 	case "ctrl+enter", "enter":
-		// Inicia tradução (Passo 3)
+		cmd, err := m.startJob()
+		if err != nil {
+			m.statusMsg = err.Error()
+			return m, nil
+		}
+		m.statusMsg = ""
 		m.view = ViewTranslating
+		return m, cmd
 	}
-	return m, nil
+	if m.fieldFocus >= len(m.configFields()) {
+		m.fieldFocus = -1
+	}
+	return m, m.reestimate()
 }
 
 func (m *Model) updateTranslating(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "p":
-		if m.job != nil {
-			m.job.Pause()
+		m.togglePause()
+	case "c":
+		if m.cancel != nil {
+			m.cancel()
 		}
-	case "r":
-		m.view = ViewReviewing
-	case "enter":
-		m.view = ViewResult
+		if m.job != nil {
+			m.job.Cancel()
+		}
 	}
 	return m, nil
 }
 
+var reviewFilters = []string{"all", "partial"}
+
+func (m *Model) loadReview() {
+	if m.job == nil {
+		return
+	}
+	m.reviewItems = m.job.SegmentsForReviewFiltered(reviewFilters[m.selectedFilter])
+	m.selectedSegmentIdx = min(m.selectedSegmentIdx, max(len(m.reviewItems)-1, 0))
+}
+
+func (m *Model) selectedItem() *job.ReviewItem {
+	if m.selectedSegmentIdx >= len(m.reviewItems) {
+		return nil
+	}
+	return &m.reviewItems[m.selectedSegmentIdx]
+}
+
+func (m *Model) applyCorrection(text string, locked bool) {
+	item := m.selectedItem()
+	if item == nil {
+		return
+	}
+	if err := m.job.ApplyCorrection(item.ID, text, locked); err != nil {
+		m.statusMsg = err.Error()
+		return
+	}
+	m.statusMsg = "Correção salva na memória; traduza de novo para aplicá-la ao jogo."
+	m.loadReview()
+}
+
 func (m *Model) updateReviewing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.editing {
+		switch msg.String() {
+		case "enter":
+			m.editing = false
+			m.applyCorrection(m.editBuf, false)
+		case "backspace":
+			if r := []rune(m.editBuf); len(r) > 0 {
+				m.editBuf = string(r[:len(r)-1])
+			}
+		default:
+			if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+				m.editBuf += string(msg.Runes)
+			}
+		}
+		return m, nil
+	}
 	switch msg.String() {
 	case "tab":
 		m.selectedFilter = (m.selectedFilter + 1) % len(m.filterLabels)
+		m.selectedSegmentIdx = 0
+		m.loadReview()
 	case "up", "k":
 		if m.selectedSegmentIdx > 0 {
 			m.selectedSegmentIdx--
 		}
 	case "down", "j":
-		m.selectedSegmentIdx++
+		if m.selectedSegmentIdx < len(m.reviewItems)-1 {
+			m.selectedSegmentIdx++
+		}
+	case "e":
+		if item := m.selectedItem(); item != nil {
+			m.editing, m.editBuf = true, item.Target
+		}
+	case "b":
+		if item := m.selectedItem(); item != nil {
+			m.applyCorrection(item.Target, true)
+		}
 	case "ctrl+s", "enter":
 		m.view = ViewResult
 	}
@@ -239,9 +416,15 @@ func (m *Model) updateReviewing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) updateResult(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "n":
+		m.stopJob()
+		m.job, m.finished, m.runErr, m.statusMsg = nil, false, nil, ""
 		m.view = ViewOpenGame
 	case "r":
-		m.view = ViewReviewing
+		if m.job != nil && m.finished {
+			m.selectedSegmentIdx = 0
+			m.loadReview()
+			m.view = ViewReviewing
+		}
 	}
 	return m, nil
 }
@@ -274,6 +457,9 @@ func (m *Model) View() string {
 
 	// 3. Rodapé Fixo com Atalhos
 	b.WriteString("\n" + strings.Repeat(theme.SymBarThin, 100) + "\n")
+	if m.statusMsg != "" {
+		b.WriteString("  " + theme.StyleTagWarning.Render(theme.SymWarning+" "+m.statusMsg) + "\n")
+	}
 	b.WriteString(m.renderFooter())
 
 	return theme.StyleApp.Render(b.String())
@@ -309,77 +495,54 @@ func (m *Model) renderStepperHeader() string {
 func (m *Model) renderOpenGame() string {
 	var s strings.Builder
 	s.WriteString("   " + theme.StyleTitle.Render("Qual jogo vamos traduzir?") + "\n")
-	s.WriteString("   " + theme.StyleSubtitle.Render("O Slime procurou na pasta atual, no clipboard e nos jogos recentes.") + "\n\n")
+	s.WriteString("   " + theme.StyleSubtitle.Render("O Slime procurou um jogo na pasta atual.") + "\n\n")
 
-	// Caixa de seleção de pasta
 	s.WriteString("   ╭─ Escolha uma pasta ──────────────────────────────────────────────────────────────────────────╮\n")
 	for i, opt := range m.folderOptions {
 		prefix := "   "
 		if i == m.selectedFolderIndex {
 			prefix = " › "
 		}
-		s.WriteString(fmt.Sprintf("   │%s%-89s│\n", prefix, opt))
+		s.WriteString(fmt.Sprintf("   │%s%-89s│\n", prefix, truncate(opt, 89)))
 	}
 	s.WriteString("   ╰──────────────────────────────────────────────────────────────────────────────────────────────╯\n\n")
-
-	// Recentes
-	s.WriteString("   " + theme.StyleHeader.Render("RECENTES") + "\n")
-	s.WriteString("   ╭──────────────────────────────────────────────────────────────────────────────────────────────╮\n")
-	s.WriteString("   │ Aventura do Slime      ~/Jogos/Aventura do Slime        RPG Maker MZ   ja→pt · há 2 dias     │\n")
-	s.WriteString("   │ Torre de Cristal       ~/Jogos/torre-cristal            WOLF RPG       ja→pt · 3 parciais    │\n")
-	s.WriteString("   │ Planilha de diálogos   ~/Projetos/mod/dialogos.csv      CSV            en→pt · nunca         │\n")
-	s.WriteString("   ╰──────────────────────────────────────────────────────────────────────────────────────────────╯\n\n")
+	if m.pathInput {
+		s.WriteString("   Caminho do jogo: " + m.pathBuf + "▌\n\n")
+	}
 	s.WriteString("   " + theme.StyleMuted.Render("Dica: slime translate -i <pasta> faz o mesmo sem perguntas."))
 	return s.String()
 }
 
 func (m *Model) renderConfigure() string {
 	var s strings.Builder
-	gameTitle := "Aventura do Slime"
+	gameTitle, info := "(nenhum jogo)", ""
 	if m.detectedGame != nil {
 		gameTitle = m.detectedGame.GameName
+		info = fmt.Sprintf("%s · %s · %d arquivos", m.detectedGame.Engine, m.detectedGame.DataDir, m.detectedGame.FileCount)
 	}
 
 	left := []string{
 		fmt.Sprintf("╭─ Configurar · %s ───────────────────────╮", gameTitle),
-		"│ RPG Maker MZ · www/data · 142 arquivos                 │",
+		fmt.Sprintf("│ %-54s │", truncate(info, 54)),
 		"│                                                        │",
 		"│ " + theme.SymBarV + " Serviço                                              │",
-		"│ " + theme.SymBarV + " › Google Translate   DeepL   Ollama                  │",
+		"│ " + theme.SymBarV + " " + m.providerLine() + " │",
 		"│ " + theme.SymBarV + " Grátis e sem chave; pode limitar requisições.        │",
 		"│                                                        │",
-		"│   Idioma de origem                                     │",
-		"│   Japonês (detectado em 96% das falas)                 │",
+		"│   Idioma de origem (s)                                 │",
+		fmt.Sprintf("│   %-52s │", langLabel(m.sourceLang)),
 		"│                                                        │",
-		"│   Idioma de destino                                    │",
-		"│   Português (Brasil)                                   │",
+		"│   Idioma de destino (d)                                │",
+		fmt.Sprintf("│   %-52s │", langLabel(m.targetLang)),
 		"│                                                        │",
-		"│   [x] Só o que mudou   12 de 142 arquivos              │",
-		"│   [ ] Usar proxies se o Google bloquear o IP           │",
+		fmt.Sprintf("│   %-52s │", checkbox(m.incremental)+" Só o que mudou (espaço)"),
+		fmt.Sprintf("│   %-52s │", checkbox(m.enableProxies)+" Usar proxies se o Google bloquear o IP (x)"),
 		"│                                                        │",
-		"│   ▸ Avançado   backup ligado · saída na própria pasta  │",
+		"│   Backup ligado · saída na própria pasta               │",
 		"╰────────────────────────────────────────────────────────╯",
 	}
 
-	right := []string{
-		"╭─ Estimativa ─────────────────────╮",
-		"│ 230 textos para traduzir         │",
-		"│                                  │",
-		"│ " + theme.RenderProgressBar(0.80, 32) + " │",
-		"│ 950 de 1.180 já na memória (80%) │",
-		"│                                  │",
-		"│ Arquivos  12 de 142              │",
-		"│ Tempo     menos de 1 min         │",
-		"│ Custo     grátis                 │",
-		"│ Backup    …/" + gameTitle + "-ja │",
-		"│                                  │",
-		"│ O tempo é uma faixa: o Google    │",
-		"│ pode limitar no meio do caminho. │",
-		"│                                  │",
-		"│  " + theme.StyleBtnPrimary.Render("▶ Traduzir 230 textos") + "           │",
-		"│    ctrl+enter                    │",
-		"╰──────────────────────────────────╯",
-	}
+	right := m.renderEstimate()
 
 	left = append(left[:len(left)-1], m.renderFieldRows()...)
 	left = append(left, "╰────────────────────────────────────────────────────────╯")
@@ -423,103 +586,24 @@ func truncate(s string, n int) string {
 	return s
 }
 
-func (m *Model) renderTranslating() string {
-	var s strings.Builder
-	s.WriteString("   " + theme.StyleHeader.Render("Traduzindo Aventura do Slime") + "   Google · ja → pt · só o que mudou\n")
-	s.WriteString("     " + theme.SymCheck + " Varredura     " + theme.SymBullet + " Tradução     3 Salvar no jogo\n\n")
-
-	// Barra de progresso
-	s.WriteString("   " + theme.RenderProgressBar(0.86, 70) + "  86%\n")
-	s.WriteString("   1.020 de 1.180 segmentos · 950 da memória · 70 traduzidos agora · faltam ~40 s\n\n")
-
-	// Alerta de rate limit
-	s.WriteString("    " + theme.StyleTagWarning.Render(theme.SymWarning+" O Google limitou as requisições (HTTP 429). Nova tentativa em 30 s.") + "     p ativar proxies\n\n")
-
-	// Linha de contadores
-	s.WriteString("   " + theme.SymBullet + " 5 concluídos   " + theme.SymBullet + " 3 cache   " + theme.SymBullet + " 2 processando   " + theme.SymBullet + " 1 na fila   " + theme.SymBullet + " 1 parcial   " + theme.SymBullet + " 0 erros\n\n")
-
-	// Tabela de arquivos
-	s.WriteString("   ╭─ Arquivos · 12 ──────────────────────────────────────────────────────────────────────────────╮\n")
-	s.WriteString("   │ ARQUIVO                     STATUS         MENSAGEM                     PROGRESSO            │\n")
-	s.WriteString("   │ www/data/Map014.json        ● processando  esperando liberar (429)      ━━━━━━━─── 31/48     │\n")
-	s.WriteString("   │ www/data/CommonEvents.json  ● processando  212 de 340 segmentos         ━━━━━━──── 212/340   │\n")
-	s.WriteString("   │ www/data/Map020.json        ● na fila      na fila                      ────────── 0/22      │\n")
-	s.WriteString("   │ www/data/Map003.json        ● parcial      2 falas com problema         ━━━━━━━━━━ 55/57     │\n")
-	s.WriteString("   │ www/data/Items.json         ● concluído    380 vieram da memória        ━━━━━━━━━━ 410/410   │\n")
-	s.WriteString("   │ + 7 concluídos ou resolvidos pela memória                                                    │\n")
-	s.WriteString("   ╰──────────────────────────────────────────────────────────────────────────────────────────────╯\n")
-
-	return s.String()
-}
-
-func (m *Model) renderReviewing() string {
-	var s strings.Builder
-	s.WriteString("   " + theme.StyleHeader.Render("Revisar traduções") + "   opcional · nada vai para o jogo até você concluir\n")
-
-	// Chips de filtros
-	filtersLine := ""
-	for i, f := range m.filterLabels {
-		if i == m.selectedFilter {
-			filtersLine += fmt.Sprintf("[%s]  ", f)
-		} else {
-			filtersLine += fmt.Sprintf("%s  ", f)
-		}
-	}
-	s.WriteString("   " + filtersLine + " / buscar\n\n")
-
-	// Colunas Mestre-Detalhe (Segmentos x Detalhe)
-	s.WriteString("   ╭─ Segmentos ────────────────────────────────────╮  ╭─ Map003.json#event:3/page:0/cmd:12 ──────╮\n")
-	s.WriteString("   │ " + theme.StyleTagError.Render("● erro") + "     Map003 · ev 3 · cmd 12              │  │ Diálogo · falante \\N[1] (herói)          │\n")
-	s.WriteString("   │   \\N[1]  \\V[12]                                │  │                                          │\n")
-	s.WriteString("   │   \\N[1] conseguiu 12 moedas de ouro!           │  │ Origem                                   │\n")
-	s.WriteString("   │                                                │  │ \\N[1]は\\V[12]ゴールドを手に入れた！      │\n")
-	s.WriteString("   │ " + theme.StyleTagWarning.Render("● parcial") + "  Map003 · ev 7 · cmd 4               │  │                                          │\n")
-	s.WriteString("   │   \\C[2]伝説の剣\\C[0]                           │  │ Tokens    \\N[1] " + theme.SymCheck + "     \\V[12] " + theme.SymCross + " ausente   │\n")
-	s.WriteString("   │   — sem tradução —                             │  │                                          │\n")
-	s.WriteString("   │                                                │  │ Tradução                                 │\n")
-	s.WriteString("   │ " + theme.StyleTagWarning.Render("● parcial") + "  Map014 · ev 1 · cmd 9               │  │ " + theme.SymBarV + " \\N[1] conseguiu 12 moedas de ouro!     │\n")
-	s.WriteString("   │   \\V[3]                                        │  │   o provedor trocou \\V[12] por \"12\"      │\n")
-	s.WriteString("   │   — sem tradução (rate limit) —                │  │                                          │\n")
-	s.WriteString("   │                                                │  │ Da memória · Map001                      │\n")
-	s.WriteString("   │                                                │  │ \\N[1] recebeu \\V[12] moedas de ouro!     │\n")
-	s.WriteString("   │                                                │  │ u usar esta sugestão                     │\n")
-	s.WriteString("   │                                                │  │                                          │\n")
-	s.WriteString("   │                                                │  │ [ ] Bloquear este segmento  b            │\n")
-	s.WriteString("   ╰────────────────────────────────────────────────╯  ╰──────────────────────────────────────────╯\n")
-
-	return s.String()
-}
-
-func (m *Model) renderResult() string {
-	var s strings.Builder
-	s.WriteString("     " + theme.StyleTitle.Render("Jogo traduzido") + "\n")
-	s.WriteString("   Aventura do Slime está em português. 11 dos 12 arquivos alterados ficaram completos.\n\n")
-
-	s.WriteString("   " + theme.SymBullet + " 11 completos   " + theme.SymBullet + " 1 parcial   " + theme.SymBullet + " 0 com erro   " + theme.SymBullet + " 228 novos na memória   " + theme.SymBullet + " 1 editado\n\n")
-	s.WriteString("    " + theme.StyleTagWarning.Render(theme.SymWarning+" Map003.json ficou parcial: 1 fala sem tradução (o jogo mostra o original).") + "   r revisar\n\n")
-
-	s.WriteString("   ╭─ Onde ficou cada coisa ──────────────────────────────────────────────────────────────────────╮\n")
-	s.WriteString("   │ Jogo traduzido        ~/Jogos/Aventura do Slime                               o abrir        │\n")
-	s.WriteString("   │ Original (backup)     ~/Jogos/Aventura do Slime-ja                            a abrir        │\n")
-	s.WriteString("   │ Registro              ~/Jogos/Aventura do Slime/.slime/meta.json              e exportar     │\n")
-	s.WriteString("   ╰──────────────────────────────────────────────────────────────────────────────────────────────╯\n\n")
-	s.WriteString("   Código de saída 3 (concluído com arquivo parcial) · na CLI, use --json para automação\n")
-
-	return s.String()
-}
-
 func (m *Model) renderFooter() string {
 	switch m.view {
 	case ViewOpenGame:
-		return "  ↑↓ mover · enter escolher · tab recentes · ctrl+v colar · ctrl+p comandos · q sair"
+		if m.pathInput {
+			return "  digite ou cole o caminho · enter abrir · esc cancelar"
+		}
+		return "  ↑↓ mover · enter escolher · q sair"
 	case ViewConfigure:
-		return "  tab próximo campo · ←→ opção · espaço marcar · ctrl+enter traduzir · esc voltar"
+		return "  tab campo · ←→ serviço · s/d idiomas · espaço incremental · x proxies · enter traduzir · esc voltar"
 	case ViewTranslating:
-		return "  p pausar · c cancelar · l log · enter detalhes · r revisar (ao terminar) · q sair"
+		return "  p pausar/retomar · c cancelar · ctrl+c sair"
 	case ViewReviewing:
-		return "  ↑↓ segmento · tab filtro · / buscar · e editar · u sugestão · esc voltar · ctrl+s concluir"
+		if m.editing {
+			return "  digite a tradução · enter salvar · esc cancelar"
+		}
+		return "  ↑↓ segmento · tab filtro · e editar · b bloquear · esc/enter voltar ao resultado"
 	case ViewResult:
-		return "  o abrir jogo · v verificar integridade · r revisar · n outro jogo · q sair"
+		return "  r revisar · n outro jogo · q sair"
 	default:
 		return "  q sair"
 	}
