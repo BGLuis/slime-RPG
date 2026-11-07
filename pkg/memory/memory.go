@@ -141,6 +141,8 @@ type Entry struct {
 	Engine     string
 	Status     Status
 	Game       string
+	// AllowIdentity mantém traduções de máquina idênticas ao original (migração de caches legados).
+	AllowIdentity bool
 }
 
 // Policy controla quais traduções de outros provedores uma consulta pode reaproveitar.
@@ -556,7 +558,7 @@ func (tm *TranslationMemory) StoreBatch(ctx context.Context, entries []Entry) er
 		if status == "" {
 			status = StatusMachine
 		}
-		if status == StatusMachine && e.SrcLang != e.TgtLang && strings.TrimSpace(e.SourceText) == strings.TrimSpace(e.TargetText) {
+		if !e.AllowIdentity && status == StatusMachine && e.SrcLang != e.TgtLang && strings.TrimSpace(e.SourceText) == strings.TrimSpace(e.TargetText) {
 			continue
 		}
 		rows = append(rows, row{e: e, hash: SourceHash(e.SourceText), engine: NormalizeEngine(e.Engine), status: status})

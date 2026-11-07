@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -83,6 +84,8 @@ MEMÓRIA DE TRADUÇÃO:
   slime tm import --file f.tmx [--engine human] [--status reviewed|locked|machine]
   slime tm glossary --src ja --tgt pt --source "ルイ" --target "Rui"
   slime tm glossary --src ja --tgt pt --list
+  slime tm repair [--db memory.db] [--apply]            # dry-run por padrão; --apply faz backup e grava
+  slime tm migrate-legacy --dir cache [--db memory.db]  # importa cache/<engine>/cache_<src>_<tgt>.json
 
 NOMES DE ARQUIVO:
   slime filenames -i <pasta> [-o <saída>] [-t google -s ja -d pt] [--keep-original]
@@ -481,6 +484,14 @@ func formatSummary(summary map[string]int) string {
 
 // runTM reúne as ferramentas de memória da versão Python (scripts/tm_*.py).
 func runTM(args []string) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "repair":
+			return runTMRepair(args[1:])
+		case "migrate-legacy":
+			return runTMMigrateLegacy(args[1:])
+		}
+	}
 	mem, err := openMemory()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -605,6 +616,92 @@ func runTM(args []string) int {
 	}
 	fmt.Fprintf(os.Stderr, "Subcomando desconhecido: tm %s (use export, import ou glossary)\n", sub)
 	return 2
+}
+
+func memoryDBFlag(fs *flag.FlagSet) *string {
+	return fs.String("db", "", "Caminho do memory.db (padrão: SLIME_MEMORY_DB ou o banco do usuário)")
+}
+
+func resolveDB(flagValue string) (string, error) {
+	if flagValue != "" {
+		return filepath.Abs(flagValue)
+	}
+	return paths.MemoryDBPath()
+}
+
+// runTMRepair corrige a caixa de códigos de controle e limpa lixo do memory.db;
+// sem --apply apenas simula.
+func runTMRepair(args []string) int {
+	fs := flag.NewFlagSet("tm repair", flag.ExitOnError)
+	db := memoryDBFlag(fs)
+	apply := fs.Bool("apply", false, "Aplica as correções (cria backup antes); sem a flag é dry-run")
+	_ = fs.Parse(args)
+	path, err := resolveDB(*db)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	rep, err := memory.Repair(context.Background(), path, *apply)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tm repair:", err)
+		return 1
+	}
+	verb := map[bool]string{false: "seriam afetadas", true: "afetadas"}[*apply]
+	fmt.Printf("Banco: %s\n", path)
+	labels := map[string]string{
+		memory.RepairCase:   "Caixa de códigos de controle restaurada",
+		memory.RepairName:   "Tags \\NAME[...] normalizadas",
+		memory.RepairXTOK:   "Linhas com __XTOK_ removidas",
+		memory.RepairEngine: "Linhas de engines de teste removidas",
+	}
+	for _, c := range memory.RepairCategories {
+		cat := rep.Categories[c]
+		fmt.Printf("%s: %d linhas %s\n", labels[c], cat.Rows, verb)
+		for _, ex := range cat.Examples {
+			fmt.Printf("  #%d  %q\n", ex.ID, ex.Before)
+			if ex.After != "" {
+				fmt.Printf("   -> %q\n", ex.After)
+			}
+		}
+	}
+	fmt.Printf("Linhas reviewed/locked %s: %d\n", verb, rep.ProtectedRows)
+	if rep.Applied {
+		fmt.Printf("Backup: %s\n", rep.BackupPath)
+	} else {
+		fmt.Println("Dry-run: nada foi alterado. Use --apply para gravar.")
+	}
+	return 0
+}
+
+// runTMMigrateLegacy equivale ao scripts/migrate_cache_to_db.py da versão Python.
+func runTMMigrateLegacy(args []string) int {
+	fs := flag.NewFlagSet("tm migrate-legacy", flag.ExitOnError)
+	db := memoryDBFlag(fs)
+	dir := fs.String("dir", "", "Pasta de caches legados (<engine>/cache_<src>_<tgt>.json)")
+	_ = fs.Parse(args)
+	if *dir == "" {
+		fmt.Fprintln(os.Stderr, "tm migrate-legacy exige --dir")
+		return 2
+	}
+	path, err := resolveDB(*db)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	mem, err := memory.New(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer mem.Close()
+	rep, err := memory.MigrateLegacy(context.Background(), mem, *dir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tm migrate-legacy:", err)
+		return 1
+	}
+	fmt.Printf("%d arquivos, %d entradas importadas em %s\n", rep.Files, rep.Imported, path)
+	fmt.Printf("Puladas (tradução nula): %d; com source == target: %d\n", rep.SkippedNull, rep.Identity)
+	return 0
 }
 
 // runFilenames equivale ao --mode filenames da versão Python. Sem -o, as cópias
