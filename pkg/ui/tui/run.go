@@ -10,6 +10,7 @@ import (
 
 	"github.com/BGLuis/slime-rpg/pkg/event"
 	"github.com/BGLuis/slime-rpg/pkg/formats"
+	"github.com/BGLuis/slime-rpg/pkg/i18n"
 	"github.com/BGLuis/slime-rpg/pkg/job"
 	"github.com/BGLuis/slime-rpg/pkg/memory"
 	"github.com/BGLuis/slime-rpg/pkg/paths"
@@ -58,13 +59,13 @@ func defaultProvider(p ProviderParams) (provider.Provider, error) {
 	case "deepl":
 		key := cmp.Or(p.APIKey, os.Getenv("DEEPL_API_KEY"))
 		if key == "" {
-			return nil, errors.New("informe a chave da API do DeepL ou defina DEEPL_API_KEY")
+			return nil, errors.New(i18n.T("tui_err_deepl_key"))
 		}
 		return deepl.NewDeepLTranslator(key), nil
 	case "ollama":
 		model := cmp.Or(p.Model, os.Getenv("OLLAMA_MODEL"))
 		if model == "" {
-			return nil, errors.New("informe o modelo do Ollama ou defina OLLAMA_MODEL")
+			return nil, errors.New(i18n.T("tui_err_ollama_model"))
 		}
 		endpoint := cmp.Or(p.Host, os.Getenv("OLLAMA_HOST"), ollama.DefaultEndpoint)
 		return ollama.NewOllamaTranslator(endpoint, model, ""), nil
@@ -73,17 +74,17 @@ func defaultProvider(p ProviderParams) (provider.Provider, error) {
 		pm.UsePublicSources()
 		return google.NewGoogleTranslator(pm), nil
 	}
-	return nil, fmt.Errorf("provedor desconhecido: %q", p.ID)
+	return nil, errors.New(i18n.T("tui_err_unknown_provider", p.ID))
 }
 
 func defaultMemory() (*memory.TranslationMemory, error) {
 	path, err := paths.MemoryDBPath()
 	if err != nil {
-		return nil, fmt.Errorf("erro ao resolver banco de memória: %w", err)
+		return nil, fmt.Errorf("%s: %w", i18n.T("tui_err_memory_path"), err)
 	}
 	mem, err := memory.New(path)
 	if err != nil {
-		return nil, fmt.Errorf("erro ao abrir banco de memória %s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", i18n.T("tui_err_memory_open", path), err)
 	}
 	return mem, nil
 }
@@ -107,7 +108,7 @@ func (m *Model) extractorOptions() map[string]string {
 // startJob monta o job com o estado da tela Configurar e o dispara em segundo plano.
 func (m *Model) startJob() (tea.Cmd, error) {
 	if !m.hasGame() {
-		return nil, fmt.Errorf("nenhum jogo detectado em %s", m.gamePath)
+		return nil, errors.New(i18n.T("tui_no_game_detected", m.gamePath))
 	}
 	opts := m.extractorOptions()
 	if err := formats.ValidateOptions(opts); err != nil {
@@ -231,13 +232,13 @@ func runErrorText(err error) string {
 	case err == nil:
 		return ""
 	case errors.Is(err, context.Canceled):
-		return "Tradução cancelada: nada foi gravado no jogo."
+		return i18n.T("tui_run_canceled")
 	case errors.Is(err, job.ErrRateLimited):
-		return "O provedor limitou as requisições (HTTP 429): ative os proxies ou use uma VPN e rode de novo."
+		return i18n.T("tui_run_rate_limited")
 	case errors.Is(err, provider.ErrAuthFailed):
-		return "O provedor recusou a chave de API (HTTP 401/403)."
+		return i18n.T("tui_run_auth")
 	case errors.Is(err, provider.ErrUnavailable), errors.Is(err, provider.ErrCircuitBreakerOpen):
-		return "O provedor está indisponível: " + err.Error()
+		return i18n.T("tui_run_unavailable", err.Error())
 	}
 	return err.Error()
 }

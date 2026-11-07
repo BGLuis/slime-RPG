@@ -8,6 +8,7 @@ import (
 
 	"github.com/BGLuis/slime-rpg/pkg/detector"
 	"github.com/BGLuis/slime-rpg/pkg/event"
+	"github.com/BGLuis/slime-rpg/pkg/i18n"
 	"github.com/BGLuis/slime-rpg/pkg/job"
 	"github.com/BGLuis/slime-rpg/pkg/memory"
 	"github.com/BGLuis/slime-rpg/pkg/ui/theme"
@@ -91,11 +92,11 @@ func NewModel(initialDir string, opts ...Option) *Model {
 		view:         ViewOpenGame,
 		width:        100,
 		height:       32,
-		providers:    []string{"Google Translate", "DeepL", "Ollama", "Só memória"},
+		providers:    []string{"Google Translate", "DeepL", "Ollama", i18n.T("tui_provider_memory")},
 		targetLang:   "pt",
 		incremental:  true,
 		fieldFocus:   -1,
-		filterLabels: []string{"Todos", "Parciais"},
+		filterLabels: []string{i18n.T("tui_filter_all"), i18n.T("tui_filter_partial")},
 	}
 	det, _ := detector.Detect(initialDir)
 	m.setGame(initialDir, det)
@@ -119,9 +120,9 @@ func (m *Model) setGame(path string, det *detector.DetectionResult) {
 	if det != nil && det.ProbableLang != "" {
 		m.sourceLang = det.ProbableLang
 	}
-	m.folderOptions = []string{"Digitar caminho…"}
+	m.folderOptions = []string{i18n.T("tui_open_type_path")}
 	if m.hasGame() {
-		m.folderOptions = append([]string{fmt.Sprintf("› Jogo detectado aqui   %s   %s", det.DataDir, det.Engine)}, m.folderOptions...)
+		m.folderOptions = append([]string{i18n.T("tui_open_detected", det.DataDir, det.Engine)}, m.folderOptions...)
 	}
 	m.selectedFolderIndex = 0
 }
@@ -240,7 +241,7 @@ func (m *Model) openTypedPath() tea.Cmd {
 	}
 	det, err := detector.Detect(path)
 	if err != nil || det == nil || det.Engine == detector.EngineUnknown {
-		m.statusMsg = "Nenhum jogo encontrado em " + path
+		m.statusMsg = i18n.T("tui_no_game_found", path)
 		return nil
 	}
 	m.setGame(path, det)
@@ -259,7 +260,7 @@ func (m *Model) configFields() []job.ConfigSchemaField {
 		fields = append(fields, job.ProviderSchema("deepl").Fields...)
 	}
 	if providerIDs[m.selectedProvider] == "ollama" {
-		fields = append(fields, ollamaFields...)
+		fields = append(fields, ollamaFields()...)
 	}
 	return fields
 }
@@ -365,7 +366,7 @@ func (m *Model) applyCorrection(text string, locked bool) {
 		m.statusMsg = err.Error()
 		return
 	}
-	m.statusMsg = "Correção salva na memória; traduza de novo para aplicá-la ao jogo."
+	m.statusMsg = i18n.T("tui_review_saved")
 	m.loadReview()
 }
 
@@ -432,7 +433,7 @@ func (m *Model) updateResult(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // View renderiza a tela atual em formato de grade 100x32.
 func (m *Model) View() string {
 	if m.quitting {
-		return "Slime RPG finalizado.\n"
+		return i18n.T("tui_quit")
 	}
 
 	var b strings.Builder
@@ -466,26 +467,25 @@ func (m *Model) View() string {
 }
 
 func (m *Model) renderStepperHeader() string {
-	step1 := "1 Jogo"
-	step2 := "2 Configurar"
-	step3 := "3 Tradução"
-	step4 := "4 Resultado"
+	game, config := i18n.T("tui_step_game"), i18n.T("tui_step_config")
+	translate, result := i18n.T("tui_step_translate"), i18n.T("tui_step_result")
+	step1, step2, step3, step4 := "1 "+game, "2 "+config, "3 "+translate, "4 "+result
 
 	switch m.view {
 	case ViewOpenGame:
-		step1 = theme.StyleAccent.Render(theme.SymBullet + " Jogo")
+		step1 = theme.StyleAccent.Render(theme.SymBullet + " " + game)
 	case ViewConfigure:
 		step1 = theme.StyleMuted.Render(theme.SymCheck + " Jogo")
-		step2 = theme.StyleAccent.Render(theme.SymBullet + " Configurar")
+		step2 = theme.StyleAccent.Render(theme.SymBullet + " " + config)
 	case ViewTranslating, ViewReviewing:
 		step1 = theme.StyleMuted.Render(theme.SymCheck + " Jogo")
 		step2 = theme.StyleMuted.Render(theme.SymCheck + " Configurar")
-		step3 = theme.StyleAccent.Render(theme.SymBullet + " Tradução")
+		step3 = theme.StyleAccent.Render(theme.SymBullet + " " + translate)
 	case ViewResult:
 		step1 = theme.StyleMuted.Render(theme.SymCheck + " Jogo")
 		step2 = theme.StyleMuted.Render(theme.SymCheck + " Configurar")
 		step3 = theme.StyleMuted.Render(theme.SymCheck + " Tradução")
-		step4 = theme.StyleAccent.Render(theme.SymBullet + " Resultado")
+		step4 = theme.StyleAccent.Render(theme.SymBullet + " " + result)
 	}
 
 	return fmt.Sprintf(" Slime    %s  %s  %s  %s  %s  %s  %s",
@@ -494,10 +494,10 @@ func (m *Model) renderStepperHeader() string {
 
 func (m *Model) renderOpenGame() string {
 	var s strings.Builder
-	s.WriteString("   " + theme.StyleTitle.Render("Qual jogo vamos traduzir?") + "\n")
-	s.WriteString("   " + theme.StyleSubtitle.Render("O Slime procurou um jogo na pasta atual.") + "\n\n")
+	s.WriteString("   " + theme.StyleTitle.Render(i18n.T("tui_open_title")) + "\n")
+	s.WriteString("   " + theme.StyleSubtitle.Render(i18n.T("tui_open_sub")) + "\n\n")
 
-	s.WriteString("   ╭─ Escolha uma pasta ──────────────────────────────────────────────────────────────────────────╮\n")
+	s.WriteString("   " + boxTop(i18n.T("tui_open_box"), 96) + "\n")
 	for i, opt := range m.folderOptions {
 		prefix := "   "
 		if i == m.selectedFolderIndex {
@@ -507,38 +507,38 @@ func (m *Model) renderOpenGame() string {
 	}
 	s.WriteString("   ╰──────────────────────────────────────────────────────────────────────────────────────────────╯\n\n")
 	if m.pathInput {
-		s.WriteString("   Caminho do jogo: " + m.pathBuf + "▌\n\n")
+		s.WriteString("   " + i18n.T("tui_open_path_prompt") + m.pathBuf + "▌\n\n")
 	}
-	s.WriteString("   " + theme.StyleMuted.Render("Dica: slime translate -i <pasta> faz o mesmo sem perguntas."))
+	s.WriteString("   " + theme.StyleMuted.Render(i18n.T("tui_open_tip")))
 	return s.String()
 }
 
 func (m *Model) renderConfigure() string {
 	var s strings.Builder
-	gameTitle, info := "(nenhum jogo)", ""
+	gameTitle, info := i18n.T("tui_cfg_none"), ""
 	if m.detectedGame != nil {
 		gameTitle = m.detectedGame.GameName
-		info = fmt.Sprintf("%s · %s · %d arquivos", m.detectedGame.Engine, m.detectedGame.DataDir, m.detectedGame.FileCount)
+		info = i18n.T("tui_cfg_info", m.detectedGame.Engine, m.detectedGame.DataDir, m.detectedGame.FileCount)
 	}
 
 	left := []string{
-		fmt.Sprintf("╭─ Configurar · %s ───────────────────────╮", gameTitle),
+		fmt.Sprintf("╭─ %s · %s ───────────────────────╮", i18n.T("tui_cfg_title"), gameTitle),
 		fmt.Sprintf("│ %-54s │", truncate(info, 54)),
 		"│                                                        │",
-		"│ " + theme.SymBarV + " Serviço                                              │",
+		"│ " + theme.SymBarV + " " + fmt.Sprintf("%-52s", i18n.T("tui_cfg_service")) + " │",
 		"│ " + theme.SymBarV + " " + m.providerLine() + " │",
-		"│ " + theme.SymBarV + " Grátis e sem chave; pode limitar requisições.        │",
+		"│ " + theme.SymBarV + " " + fmt.Sprintf("%-52s", i18n.T("tui_cfg_free")) + " │",
 		"│                                                        │",
-		"│   Idioma de origem (s)                                 │",
+		fmt.Sprintf("│   %-52s │", i18n.T("tui_cfg_source")),
 		fmt.Sprintf("│   %-52s │", langLabel(m.sourceLang)),
 		"│                                                        │",
-		"│   Idioma de destino (d)                                │",
+		fmt.Sprintf("│   %-52s │", i18n.T("tui_cfg_target")),
 		fmt.Sprintf("│   %-52s │", langLabel(m.targetLang)),
 		"│                                                        │",
-		fmt.Sprintf("│   %-52s │", checkbox(m.incremental)+" Só o que mudou (espaço)"),
-		fmt.Sprintf("│   %-52s │", checkbox(m.enableProxies)+" Usar proxies se o Google bloquear o IP (x)"),
+		fmt.Sprintf("│   %-52s │", checkbox(m.incremental)+" "+i18n.T("tui_cfg_incremental")),
+		fmt.Sprintf("│   %-52s │", checkbox(m.enableProxies)+" "+i18n.T("tui_cfg_proxies")),
 		"│                                                        │",
-		"│   Backup ligado · saída na própria pasta               │",
+		fmt.Sprintf("│   %-52s │", i18n.T("tui_cfg_backup")),
 		"╰────────────────────────────────────────────────────────╯",
 	}
 
@@ -590,21 +590,21 @@ func (m *Model) renderFooter() string {
 	switch m.view {
 	case ViewOpenGame:
 		if m.pathInput {
-			return "  digite ou cole o caminho · enter abrir · esc cancelar"
+			return i18n.T("tui_foot_path")
 		}
-		return "  ↑↓ mover · enter escolher · q sair"
+		return i18n.T("tui_foot_open")
 	case ViewConfigure:
-		return "  tab campo · ←→ serviço · s/d idiomas · espaço incremental · x proxies · enter traduzir · esc voltar"
+		return i18n.T("tui_foot_config")
 	case ViewTranslating:
-		return "  p pausar/retomar · c cancelar · ctrl+c sair"
+		return i18n.T("tui_foot_translating")
 	case ViewReviewing:
 		if m.editing {
-			return "  digite a tradução · enter salvar · esc cancelar"
+			return i18n.T("tui_foot_edit")
 		}
-		return "  ↑↓ segmento · tab filtro · e editar · b bloquear · esc/enter voltar ao resultado"
+		return i18n.T("tui_foot_review")
 	case ViewResult:
-		return "  r revisar · n outro jogo · q sair"
+		return i18n.T("tui_foot_result")
 	default:
-		return "  q sair"
+		return i18n.T("tui_foot_default")
 	}
 }

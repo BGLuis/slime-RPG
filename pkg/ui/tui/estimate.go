@@ -3,40 +3,45 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/BGLuis/slime-rpg/pkg/event"
+	"github.com/BGLuis/slime-rpg/pkg/i18n"
 	"github.com/BGLuis/slime-rpg/pkg/job"
 	"github.com/BGLuis/slime-rpg/pkg/ui/theme"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// languages repete os idiomas de `slime list` (código, nome), com "auto" no fim.
-var languages = [][2]string{
-	{"pt", "Português"}, {"en", "Inglês"}, {"es", "Espanhol"}, {"fr", "Francês"},
-	{"it", "Italiano"}, {"ja", "Japonês"}, {"auto", "Automático (Detectar)"},
-}
-
-var ollamaFields = []job.ConfigSchemaField{
-	{Key: "ollama_model", Label: "Modelo do Ollama", Type: "text", Help: "Vazio usa a variável OLLAMA_MODEL."},
-	{Key: "ollama_host", Label: "Endereço do Ollama", Type: "text", Help: "Vazio usa OLLAMA_HOST ou o endereço local."},
+func ollamaFields() []job.ConfigSchemaField {
+	return []job.ConfigSchemaField{
+		{Key: "ollama_model", Label: i18n.T("tui_ollama_model_label"), Type: "text", Help: i18n.T("tui_ollama_model_help")},
+		{Key: "ollama_host", Label: i18n.T("tui_ollama_host_label"), Type: "text", Help: i18n.T("tui_ollama_host_help")},
+	}
 }
 
 func nextLang(code string) string {
-	for i, l := range languages {
-		if l[0] == code {
-			return languages[(i+1)%len(languages)][0]
+	langs := i18n.TranslationLanguages
+	for i, l := range langs {
+		if l == code {
+			return langs[(i+1)%len(langs)]
 		}
 	}
-	return languages[0][0]
+	return langs[0]
 }
 
 func langLabel(code string) string {
-	for _, l := range languages {
-		if l[0] == code {
-			return fmt.Sprintf("%s (%s)", l[1], code)
+	for _, l := range i18n.TranslationLanguages {
+		if l == code {
+			return fmt.Sprintf("%s (%s)", i18n.T("lang_"+l), code)
 		}
 	}
 	return code
+}
+
+// boxTop desenha a borda superior de uma caixa com título, completada até width colunas.
+func boxTop(title string, width int) string {
+	head := "╭─ " + title + " "
+	return head + strings.Repeat("─", max(width-len([]rune(head))-1, 0)) + "╮"
 }
 
 type estimateMsg struct {
@@ -103,13 +108,13 @@ func (m *Model) handleEstimate(msg estimateMsg) {
 func (m *Model) renderEstimate() []string {
 	row := func(s string) string { return fmt.Sprintf("│ %-32s │", truncate(s, 32)) }
 	blank := row("")
-	lines := []string{"╭─ Estimativa ─────────────────────╮"}
+	lines := []string{boxTop(i18n.T("tui_est_title"), 36)}
 
 	switch e := m.estimate; {
 	case m.estimating:
-		lines = append(lines, row("Calculando…"))
+		lines = append(lines, row(i18n.T("tui_est_calc")))
 	case m.estimateErr != "":
-		lines = append(lines, row("Não foi possível estimar:"), row(m.estimateErr))
+		lines = append(lines, row(i18n.T("tui_est_fail")), row(m.estimateErr))
 	case e != nil:
 		toTranslate := max(e.SegmentsTotal-e.SegmentsCached, 0)
 		pct := 0.0
@@ -117,13 +122,13 @@ func (m *Model) renderEstimate() []string {
 			pct = float64(e.SegmentsCached) / float64(e.SegmentsTotal)
 		}
 		lines = append(lines,
-			row(fmt.Sprintf("%d textos para traduzir", toTranslate)),
+			row(fmt.Sprintf("%d %s", toTranslate, i18n.T("ui_est_to_translate"))),
 			blank,
 			"│ "+theme.RenderProgressBar(pct, 32)+" │",
-			row(fmt.Sprintf("%d de %d já na memória (%d%%)", e.SegmentsCached, e.SegmentsTotal, int(pct*100))),
+			row(i18n.T("ui_est_cache", e.SegmentsCached, e.SegmentsTotal, int(pct*100))),
 			blank,
-			row(fmt.Sprintf("Arquivos  %d de %d", e.FilesToProcess, e.FilesTotal)),
-			row("Backup    "+truncate(e.BackupPath, 22)),
+			row(i18n.T("tui_est_files", e.FilesToProcess, e.FilesTotal)),
+			row(i18n.T("tui_est_backup")+truncate(e.BackupPath, 22)),
 		)
 	}
 	for len(lines) < 16 {

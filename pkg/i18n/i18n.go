@@ -24,6 +24,10 @@ const SettingKey = "ui_language"
 // Supported lista os idiomas de interface disponíveis.
 var Supported = []Lang{PT, EN}
 
+// TranslationLanguages são os idiomas de tradução oferecidos (chaves "lang_<código>"),
+// os mesmos da versão Python; "auto" detecta o idioma de origem.
+var TranslationLanguages = []string{"pt", "en", "es", "fr", "it", "ja", "auto"}
+
 // Names são os nomes de cada idioma na própria língua (seletores de UI).
 var Names = map[Lang]string{PT: "Português", EN: "English"}
 
