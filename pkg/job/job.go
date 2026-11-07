@@ -486,6 +486,7 @@ func (j *Job) Run(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	defer plan.Close()
 	j.mu.Lock()
 	j.detection = det
 	j.mu.Unlock()
@@ -526,6 +527,7 @@ func (j *Job) Run(ctx context.Context) (err error) {
 
 	j.setPhase(event.PhaseCommitting, "Gravando arquivos traduzidos")
 	statuses := j.inject(ws, extracted, translations, cached)
+	j.repack(plan, ws)
 
 	if _, err := ws.Commit(); err != nil {
 		return fmt.Errorf("failed to commit translated files: %w", err)
@@ -634,7 +636,14 @@ func (j *Job) extractAll(ctx context.Context, inputDir, backupDir string, files 
 			defer func() { <-sem }()
 			ef := &extractedFile{file: f}
 			out[i] = ef
-			ef.data, ef.err = os.ReadFile(sourcePath(inputDir, backupDir, f.Rel, meta))
+			if f.Read != nil {
+				ef.data, ef.err = f.Read()
+				if ef.err == nil {
+					preserveOriginal(backupDir, f.Rel, ef.data)
+				}
+			} else {
+				ef.data, ef.err = os.ReadFile(sourcePath(inputDir, backupDir, f.Rel, meta))
+			}
 			if ef.err == nil {
 				ef.segments, ef.err = f.Format.Extract(f.Rel, ef.data, j.cfg.SourceLang, j.cfg.TargetLang)
 			}
@@ -652,6 +661,22 @@ func (j *Job) extractAll(ctx context.Context, inputDir, backupDir string, files 
 		}
 	}
 	return done
+}
+
+// preserveOriginal guarda no backup um arquivo que só existia dentro de um
+// contêiner, para que o original continue disponível depois que a tradução
+// solta o substituir. Nunca sobrescreve um arquivo já presente.
+func preserveOriginal(backupDir, rel string, data []byte) {
+	if backupDir == "" {
+		return
+	}
+	path := filepath.Join(backupDir, filepath.FromSlash(rel))
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	if os.MkdirAll(filepath.Dir(path), 0o755) == nil {
+		_ = os.WriteFile(path, data, 0o644)
+	}
 }
 
 // sourcePath escolhe de onde ler o texto original. Numa tradução in-place
@@ -812,11 +837,22 @@ func (j *Job) inject(ws *workspace.Workspace, files []*extractedFile, translatio
 			continue
 		}
 		if len(f.segments) == 0 {
-			if !ws.IsInPlace() {
-				if err := writeProcess(ws, rel, f.data); err != nil {
+			data, rewritten := f.data, false
+			if rw, ok := f.file.Format.(formats.Rewriter); ok {
+				if out, changed, err := rw.Rewrite(rel, f.data); err == nil && changed {
+					data, rewritten = out, true
+				}
+			}
+			if !ws.IsInPlace() || rewritten {
+				if err := writeProcess(ws, rel, data); err != nil {
 					j.updateFile(rel, event.StatusError, "Erro ao salvar arquivo: "+err.Error(), 0, 0)
 					continue
 				}
+			}
+			if rewritten {
+				statuses[rel] = metadata.StatusSuccess
+				j.updateFile(rel, event.StatusSuccess, "Fonte do jogo substituída", 0, 0)
+				continue
 			}
 			statuses[rel] = metadata.StatusUnchanged
 			j.updateFile(rel, event.StatusIgnore, "Sem textos para traduzir", 0, 0)
@@ -883,6 +919,20 @@ func (j *Job) untranslated(s *model.Segment) bool {
 		return false
 	}
 	return strings.TrimSpace(s.Target()) == strings.TrimSpace(s.Source())
+}
+
+// repack gera o Data.wolf quando o modo de reempacotamento está ligado. Falhar
+// aqui só perde o contêiner: os arquivos soltos traduzidos continuam sendo gravados.
+func (j *Job) repack(plan *formats.Plan, ws *workspace.Workspace) {
+	rel, err := plan.Repack(ws.ProcessDir())
+	if err == nil {
+		return
+	}
+	_ = os.Remove(filepath.Join(ws.ProcessDir(), filepath.FromSlash(rel)))
+	j.bus.PublishEvent(event.EventPhaseChanged, event.PhaseChangedEvent{
+		Phase:   event.PhaseCommitting,
+		Message: "Aviso: não foi possível reempacotar " + rel + ": " + err.Error(),
+	})
 }
 
 func writeProcess(ws *workspace.Workspace, rel string, data []byte) error {

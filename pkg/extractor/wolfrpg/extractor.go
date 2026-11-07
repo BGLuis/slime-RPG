@@ -20,9 +20,18 @@ type Extractor struct {
 	// Dir é a raiz do jogo, usada para achar o .project de cada banco e os
 	// comandos que consultam o banco pelo nome do dado.
 	Dir string
+	// Packed dá acesso aos arquivos que só existem dentro de contêineres .wolf
+	// (o .project dos bancos e os eventos usados na busca por nome).
+	Packed *Packed
 	// PreserveTitle mantém o título do Game.dat: em alguns jogos trocá-lo
 	// invalida os saves existentes.
 	PreserveTitle bool
+	// TargetFont, quando preenchida, substitui a fonte do Game.dat (ex.: para
+	// exibir caracteres ocidentais). Vazia mantém a fonte do jogo.
+	TargetFont string
+	// RepackMode pede que a saída inclua um Data.wolf reempacotado com os
+	// arquivos traduzidos, além dos arquivos soltos.
+	RepackMode bool
 
 	lookupOnce  sync.Once
 	lookupTypes map[string]bool
@@ -30,6 +39,40 @@ type Extractor struct {
 
 func NewExtractor() *Extractor {
 	return &Extractor{}
+}
+
+// ApplyOptions aplica as opções de extração com os valores e a semântica da
+// versão Python: preserve_title ("Sim"/"Não", true/false), target_font (nome da
+// fonte; "(Recomendado)..." mantém a do jogo) e repack_mode ("Empacotar..." liga o
+// reempacotamento).
+func (e *Extractor) ApplyOptions(opts map[string]string) {
+	if v, ok := opts["preserve_title"]; ok {
+		switch lower := strings.ToLower(strings.TrimSpace(v)); {
+		case strings.Contains(v, "Sim") || slices.Contains([]string{"true", "1", "yes", "sim"}, lower):
+			e.PreserveTitle = true
+		case strings.Contains(v, "Não") || slices.Contains([]string{"false", "0", "no", "nao", "não"}, lower):
+			e.PreserveTitle = false
+		}
+	}
+	if v := strings.TrimSpace(opts["target_font"]); v != "" && !strings.HasPrefix(v, "(Recomendado)") {
+		e.TargetFont = v
+	}
+	if v := opts["repack_mode"]; strings.Contains(v, "Empacotar") || strings.EqualFold(strings.TrimSpace(v), "true") {
+		e.RepackMode = true
+	}
+}
+
+// Rewrite aplica ao arquivo as alterações que não dependem de tradução: hoje, a
+// fonte do Game.dat. changed é falso quando nada precisa mudar.
+func (e *Extractor) Rewrite(filePath string, data []byte) (out []byte, changed bool, err error) {
+	if e.TargetFont == "" || strings.ToLower(filepath.Base(filePath)) != "game.dat" {
+		return data, false, nil
+	}
+	doc, err := e.open(filePath, data)
+	if err != nil || doc == nil {
+		return data, false, err
+	}
+	return doc.save(), true, nil
 }
 
 var (
@@ -92,7 +135,8 @@ func (e *Extractor) Inject(filePath string, originalData []byte, segments []*mod
 			trMap[s.ID()] = s.Target()
 		}
 	}
-	if len(trMap) == 0 {
+	setsFont := e.TargetFont != "" && strings.ToLower(base) == "game.dat"
+	if len(trMap) == 0 && !setsFont {
 		return originalData, nil
 	}
 
@@ -113,7 +157,7 @@ func (e *Extractor) Inject(filePath string, originalData []byte, segments []*mod
 		s.set(tr)
 		changed = true
 	})
-	if !changed {
+	if !changed && !setsFont {
 		return originalData, nil
 	}
 	return doc.save(), nil
@@ -219,7 +263,12 @@ func (e *Extractor) open(filePath string, data []byte) (*document, error) {
 				fn(textSlot{id: "game/title", text: g.Title, kind: model.KindMenu,
 					ctx: map[string]any{"field": "title"}, set: func(tr string) { g.Title = tr }})
 			},
-			save: g.Save,
+			save: func() []byte {
+				if e.TargetFont != "" {
+					g.Font = e.TargetFont
+				}
+				return g.Save()
+			},
 		}, nil
 
 	case strings.HasSuffix(lower, ".txt"):
@@ -289,6 +338,9 @@ func (e *Extractor) project(filePath string) []byte {
 	}
 	rel := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".project"
 	data, err := os.ReadFile(filepath.Join(e.Dir, filepath.FromSlash(rel)))
+	if err != nil && e.Packed != nil {
+		data, err = e.Packed.Read(rel)
+	}
 	if err != nil {
 		return nil
 	}
@@ -312,40 +364,54 @@ func (e *Extractor) nameLookupTypes() map[string]bool {
 				}
 			}
 		}
-		failed := false
+		type source struct {
+			name string
+			read func() ([]byte, error)
+		}
+		var sources []source
 		_ = filepath.WalkDir(e.Dir, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			name := strings.ToLower(d.Name())
-			switch {
-			case name == "commonevent.dat":
-				data, err := os.ReadFile(path)
-				ce, perr := LoadWolfCommonEvents(data)
-				if err != nil || perr != nil {
-					failed = true
-					return filepath.SkipAll
-				}
-				scanned++
-				for _, ev := range ce.Events {
-					scan(ev.Commands)
-				}
-			case strings.HasSuffix(name, ".mps"):
-				data, err := os.ReadFile(path)
-				m, perr := LoadWolfMap(data)
-				if err != nil || perr != nil {
-					failed = true
-					return filepath.SkipAll
-				}
-				scanned++
-				for _, ev := range m.Events {
-					for _, p := range ev.Pages {
-						scan(p.Commands)
-					}
-				}
+			if err == nil && !d.IsDir() {
+				sources = append(sources, source{strings.ToLower(d.Name()), func() ([]byte, error) { return os.ReadFile(path) }})
 			}
 			return nil
 		})
+		if e.Packed != nil {
+			for _, rel := range e.Packed.Pending() {
+				sources = append(sources, source{strings.ToLower(filepath.Base(rel)), func() ([]byte, error) { return e.Packed.Read(rel) }})
+			}
+		}
+		failed := false
+		for _, src := range sources {
+			switch {
+			case src.name == "commonevent.dat":
+				data, err := src.read()
+				ce, perr := LoadWolfCommonEvents(data)
+				if err != nil || perr != nil {
+					failed = true
+				} else {
+					scanned++
+					for _, ev := range ce.Events {
+						scan(ev.Commands)
+					}
+				}
+			case strings.HasSuffix(src.name, ".mps"):
+				data, err := src.read()
+				m, perr := LoadWolfMap(data)
+				if err != nil || perr != nil {
+					failed = true
+				} else {
+					scanned++
+					for _, ev := range m.Events {
+						for _, p := range ev.Pages {
+							scan(p.Commands)
+						}
+					}
+				}
+			}
+			if failed {
+				break
+			}
+		}
 		if !failed && scanned > 0 {
 			e.lookupTypes = found
 		}
