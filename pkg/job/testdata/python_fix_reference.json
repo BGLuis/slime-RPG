@@ -1,0 +1,324 @@
+{
+ "fix": [
+  {
+   "name": "bool_pt",
+   "translated": "$gameVariables.value(1) === verdadeiro",
+   "original": "$gameVariables.value(1) === true",
+   "python": "$gameVariables.value(1) === true"
+  },
+  {
+   "name": "bool_fr_faux",
+   "translated": "$gameSwitches.value(2) == faux",
+   "original": "$gameSwitches.value(2) == false",
+   "python": "$gameSwitches.value(2) == false"
+  },
+  {
+   "name": "null_nulo",
+   "translated": "$gameVariables.value(3) !== nulo",
+   "original": "$gameVariables.value(3) !== null",
+   "python": "$gameVariables.value(3) !== null"
+  },
+  {
+   "name": "undef",
+   "translated": "$gameVariables.value(3) === indefinido",
+   "original": "$gameVariables.value(3) === undefined",
+   "python": "$gameVariables.value(3) === undefined"
+  },
+  {
+   "name": "gamecase",
+   "translated": "$gamevariables.value(1) > 5 && $GAMESWITCHES.value(2)",
+   "original": "$gameVariables.value(1) > 5 && $gameSwitches.value(2)",
+   "python": "$gameVariables.value(1) > 5 && $gameSwitches.value(2)"
+  },
+  {
+   "name": "gamespace",
+   "translated": "$ gameVariables.value(1) > 5",
+   "original": "$gameVariables.value(1) > 5",
+   "python": "$gameVariables.value(1) > 5"
+  },
+  {
+   "name": "opspace",
+   "translated": "$gameVariables.value(1) > = 5 & & x",
+   "original": "$gameVariables.value(1) >= 5 && x",
+   "python": "$gameVariables.value(1) >= 5 & & x"
+  },
+  {
+   "name": "eqspace",
+   "translated": "$gameVariables.value(1) = = 5",
+   "original": "$gameVariables.value(1) == 5",
+   "python": "$gameVariables.value(1) == 5"
+  },
+  {
+   "name": "neq",
+   "translated": "$gameVariables.value(1) ! = 5",
+   "original": "$gameVariables.value(1) != 5",
+   "python": "$gameVariables.value(1) != 5"
+  },
+  {
+   "name": "smartquote_code",
+   "translated": "$gameMessage.add(“Olá”)",
+   "original": "$gameMessage.add(\"Olá\")",
+   "python": "$gameMessage.add(\"Olá\")"
+  },
+  {
+   "name": "smartquote_single",
+   "translated": "$gameVariables.value(1) == ‘a’",
+   "original": "$gameVariables.value(1) == 'a'",
+   "python": "$gameVariables.value(1) == 'a'"
+  },
+  {
+   "name": "smartquote_prose",
+   "translated": "“Olá”, disse ele.",
+   "original": "「こんにちは」",
+   "python": "“Olá”, disse ele."
+  },
+  {
+   "name": "c_lower",
+   "translated": "\\c[2]Olá\\c[0]",
+   "original": "\\C[2]こんにちは\\C[0]",
+   "python": "\\C[2]Olá\\C[0]"
+  },
+  {
+   "name": "v_lower",
+   "translated": "\\v[1] moedas",
+   "original": "\\V[1]G",
+   "python": "\\V[1] moedas"
+  },
+  {
+   "name": "name_nome",
+   "translated": "\\nome[1] chegou",
+   "original": "\\NAME[1]が来た",
+   "python": "\\NAME[1] chegou"
+  },
+  {
+   "name": "name_lower",
+   "translated": "\\name[1] chegou",
+   "original": "\\NAME[1]が来た",
+   "python": "\\NAME[1] chegou"
+  },
+  {
+   "name": "n_lower",
+   "translated": "\\n[1] chegou",
+   "original": "\\N[1]が来た",
+   "python": "\\N[1] chegou"
+  },
+  {
+   "name": "i_lower",
+   "translated": "\\i[5] Poção",
+   "original": "\\I[5]ポーション",
+   "python": "\\I[5] Poção"
+  },
+  {
+   "name": "g_noarg",
+   "translated": "100\\g",
+   "original": "100\\G",
+   "python": "100\\G"
+  },
+  {
+   "name": "g_noarg_upper_lc",
+   "translated": "100\\g",
+   "original": "100\\G",
+   "python": "100\\G"
+  },
+  {
+   "name": "plugin_F",
+   "translated": "\\F[Alice]Olá",
+   "original": "\\F[Alice]こんにちは",
+   "python": "\\f[Alice]Olá"
+  },
+  {
+   "name": "plugin_FH",
+   "translated": "\\FH[x]Olá",
+   "original": "\\FH[x]こんにちは",
+   "python": "\\fh[x]Olá"
+  },
+  {
+   "name": "ce_lower",
+   "translated": "\\ce[3]Olá",
+   "original": "\\CE[3]こんにちは",
+   "python": "\\CE[3]Olá"
+  },
+  {
+   "name": "m_lower",
+   "translated": "\\m[3]Olá",
+   "original": "\\M[3]こんにちは",
+   "python": "\\M[3]Olá"
+  },
+  {
+   "name": "backslash_space",
+   "translated": "\\ C[2]Olá",
+   "original": "\\C[2]こんにちは",
+   "python": "\\ C[2]Olá"
+  },
+  {
+   "name": "choice_cond",
+   "translated": "Show_If (v[1] > 0) Sim",
+   "original": "show_if(v[1] > 0) はい",
+   "python": "Show_If (v[1] > 0) Sim"
+  },
+  {
+   "name": "choice_cond_bool",
+   "translated": "show_if($gameSwitches.value(1) === verdadeiro) Sim",
+   "original": "show_if($gameSwitches.value(1) === true) はい",
+   "python": "show_if($gameSwitches.value(1) === true) Sim"
+  },
+  {
+   "name": "choice_cond_quote",
+   "translated": "show_if(“x” == a) Sim",
+   "original": "show_if(\"x\" == a) はい",
+   "python": "show_if(\"x\" == a) Sim"
+  },
+  {
+   "name": "choice_if_prose",
+   "translated": "If (v[1] > 0) Sim",
+   "original": "if(v[1] > 0) はい",
+   "python": "if(v[1] > 0) Sim"
+  },
+  {
+   "name": "octal",
+   "translated": "$gameVariables.setValue(1, 007)",
+   "original": "$gameVariables.setValue(1, 7)",
+   "python": "$gameVariables.setValue(1, 7)"
+  },
+  {
+   "name": "octal_zero",
+   "translated": "$gameVariables.setValue(1, 00)",
+   "original": "$gameVariables.setValue(1, 0)",
+   "python": "$gameVariables.setValue(1, 0)"
+  },
+  {
+   "name": "underscore",
+   "translated": "$gameVariables.value(1) _ x",
+   "original": "$gameVariables.value(1)_x",
+   "python": "$gameVariables.value(1)_x"
+  },
+  {
+   "name": "string_literal_kept",
+   "translated": "$gameMessage.add(\"verdadeiro nulo\")",
+   "original": "$gameMessage.add(\"true null\")",
+   "python": "$gameMessage.add(\"verdadeiro nulo\")"
+  },
+  {
+   "name": "prose_bool",
+   "translated": "Isso é verdadeiro",
+   "original": "それは本当",
+   "python": "Isso é verdadeiro"
+  },
+  {
+   "name": "noorig_prop",
+   "translated": "$gameParty.members().LENGTH",
+   "original": null,
+   "python": "$gameParty.members().length"
+  },
+  {
+   "name": "script_assign",
+   "translated": "this.x = verdadeiro;",
+   "original": "this.x = true;",
+   "python": "this.x = true;"
+  },
+  {
+   "name": "html_font",
+   "translated": "<font color=\\C[2]>Olá</font>",
+   "original": "<font color=\\C[2]>こんにちは</font>",
+   "python": "<font color=\\C[2]>Olá</font>"
+  }
+ ],
+ "inserts": [
+  {
+   "name": "script_plain",
+   "kind": "355",
+   "source": "$gameMessage.add(\"勇者の剣\");",
+   "original": "勇者の剣",
+   "translated": "Espada do Herói",
+   "python": "$gameMessage.add(\"Espada do Herói\");"
+  },
+  {
+   "name": "script_smart_prose",
+   "kind": "355",
+   "source": "$gameMessage.add(\"剣だ\");",
+   "original": "剣だ",
+   "translated": "“Espada” é boa",
+   "python": "$gameMessage.add(\"“Espada” é boa\");"
+  },
+  {
+   "name": "script_jp_quotes",
+   "kind": "355",
+   "source": "$gameMessage.add(\"「剣」\");",
+   "original": "「剣」",
+   "translated": "“Espada”",
+   "python": "$gameMessage.add(\"Espada\");"
+  },
+  {
+   "name": "script_ascii_quote_in_dq",
+   "kind": "355",
+   "source": "$gameMessage.add(\"剣だ\");",
+   "original": "剣だ",
+   "translated": "Uma \"espada\" boa",
+   "python": "$gameMessage.add(\"Uma \\\"espada\\\" boa\");"
+  },
+  {
+   "name": "script_apostrophe_sq",
+   "kind": "355",
+   "source": "$gameMessage.add('剣だ');",
+   "original": "剣だ",
+   "translated": "It’s a sword",
+   "python": "$gameMessage.add('It’s a sword');"
+  },
+  {
+   "name": "script_newline",
+   "kind": "355",
+   "source": "$gameMessage.add(\"剣だ\");",
+   "original": "剣だ",
+   "translated": "Linha1\nLinha2",
+   "python": "$gameMessage.add(\"Linha1\\nLinha2\");"
+  },
+  {
+   "name": "script_codes_lower",
+   "kind": "355",
+   "source": "$gameMessage.add(\"\\\\C[2]剣\\\\C[0]だ\");",
+   "original": "\\\\C[2]剣\\\\C[0]だ",
+   "translated": "\\\\c[2]Espada\\\\c[0]",
+   "python": "$gameMessage.add(\"\\\\c[2]Espada\\\\c[0]\");"
+  },
+  {
+   "name": "script_codes_single_bs",
+   "kind": "355",
+   "source": "$gameMessage.add(\"\\\\C[2]剣\\\\C[0]だ\");",
+   "original": "\\\\C[2]剣\\\\C[0]だ",
+   "translated": "\\C[2]Espada\\C[0]",
+   "python": "$gameMessage.add(\"\\\\C[2]Espada\\\\C[0]\");"
+  },
+  {
+   "name": "cv_quoted",
+   "kind": "122",
+   "source": "\"勇者の剣\";",
+   "original": "勇者の剣",
+   "translated": "“Espada do Herói”",
+   "python": "\"Espada do Herói\";"
+  },
+  {
+   "name": "cv_quoted_sq",
+   "kind": "122",
+   "source": "'勇者の剣'",
+   "original": "勇者の剣",
+   "translated": "‘Espada’ do Herói",
+   "python": "'\\'Espada\\' do Herói'"
+  },
+  {
+   "name": "cv_bare",
+   "kind": "122",
+   "source": "勇者 の剣",
+   "original": "勇者 の剣",
+   "translated": "Espada ‘do’ Herói",
+   "python": "Espada ‘do’ Herói"
+  },
+  {
+   "name": "cv_outer_quotes_added",
+   "kind": "122",
+   "source": "\"勇者の剣\"",
+   "original": "勇者の剣",
+   "translated": "\"Espada\"",
+   "python": "\"Espada\""
+  }
+ ]
+}

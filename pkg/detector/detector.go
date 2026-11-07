@@ -41,16 +41,16 @@ type MetaRecord struct {
 
 // DetectionResult consolida as informações da Etapa 1 e Detecção.
 type DetectionResult struct {
-	GamePath               string     `json:"game_path"`
-	GameName               string     `json:"game_name"`
-	DataDir                string     `json:"data_dir"`
-	Engine                 GameEngine `json:"engine"`
-	ProbableLang           string     `json:"probable_lang"`
-	LangDetectionConfidence int       `json:"lang_confidence"`
-	HasPreviousTranslation bool       `json:"has_previous_translation"`
-	PreviousMeta           *MetaRecord `json:"previous_meta,omitempty"`
-	FileCount              int        `json:"file_count"`
-	Description            string     `json:"description"`
+	GamePath                string      `json:"game_path"`
+	GameName                string      `json:"game_name"`
+	DataDir                 string      `json:"data_dir"`
+	Engine                  GameEngine  `json:"engine"`
+	ProbableLang            string      `json:"probable_lang"`
+	LangDetectionConfidence int         `json:"lang_confidence"`
+	HasPreviousTranslation  bool        `json:"has_previous_translation"`
+	PreviousMeta            *MetaRecord `json:"previous_meta,omitempty"`
+	FileCount               int         `json:"file_count"`
+	Description             string      `json:"description"`
 }
 
 // Detect inspeciona a pasta ou arquivo indicado e descobre engine, dataDir e idioma provável.
@@ -66,10 +66,7 @@ func Detect(targetPath string) (*DetectionResult, error) {
 		return nil, ErrDangerousPath
 	}
 
-	gameName := filepath.Base(cleanPath)
-	if gameName == "." || gameName == "/" {
-		gameName = "Jogo"
-	}
+	gameName := deriveGameName(cleanPath)
 
 	// 1. Arquivo direto
 	if !info.IsDir() {
@@ -225,6 +222,30 @@ func Detect(targetPath string) (*DetectionResult, error) {
 	}
 
 	return res, nil
+}
+
+// deriveGameName usa o nome da pasta do jogo. Quando o caminho aponta para a
+// pasta de dados (Jogo/www/data, Jogo/data, Jogo/www), sobe até a pasta do jogo
+// em vez de gravar "data" ou "www" como nome na memória e no meta.json.
+func deriveGameName(cleanPath string) string {
+	dir := cleanPath
+	if abs, err := filepath.Abs(cleanPath); err == nil {
+		dir = abs
+	}
+	for {
+		base := filepath.Base(dir)
+		parent := filepath.Dir(dir)
+		lower := strings.ToLower(base)
+		if (lower != "data" && lower != "www") || parent == dir {
+			break
+		}
+		dir = parent
+	}
+	name := filepath.Base(dir)
+	if name == "." || name == "/" || name == string(filepath.Separator) {
+		return "Jogo"
+	}
+	return name
 }
 
 // isRestrictedPath recusa a raiz do sistema, lixeiras (com os marcadores da
