@@ -10,6 +10,7 @@ import (
 	"github.com/BGLuis/slime-rpg/pkg/job"
 	"github.com/BGLuis/slime-rpg/pkg/ui/theme"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func ollamaFields() []job.ConfigSchemaField {
@@ -19,11 +20,12 @@ func ollamaFields() []job.ConfigSchemaField {
 	}
 }
 
-func nextLang(code string) string {
+// stepLang anda delta posições na lista de idiomas, dando a volta nas pontas.
+func stepLang(code string, delta int) string {
 	langs := i18n.TranslationLanguages
 	for i, l := range langs {
 		if l == code {
-			return langs[(i+1)%len(langs)]
+			return langs[((i+delta)%len(langs)+len(langs))%len(langs)]
 		}
 	}
 	return langs[0]
@@ -36,12 +38,6 @@ func langLabel(code string) string {
 		}
 	}
 	return code
-}
-
-// boxTop desenha a borda superior de uma caixa com título, completada até width colunas.
-func boxTop(title string, width int) string {
-	head := "╭─ " + title + " "
-	return head + strings.Repeat("─", max(width-len([]rune(head))-1, 0)) + "╮"
 }
 
 type estimateMsg struct {
@@ -64,7 +60,7 @@ func (m *Model) enterConfigure() tea.Cmd {
 // reestimate dispara uma nova estimativa assíncrona se as opções mudaram e nenhum campo está em edição.
 func (m *Model) reestimate() tea.Cmd {
 	key := m.currentEstimateKey()
-	if key == m.estimateKey || m.fieldFocus >= 0 || !m.hasGame() {
+	if key == m.estimateKey || m.editingText() || !m.hasGame() {
 		return nil
 	}
 	m.estimateKey = key
@@ -105,34 +101,29 @@ func (m *Model) handleEstimate(msg estimateMsg) {
 	}
 }
 
-func (m *Model) renderEstimate() []string {
-	row := func(s string) string { return fmt.Sprintf("│ %-32s │", truncate(s, 32)) }
-	blank := row("")
-	lines := []string{boxTop(i18n.T("tui_est_title"), 36)}
-
+// renderEstimate devolve o conteúdo do painel de estimativa com inner colunas úteis.
+func (m *Model) renderEstimate(inner int) []string {
 	switch e := m.estimate; {
 	case m.estimating:
-		lines = append(lines, row(i18n.T("tui_est_calc")))
+		return []string{i18n.T("tui_est_calc")}
 	case m.estimateErr != "":
-		lines = append(lines, row(i18n.T("tui_est_fail")), row(m.estimateErr))
+		return append([]string{i18n.T("tui_est_fail")}, wrapJoin(strings.Fields(m.estimateErr), " ", inner)...)
 	case e != nil:
 		toTranslate := max(e.SegmentsTotal-e.SegmentsCached, 0)
 		pct := 0.0
 		if e.SegmentsTotal > 0 {
 			pct = float64(e.SegmentsCached) / float64(e.SegmentsTotal)
 		}
-		lines = append(lines,
-			row(fmt.Sprintf("%d %s", toTranslate, i18n.T("ui_est_to_translate"))),
-			blank,
-			"│ "+theme.RenderProgressBar(pct, 32)+" │",
-			row(i18n.T("ui_est_cache", e.SegmentsCached, e.SegmentsTotal, int(pct*100))),
-			blank,
-			row(i18n.T("tui_est_files", e.FilesToProcess, e.FilesTotal)),
-			row(i18n.T("tui_est_backup")+truncate(e.BackupPath, 22)),
-		)
+		label := i18n.T("tui_est_backup")
+		return []string{
+			fmt.Sprintf("%d %s", toTranslate, i18n.T("ui_est_to_translate")),
+			"",
+			theme.RenderProgressBar(pct, inner),
+			i18n.T("ui_est_cache", e.SegmentsCached, e.SegmentsTotal, int(pct*100)),
+			"",
+			i18n.T("tui_est_files", e.FilesToProcess, e.FilesTotal),
+			label + tail(e.BackupPath, inner-ansi.StringWidth(label)),
+		}
 	}
-	for len(lines) < 16 {
-		lines = append(lines, blank)
-	}
-	return append(lines, "╰──────────────────────────────────╯")
+	return nil
 }

@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/BGLuis/slime-rpg/pkg/detector"
@@ -13,6 +15,7 @@ import (
 	"github.com/BGLuis/slime-rpg/pkg/memory"
 	"github.com/BGLuis/slime-rpg/pkg/ui/theme"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // ViewState representa a tela ativa do Stepper na TUI.
@@ -61,7 +64,7 @@ type Model struct {
 	incremental      bool
 	enableProxies    bool
 	fieldValues      map[string]string // opções do extrator e chave do DeepL, por ConfigSchemaField.Key
-	fieldFocus       int               // índice em configFields(); -1 = nenhum campo em edição
+	focus            int               // índice em configRows()
 	estimate         *event.EstimateEvent
 	estimating       bool
 	estimateErr      string
@@ -95,7 +98,6 @@ func NewModel(initialDir string, opts ...Option) *Model {
 		providers:    []string{"Google Translate", "DeepL", "Ollama", i18n.T("tui_provider_memory")},
 		targetLang:   "pt",
 		incremental:  true,
-		fieldFocus:   -1,
 		filterLabels: []string{i18n.T("tui_filter_all"), i18n.T("tui_filter_partial")},
 	}
 	det, _ := detector.Detect(initialDir)
@@ -115,7 +117,7 @@ func (m *Model) hasGame() bool {
 func (m *Model) setGame(path string, det *detector.DetectionResult) {
 	m.gamePath, m.detectedGame = path, det
 	m.fieldValues = map[string]string{}
-	m.fieldFocus = -1
+	m.focus = 0
 	m.sourceLang = "ja"
 	if det != nil && det.ProbableLang != "" {
 		m.sourceLang = det.ProbableLang
@@ -265,6 +267,50 @@ func (m *Model) configFields() []job.ConfigSchemaField {
 	return fields
 }
 
+// rowKind identifica cada linha navegável da tela Configurar.
+type rowKind int
+
+const (
+	rowProvider rowKind = iota
+	rowSource
+	rowTarget
+	rowIncremental
+	rowProxies
+	rowField
+)
+
+type configRow struct {
+	kind  rowKind
+	field job.ConfigSchemaField
+}
+
+// configRows lista as linhas navegáveis com ↑↓; proxies só existem para o Google.
+func (m *Model) configRows() []configRow {
+	rows := []configRow{{kind: rowProvider}, {kind: rowSource}, {kind: rowTarget}, {kind: rowIncremental}}
+	if providerIDs[m.selectedProvider] == "google" {
+		rows = append(rows, configRow{kind: rowProxies})
+	}
+	for _, f := range m.configFields() {
+		rows = append(rows, configRow{kind: rowField, field: f})
+	}
+	return rows
+}
+
+func (m *Model) focusedRow() configRow {
+	rows := m.configRows()
+	return rows[min(m.focus, len(rows)-1)]
+}
+
+// editingText diz se o foco está num campo de texto, onde as teclas viram digitação.
+func (m *Model) editingText() bool {
+	r := m.focusedRow()
+	return r.kind == rowField && r.field.Type != "bool"
+}
+
+func (m *Model) fieldBool(f job.ConfigSchemaField) bool {
+	return cmp.Or(m.fieldValues[f.Key], f.Default) == "true"
+}
+
 // editField trata a digitação no campo em foco; devolve false se a tecla não é de edição.
 func (m *Model) editField(msg tea.KeyMsg, key string) bool {
 	switch msg.Type {
@@ -280,33 +326,53 @@ func (m *Model) editField(msg tea.KeyMsg, key string) bool {
 	return true
 }
 
-func (m *Model) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	fields := m.configFields()
-	if msg.String() == "tab" && len(fields) > 0 {
-		m.fieldFocus = (m.fieldFocus + 1) % (len(fields) + 1)
-		if m.fieldFocus == len(fields) {
-			m.fieldFocus = -1
+// changeRow altera o valor da linha: delta escolhe o vizinho nas listas e alterna as caixas.
+func (m *Model) changeRow(r configRow, delta int) {
+	switch r.kind {
+	case rowProvider:
+		n := len(m.providers)
+		m.selectedProvider = (m.selectedProvider + delta + n) % n
+	case rowSource:
+		m.sourceLang = stepLang(m.sourceLang, delta)
+	case rowTarget:
+		m.targetLang = stepLang(m.targetLang, delta)
+	case rowIncremental:
+		m.incremental = !m.incremental
+	case rowProxies:
+		m.enableProxies = !m.enableProxies
+	case rowField:
+		if r.field.Type == "bool" {
+			m.fieldValues[r.field.Key] = strconv.FormatBool(!m.fieldBool(r.field))
 		}
-		return m, m.reestimate()
 	}
-	if m.fieldFocus >= 0 && m.fieldFocus < len(fields) && m.editField(msg, fields[m.fieldFocus].Key) {
+}
+
+func (m *Model) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	row := m.focusedRow()
+	// Num campo de texto as letras são digitadas; os atalhos de uma letra abaixo só valem fora dele.
+	if m.editingText() && m.editField(msg, row.field.Key) {
 		return m, nil
 	}
+	n := len(m.configRows())
 	switch msg.String() {
+	case "up", "k", "shift+tab":
+		m.focus = (m.focus - 1 + n) % n
+	case "down", "j", "tab":
+		m.focus = (m.focus + 1) % n
 	case "left", "h":
-		if m.selectedProvider > 0 {
-			m.selectedProvider--
-		}
+		m.changeRow(row, -1)
 	case "right", "l":
-		if m.selectedProvider < len(m.providers)-1 {
-			m.selectedProvider++
+		m.changeRow(row, 1)
+	case " ":
+		if row.kind == rowProxies || row.kind == rowField {
+			m.changeRow(row, 1)
+		} else {
+			m.incremental = !m.incremental
 		}
 	case "s":
-		m.sourceLang = nextLang(m.sourceLang)
+		m.sourceLang = stepLang(m.sourceLang, 1)
 	case "d":
-		m.targetLang = nextLang(m.targetLang)
-	case " ":
-		m.incremental = !m.incremental
+		m.targetLang = stepLang(m.targetLang, 1)
 	case "x":
 		m.enableProxies = !m.enableProxies
 	case "ctrl+enter", "enter":
@@ -319,9 +385,7 @@ func (m *Model) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewTranslating
 		return m, cmd
 	}
-	if m.fieldFocus >= len(m.configFields()) {
-		m.fieldFocus = -1
-	}
+	m.focus = min(m.focus, len(m.configRows())-1)
 	return m, m.reestimate()
 }
 
@@ -430,160 +494,227 @@ func (m *Model) updateResult(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View renderiza a tela atual em formato de grade 100x32.
+// View renderiza a tela atual ajustada a m.width x m.height.
 func (m *Model) View() string {
 	if m.quitting {
 		return i18n.T("tui_quit")
 	}
+	w := m.contentWidth()
+	rule := strings.Repeat(theme.SymBarThin, w)
 
-	var b strings.Builder
-
-	// 1. Cabeçalho Superior com Stepper de 4 passos
-	b.WriteString(m.renderStepperHeader())
-	b.WriteString("\n" + strings.Repeat(theme.SymBarThin, 100) + "\n\n")
-
-	// 2. Conteúdo da Tela
+	head := []string{m.renderStepperHeader(w), rule, ""}
+	var body string
 	switch m.view {
 	case ViewOpenGame:
-		b.WriteString(m.renderOpenGame())
+		body = m.renderOpenGame()
 	case ViewConfigure:
-		b.WriteString(m.renderConfigure())
+		body = m.renderConfigure()
 	case ViewTranslating:
-		b.WriteString(m.renderTranslating())
+		body = m.renderTranslating()
 	case ViewReviewing:
-		b.WriteString(m.renderReviewing())
+		body = m.renderReviewing()
 	case ViewResult:
-		b.WriteString(m.renderResult())
+		body = m.renderResult()
 	}
-
-	// 3. Rodapé Fixo com Atalhos
-	b.WriteString("\n" + strings.Repeat(theme.SymBarThin, 100) + "\n")
+	foot := []string{"", rule}
 	if m.statusMsg != "" {
-		b.WriteString("  " + theme.StyleTagWarning.Render(theme.SymWarning+" "+m.statusMsg) + "\n")
+		foot = append(foot, "  "+theme.StyleTagWarning.Render(theme.SymWarning+" "+truncate(m.statusMsg, w-6)))
 	}
-	b.WriteString(m.renderFooter())
+	for _, l := range wrapJoin(strings.Split(strings.TrimSpace(m.renderFooter()), " · "), " · ", w-2) {
+		foot = append(foot, "  "+l)
+	}
 
-	return theme.StyleApp.Render(b.String())
+	// Sem o corte, o terminal descarta as primeiras linhas e o cabeçalho some.
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	if room := m.height - len(head) - len(foot); room > 0 && len(lines) > room {
+		lines = lines[:room]
+	}
+	all := append(append(head, lines...), foot...)
+	for i, l := range all {
+		all[i] = truncate(l, m.width)
+	}
+	return theme.StyleApp.Render(strings.Join(all, "\n"))
 }
 
-func (m *Model) renderStepperHeader() string {
-	game, config := i18n.T("tui_step_game"), i18n.T("tui_step_config")
-	translate, result := i18n.T("tui_step_translate"), i18n.T("tui_step_result")
-	step1, step2, step3, step4 := "1 "+game, "2 "+config, "3 "+translate, "4 "+result
+func (m *Model) renderStepperHeader(width int) string {
+	names := []string{i18n.T("tui_step_game"), i18n.T("tui_step_config"), i18n.T("tui_step_translate"), i18n.T("tui_step_result")}
+	current := map[ViewState]int{ViewOpenGame: 0, ViewConfigure: 1, ViewTranslating: 2, ViewReviewing: 2, ViewResult: 3}[m.view]
 
-	switch m.view {
-	case ViewOpenGame:
-		step1 = theme.StyleAccent.Render(theme.SymBullet + " " + game)
-	case ViewConfigure:
-		step1 = theme.StyleMuted.Render(theme.SymCheck + " Jogo")
-		step2 = theme.StyleAccent.Render(theme.SymBullet + " " + config)
-	case ViewTranslating, ViewReviewing:
-		step1 = theme.StyleMuted.Render(theme.SymCheck + " Jogo")
-		step2 = theme.StyleMuted.Render(theme.SymCheck + " Configurar")
-		step3 = theme.StyleAccent.Render(theme.SymBullet + " " + translate)
-	case ViewResult:
-		step1 = theme.StyleMuted.Render(theme.SymCheck + " Jogo")
-		step2 = theme.StyleMuted.Render(theme.SymCheck + " Configurar")
-		step3 = theme.StyleMuted.Render(theme.SymCheck + " Tradução")
-		step4 = theme.StyleAccent.Render(theme.SymBullet + " " + result)
+	steps := make([]string, len(names))
+	for i, name := range names {
+		switch {
+		case i < current:
+			steps[i] = theme.StyleMuted.Render(theme.SymCheck + " " + name)
+		case i == current:
+			steps[i] = theme.StyleAccent.Render(theme.SymBullet + " " + name)
+		default:
+			steps[i] = fmt.Sprintf("%d %s", i+1, name)
+		}
 	}
-
-	return fmt.Sprintf(" Slime    %s  %s  %s  %s  %s  %s  %s",
-		step1, theme.SymArrow, step2, theme.SymArrow, step3, theme.SymArrow, step4)
+	full := " Slime    " + strings.Join(steps, "  "+theme.SymArrow+"  ")
+	if ansi.StringWidth(full) <= width {
+		return full
+	}
+	return fmt.Sprintf(" Slime  %s  %s", steps[current], theme.StyleMuted.Render(fmt.Sprintf("%d/%d", current+1, len(names))))
 }
 
 func (m *Model) renderOpenGame() string {
-	var s strings.Builder
-	s.WriteString("   " + theme.StyleTitle.Render(i18n.T("tui_open_title")) + "\n")
-	s.WriteString("   " + theme.StyleSubtitle.Render(i18n.T("tui_open_sub")) + "\n\n")
-
-	s.WriteString("   " + boxTop(i18n.T("tui_open_box"), 96) + "\n")
+	w := m.contentWidth() - len(indent) - 1
+	lines := []string{
+		theme.StyleHeader.Render(i18n.T("tui_open_title")),
+		theme.StyleMuted.Render(i18n.T("tui_open_sub")),
+		"",
+	}
+	opts := make([]string, len(m.folderOptions))
 	for i, opt := range m.folderOptions {
-		prefix := "   "
+		opts[i] = "  " + opt
 		if i == m.selectedFolderIndex {
-			prefix = " › "
+			opts[i] = theme.StyleAccent.Render(theme.SymArrow+" ") + opt
 		}
-		s.WriteString(fmt.Sprintf("   │%s%-89s│\n", prefix, truncate(opt, 89)))
 	}
-	s.WriteString("   ╰──────────────────────────────────────────────────────────────────────────────────────────────╯\n\n")
+	lines = append(lines, box(i18n.T("tui_open_box"), opts, w)...)
+	lines = append(lines, "")
 	if m.pathInput {
-		s.WriteString("   " + i18n.T("tui_open_path_prompt") + m.pathBuf + "▌\n\n")
+		prompt := i18n.T("tui_open_path_prompt")
+		lines = append(lines, prompt+tail(m.pathBuf, w-ansi.StringWidth(prompt)-1)+"▌", "")
 	}
-	s.WriteString("   " + theme.StyleMuted.Render(i18n.T("tui_open_tip")))
-	return s.String()
+	lines = append(lines, theme.StyleMuted.Render(truncate(i18n.T("tui_open_tip"), w)))
+	return indentLines(lines)
 }
 
+// Abaixo desta largura a estimativa vai para baixo do formulário em vez de ficar ao lado.
+const sideBySideWidth = 92
+
+const estimateWidth = 36
+
 func (m *Model) renderConfigure() string {
-	var s strings.Builder
+	w := m.contentWidth() - len(indent) - 1
+	sideBySide := w+len(indent)+1 >= sideBySideWidth
+	formW := w
+	if sideBySide {
+		formW = w - estimateWidth - 2
+	}
+
 	gameTitle, info := i18n.T("tui_cfg_none"), ""
 	if m.detectedGame != nil {
 		gameTitle = m.detectedGame.GameName
 		info = i18n.T("tui_cfg_info", m.detectedGame.Engine, m.detectedGame.DataDir, m.detectedGame.FileCount)
 	}
-
-	left := []string{
-		fmt.Sprintf("╭─ %s · %s ───────────────────────╮", i18n.T("tui_cfg_title"), gameTitle),
-		fmt.Sprintf("│ %-54s │", truncate(info, 54)),
-		"│                                                        │",
-		"│ " + theme.SymBarV + " " + fmt.Sprintf("%-52s", i18n.T("tui_cfg_service")) + " │",
-		"│ " + theme.SymBarV + " " + m.providerLine() + " │",
-		"│ " + theme.SymBarV + " " + fmt.Sprintf("%-52s", i18n.T("tui_cfg_free")) + " │",
-		"│                                                        │",
-		fmt.Sprintf("│   %-52s │", i18n.T("tui_cfg_source")),
-		fmt.Sprintf("│   %-52s │", langLabel(m.sourceLang)),
-		"│                                                        │",
-		fmt.Sprintf("│   %-52s │", i18n.T("tui_cfg_target")),
-		fmt.Sprintf("│   %-52s │", langLabel(m.targetLang)),
-		"│                                                        │",
-		fmt.Sprintf("│   %-52s │", checkbox(m.incremental)+" "+i18n.T("tui_cfg_incremental")),
-		fmt.Sprintf("│   %-52s │", checkbox(m.enableProxies)+" "+i18n.T("tui_cfg_proxies")),
-		"│                                                        │",
-		fmt.Sprintf("│   %-52s │", i18n.T("tui_cfg_backup")),
-		"╰────────────────────────────────────────────────────────╯",
+	form := append([]string{theme.StyleMuted.Render(info), ""}, m.renderConfigRows(formW-4)...)
+	form = append(form, "", theme.StyleMuted.Render(i18n.T("tui_cfg_backup")))
+	estW := formW
+	if sideBySide {
+		estW = estimateWidth
 	}
+	est := m.renderEstimate(estW - 4)
 
-	right := m.renderEstimate()
-
-	left = append(left[:len(left)-1], m.renderFieldRows()...)
-	left = append(left, "╰────────────────────────────────────────────────────────╯")
-
-	for i := 0; i < len(left); i++ {
-		rLine := ""
-		if i < len(right) {
-			rLine = right[i]
-		}
-		s.WriteString(fmt.Sprintf("   %-57s  %s\n", left[i], rLine))
+	title := i18n.T("tui_cfg_title") + " · " + gameTitle
+	if !sideBySide {
+		return indentLines(append(append(box(title, form, formW), ""), box(i18n.T("tui_est_title"), est, estW)...))
 	}
-
-	return s.String()
+	for len(est) < len(form) {
+		est = append(est, "")
+	}
+	for len(form) < len(est) {
+		form = append(form, "")
+	}
+	left, right := box(title, form, formW), box(i18n.T("tui_est_title"), est, estimateWidth)
+	rows := make([]string, len(left))
+	for i := range left {
+		rows[i] = left[i] + "  " + right[i]
+	}
+	return indentLines(rows)
 }
 
-func (m *Model) renderFieldRows() []string {
-	var rows []string
-	for i, f := range m.configFields() {
-		value := m.fieldValues[f.Key]
-		if f.Type == "secret" {
-			value = strings.Repeat("•", len([]rune(value)))
+// renderConfigRows desenha uma linha por item navegável: rótulo à esquerda, valor à direita.
+func (m *Model) renderConfigRows(inner int) []string {
+	rows := m.configRows()
+	labelOf := func(r configRow) string {
+		switch r.kind {
+		case rowProvider:
+			return i18n.T("tui_cfg_service")
+		case rowSource:
+			return i18n.T("tui_cfg_source")
+		case rowTarget:
+			return i18n.T("tui_cfg_target")
+		case rowIncremental:
+			return i18n.T("tui_cfg_incremental")
+		case rowProxies:
+			return i18n.T("tui_cfg_proxies")
 		}
-		cursor := ""
-		if i == m.fieldFocus {
-			cursor = "▌"
-		}
-		rows = append(rows,
-			"│                                                        │",
-			fmt.Sprintf("│   %-52s │", f.Label),
-			fmt.Sprintf("│   %-52s │", "› "+value+cursor),
-			fmt.Sprintf("│   %-52s │", truncate(f.Help, 52)),
-		)
+		return r.field.Label
 	}
-	return rows
+	labelW := 0
+	for _, r := range rows {
+		if r.kind != rowIncremental && r.kind != rowProxies {
+			labelW = max(labelW, ansi.StringWidth(labelOf(r)))
+		}
+	}
+	labelW = min(labelW, inner/2)
+	valueW := inner - 2 - labelW - 1
+	under := strings.Repeat(" ", 2+labelW+1)
+
+	var out []string
+	for i, r := range rows {
+		focused := i == min(m.focus, len(rows)-1)
+		marker, label := "  ", labelOf(r)
+		if focused {
+			marker = theme.StyleAccent.Render(theme.SymArrow + " ")
+		}
+		var value, note string
+		switch r.kind {
+		case rowProvider:
+			value = choice(m.providers[m.selectedProvider], focused)
+			note = i18n.T(providerHints[m.selectedProvider])
+		case rowSource:
+			value = choice(langLabel(m.sourceLang), focused)
+		case rowTarget:
+			value = choice(langLabel(m.targetLang), focused)
+		case rowIncremental:
+			label = checkbox(m.incremental) + " " + label
+		case rowProxies:
+			label = checkbox(m.enableProxies) + " " + label
+		case rowField:
+			switch v := m.fieldValues[r.field.Key]; {
+			case r.field.Type == "bool":
+				value = checkbox(m.fieldBool(r.field))
+			case r.field.Type == "secret":
+				value = strings.Repeat("•", len([]rune(v)))
+			default:
+				value = v
+			}
+			if focused && r.field.Type != "bool" {
+				value = tail(value, valueW-1) + "▌"
+			} else if value == "" {
+				value = theme.StyleMuted.Render("—")
+			}
+			if focused {
+				note = r.field.Help
+			}
+		}
+		if focused {
+			label = theme.StyleAccent.Render(truncate(label, max(inner-2, 1)))
+		}
+		if value == "" {
+			out = append(out, marker+label)
+		} else {
+			out = append(out, marker+fit(label, labelW)+" "+truncate(value, valueW))
+		}
+		if note != "" {
+			for _, l := range wrapJoin(strings.Fields(note), " ", valueW) {
+				out = append(out, under+theme.StyleMuted.Render(l))
+			}
+		}
+	}
+	return out
 }
 
-func truncate(s string, n int) string {
-	if r := []rune(s); len(r) > n {
-		return string(r[:n-1]) + "…"
+// choice mostra as setas ‹ › só na linha em foco, onde ←→ trocam o valor.
+func choice(v string, focused bool) string {
+	if focused {
+		return theme.StyleAccent.Render("‹ ") + v + theme.StyleAccent.Render(" ›")
 	}
-	return s
+	return v
 }
 
 func (m *Model) renderFooter() string {

@@ -8,6 +8,7 @@ import (
 	"github.com/BGLuis/slime-rpg/pkg/i18n"
 	"github.com/BGLuis/slime-rpg/pkg/job"
 	"github.com/BGLuis/slime-rpg/pkg/ui/theme"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const maxFileRows = 8
@@ -19,54 +20,56 @@ func checkbox(on bool) string {
 	return "[ ]"
 }
 
-func (m *Model) providerLine() string {
-	parts := make([]string, len(m.providers))
-	for i, p := range m.providers {
-		parts[i] = "  " + p
-		if i == m.selectedProvider {
-			parts[i] = "› " + p
-		}
-	}
-	return fmt.Sprintf("%-52s", strings.Join(parts, " "))
-}
-
 func (m *Model) renderTranslating() string {
 	snap := m.snapshot
-	var s strings.Builder
-
-	mode := m.providers[m.selectedProvider]
-	s.WriteString("   " + theme.StyleHeader.Render(i18n.T("tui_trans_title", snap.GameName)) +
-		fmt.Sprintf("   %s · %s → %s\n", mode, snap.SourceLang, snap.TargetLang))
+	w := m.contentWidth() - len(indent) - 1
 	phase := string(snap.Phase)
 	if m.paused {
 		phase = i18n.T("tui_trans_paused", phase)
 	}
-	s.WriteString("     " + i18n.T("tui_trans_phase", phase) + "\n\n")
+	mode := fmt.Sprintf("%s · %s → %s", m.providers[m.selectedProvider], snap.SourceLang, snap.TargetLang)
+	lines := []string{
+		theme.StyleHeader.Render(i18n.T("tui_trans_title", snap.GameName)) + "   " + mode,
+		"  " + i18n.T("tui_trans_phase", phase),
+		"",
+	}
 
 	pct := 0.0
 	if snap.SegmentsTotal > 0 {
 		pct = float64(snap.SegmentsDone) / float64(snap.SegmentsTotal)
 	}
-	s.WriteString("   " + theme.RenderProgressBar(pct, 70) + fmt.Sprintf("  %d%%\n", int(pct*100)))
-	s.WriteString("   " + i18n.T("tui_trans_progress",
-		snap.SegmentsDone, snap.SegmentsTotal, snap.SegmentsCached, snap.SegmentsNew, snap.FilesDone, snap.FilesTotal) + "\n\n")
-
+	progress := i18n.T("tui_trans_progress",
+		snap.SegmentsDone, snap.SegmentsTotal, snap.SegmentsCached, snap.SegmentsNew, snap.FilesDone, snap.FilesTotal)
+	lines = append(lines, theme.RenderProgressBar(pct, min(70, w-6))+fmt.Sprintf("  %d%%", int(pct*100)))
+	lines = append(append(lines, wrapJoin(strings.Split(progress, " · "), " · ", w)...), "")
 	if m.throttleMsg != "" {
-		s.WriteString("    " + theme.StyleTagWarning.Render(theme.SymWarning+" "+m.throttleMsg) + "\n\n")
+		lines = append(lines, theme.StyleTagWarning.Render(theme.SymWarning+" "+truncate(m.throttleMsg, w-4)), "")
 	}
 
-	s.WriteString("   " + boxTop(i18n.T("tui_trans_files", len(snap.Files)), 94) + "\n")
-	rows := orderedFiles(snap.Files)
-	for i, f := range rows {
+	// Colunas: caminho | status | mensagem | feitos/total; a mensagem some em telas estreitas.
+	inner := w - 4
+	const statusW, countW = 11, 13
+	pathW := inner - statusW - countW - 2
+	msgW := 0
+	if inner >= 70 {
+		msgW = pathW * 2 / 5
+		pathW -= msgW + 1
+	}
+	var rows []string
+	files := orderedFiles(snap.Files)
+	for i, f := range files {
 		if i == maxFileRows {
-			s.WriteString(fmt.Sprintf("   │ + %-92s│\n", i18n.T("tui_trans_more", len(rows)-maxFileRows)))
+			rows = append(rows, "+ "+i18n.T("tui_trans_more", len(files)-maxFileRows))
 			break
 		}
-		s.WriteString(fmt.Sprintf("   │ %-38s %-9s %-28s %5d/%-6d     │\n",
-			truncate(f.Path, 38), f.Status, truncate(f.Message, 28), f.Done, f.Total))
+		row := fit(tail(f.Path, pathW), pathW) + " " + fit(string(f.Status), statusW-1) + " "
+		if msgW > 0 {
+			row += fit(f.Message, msgW) + " "
+		}
+		rows = append(rows, row+fmt.Sprintf("%*s", countW, fmt.Sprintf("%d/%d", f.Done, f.Total)))
 	}
-	s.WriteString("   ╰──────────────────────────────────────────────────────────────────────────────────────────────╯\n")
-	return s.String()
+	lines = append(lines, box(i18n.T("tui_trans_files", len(snap.Files)), rows, w)...)
+	return indentLines(lines)
 }
 
 // orderedFiles põe os arquivos em andamento ou com problema à frente dos demais.
@@ -95,28 +98,31 @@ func orderedFiles(files []job.FileProgress) []job.FileProgress {
 
 func (m *Model) renderResult() string {
 	snap := m.snapshot
-	var s strings.Builder
+	w := m.contentWidth() - len(indent) - 1
 	title := i18n.T("tui_result_ok")
 	if m.runErr != nil {
 		title = i18n.T("tui_result_fail")
 	}
-	s.WriteString("     " + theme.StyleTitle.Render(title) + "\n")
+	lines := []string{theme.StyleHeader.Render(title)}
 	if m.runErr != nil {
-		s.WriteString("   " + theme.StyleTagError.Render(theme.SymCross+" "+runErrorText(m.runErr)) + "\n\n")
+		lines = append(lines, theme.StyleTagError.Render(theme.SymCross+" "+truncate(runErrorText(m.runErr), w-4)))
 	} else {
-		s.WriteString("   " + i18n.T("tui_result_done", snap.GameName, snap.Duration.Round(10_000_000)) + "\n\n")
+		lines = append(lines, i18n.T("tui_result_done", snap.GameName, snap.Duration.Round(10_000_000)))
 	}
+	lines = append(lines, "")
 
 	counts := map[event.StatusType]int{}
 	for _, f := range snap.Files {
 		counts[f.Status]++
 	}
-	s.WriteString("   " + i18n.T("tui_result_counts",
+	// A linha de contagens é longa; quebra nos grupos "● n rótulo" em vez de cortar.
+	summary := strings.TrimSpace(i18n.T("tui_result_counts",
 		theme.SymBullet, counts[event.StatusSuccess]+counts[event.StatusCached],
 		theme.SymBullet, counts[event.StatusPartial],
 		theme.SymBullet, counts[event.StatusError],
 		theme.SymBullet, snap.SegmentsNew,
 		theme.SymBullet, snap.SegmentsCached))
+	lines = append(append(lines, wrapJoin(strings.Split(summary, "   "), "   ", w)...), "")
 
 	listed := 0
 	for _, f := range snap.Files {
@@ -131,38 +137,38 @@ func (m *Model) renderResult() string {
 		if f.Status == event.StatusError {
 			tag = theme.StyleTagError.Render(theme.SymCross + " " + i18n.T("tui_tag_error"))
 		}
-		s.WriteString(fmt.Sprintf("    %s %s: %s\n", tag, truncate(f.Path, 40), truncate(f.Message, 60)))
+		lines = append(lines, truncate(" "+tag+" "+f.Path+": "+f.Message, w))
 	}
 	if listed > 0 {
-		s.WriteString("\n")
+		lines = append(lines, "")
 	}
 
-	s.WriteString("   " + boxTop(i18n.T("ui_result_where"), 96) + "\n")
-	s.WriteString(fmt.Sprintf("   │ %-20s  %-71s│\n", i18n.T("tui_result_ok"), truncate(snap.GamePath, 70)))
-	s.WriteString(fmt.Sprintf("   │ %-20s  %-71s│\n", i18n.T("tui_where_backup"), truncate(snap.BackupPath, 70)))
-	s.WriteString(fmt.Sprintf("   │ %-20s  %-71s│\n", i18n.T("tui_where_log"), truncate(snap.MetaPath, 70)))
-	s.WriteString("   ╰──────────────────────────────────────────────────────────────────────────────────────────────╯\n\n")
-	s.WriteString("   " + i18n.T("tui_result_exit", snap.ExitCode))
-	return s.String()
+	labelW := min(20, (w-4)/3)
+	where := func(label, path string) string { return fit(label, labelW) + "  " + tail(path, w-4-labelW-2) }
+	lines = append(lines, box(i18n.T("ui_result_where"), []string{
+		where(i18n.T("tui_result_ok"), snap.GamePath),
+		where(i18n.T("tui_where_backup"), snap.BackupPath),
+		where(i18n.T("tui_where_log"), snap.MetaPath),
+	}, w)...)
+	lines = append(lines, "", strings.TrimSpace(i18n.T("tui_result_exit", snap.ExitCode)))
+	return indentLines(lines)
 }
 
 func (m *Model) renderReviewing() string {
-	var s strings.Builder
-	s.WriteString("   " + theme.StyleHeader.Render(i18n.T("ui_review_title")) + "   " + i18n.T("tui_review_sub") + "\n")
+	w := m.contentWidth() - len(indent) - 1
+	lines := []string{truncate(theme.StyleHeader.Render(i18n.T("ui_review_title"))+"   "+i18n.T("tui_review_sub"), w)}
 
-	chips := ""
+	chips := make([]string, len(m.filterLabels))
 	for i, f := range m.filterLabels {
+		chips[i] = " " + f + " "
 		if i == m.selectedFilter {
-			chips += fmt.Sprintf("[%s]  ", f)
-		} else {
-			chips += f + "  "
+			chips[i] = theme.StyleAccent.Render("[" + f + "]")
 		}
 	}
-	s.WriteString("   " + chips + "\n\n")
+	lines = append(lines, strings.Join(chips, " "), "")
 
 	if len(m.reviewItems) == 0 {
-		s.WriteString("   " + i18n.T("tui_review_empty") + "\n")
-		return s.String()
+		return indentLines(append(lines, i18n.T("tui_review_empty")))
 	}
 
 	const window = 8
@@ -171,24 +177,27 @@ func (m *Model) renderReviewing() string {
 		it := m.reviewItems[i]
 		cursor := "  "
 		if i == m.selectedSegmentIdx {
-			cursor = "› "
+			cursor = theme.StyleAccent.Render(theme.SymArrow + " ")
 		}
-		tag := theme.SymBullet + " ok     "
+		tag := theme.StyleMuted.Render(fit(theme.SymBullet+" ok", 10))
 		if it.Status == "partial" {
-			tag = theme.StyleTagWarning.Render(theme.SymBullet + " " + i18n.T("tui_tag_partial"))
+			tag = theme.StyleTagWarning.Render(fit(theme.SymBullet+" "+i18n.T("tui_tag_partial"), 8))
 		}
-		s.WriteString(fmt.Sprintf("   %s%s  %s\n", cursor, tag, truncate(oneLine(it.Source), 80)))
+		lines = append(lines, cursor+tag+"  "+truncate(oneLine(it.Source), w-14))
 	}
 
 	it := m.reviewItems[m.selectedSegmentIdx]
-	s.WriteString("\n   " + i18n.T("tui_review_file") + truncate(it.File, 85) + "\n")
-	s.WriteString("   " + i18n.T("tui_review_source") + truncate(oneLine(it.Source), 85) + "\n")
+	detail := func(label, value string) string { return label + truncate(value, w-ansi.StringWidth(label)) }
+	lines = append(lines, "",
+		detail(i18n.T("tui_review_file"), it.File),
+		detail(i18n.T("tui_review_source"), oneLine(it.Source)))
 	if m.editing {
-		s.WriteString("   " + i18n.T("tui_review_target") + truncate(oneLine(m.editBuf), 85) + "▌\n")
+		label := i18n.T("tui_review_target")
+		lines = append(lines, label+tail(oneLine(m.editBuf), w-ansi.StringWidth(label)-1)+"▌")
 	} else {
-		s.WriteString("   " + i18n.T("tui_review_target") + truncate(oneLine(it.Target), 85) + "\n")
+		lines = append(lines, detail(i18n.T("tui_review_target"), oneLine(it.Target)))
 	}
-	return s.String()
+	return indentLines(lines)
 }
 
 func oneLine(s string) string { return strings.ReplaceAll(s, "\n", "⏎") }

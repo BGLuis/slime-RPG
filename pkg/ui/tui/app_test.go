@@ -6,7 +6,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BGLuis/slime-rpg/pkg/detector"
+	"github.com/BGLuis/slime-rpg/pkg/formats"
+	"github.com/BGLuis/slime-rpg/pkg/i18n"
+	"github.com/BGLuis/slime-rpg/pkg/job"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestModel_StepTransitions(t *testing.T) {
@@ -148,9 +153,121 @@ func TestConfigureShowsExtractorOptionsAndAcceptsInput(t *testing.T) {
 	if !strings.Contains(m.View(), "Delimitador") {
 		t.Fatal("a tela Configurar devia listar as opções do CSV detectado")
 	}
-	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	for !m.editingText() {
+		m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	}
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n', 'o', 't', 'e'}})
 	if got := m.fieldValues["csv.columns"]; got != "note" {
 		t.Errorf("csv.columns = %q, esperava note", got)
+	}
+}
+
+// Na tela Configurar, ↑↓ escolhem a linha e ←→ mudam só o valor dela; num campo de
+// texto as letras são digitadas e as setas não podem trocar o serviço por baixo do usuário.
+func TestConfigureNavigatesByFocusedRow(t *testing.T) {
+	game, _ := writeGame(t)
+	m := NewModel(game)
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	key := func(k tea.KeyType) { m.Update(tea.KeyMsg{Type: k}) }
+
+	key(tea.KeyDown) // origem
+	key(tea.KeyLeft)
+	if m.sourceLang != "it" {
+		t.Errorf("← na origem devia voltar ja→it, deu %q", m.sourceLang)
+	}
+	key(tea.KeyDown) // destino
+	key(tea.KeyRight)
+	if m.targetLang != "en" || m.sourceLang != "it" {
+		t.Errorf("→ no destino devia mudar só o destino: origem=%q destino=%q", m.sourceLang, m.targetLang)
+	}
+
+	key(tea.KeyUp)
+	key(tea.KeyUp) // serviço
+	key(tea.KeyLeft)
+	if m.providers[m.selectedProvider] != i18n.T("tui_provider_memory") {
+		t.Errorf("← no primeiro serviço devia dar a volta até o último, deu %q", m.providers[m.selectedProvider])
+	}
+	key(tea.KeyLeft) // Ollama: ganha os campos de modelo e endereço
+	for !m.editingText() {
+		key(tea.KeyDown)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("sdx")})
+	key(tea.KeyRight)
+	if got := m.fieldValues["ollama_model"]; got != "sdx" || providerIDs[m.selectedProvider] != "ollama" {
+		t.Errorf("campo em foco devia receber as letras e manter o Ollama: valor=%q serviço=%d", got, m.selectedProvider)
+	}
+	if m.targetLang != "en" || m.enableProxies {
+		t.Error("atalhos s/d/x não podem agir enquanto se digita num campo")
+	}
+
+	key(tea.KeyUp) // incremental: proxies não aparece fora do Google
+	if m.focusedRow().kind != rowIncremental {
+		t.Fatalf("esperava foco em incremental, está em %v", m.focusedRow().kind)
+	}
+}
+
+func TestConfigureBoolFieldTogglesInsteadOfTyping(t *testing.T) {
+	m := NewModel(t.TempDir())
+	m.setGame(t.TempDir(), &detector.DetectionResult{Engine: "wolfrpg"})
+	m.view = ViewConfigure
+	for m.focusedRow().field.Key != formats.OptWolfPreserveTit {
+		m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if got := m.extractorOptions()[formats.OptWolfPreserveTit]; got != "false" {
+		t.Errorf("espaço devia desligar o padrão true, opção = %q", got)
+	}
+}
+
+// Nenhuma linha pode passar da largura do terminal, nem com texto japonês (2 colunas por letra).
+func TestViewsFitTerminalWidth(t *testing.T) {
+	game, _ := writeGame(t)
+	for _, width := range []int{60, 80, 120} {
+		m := NewModel(game)
+		m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+		m.selectedProvider = 2
+		m.detectedGame.GameName = strings.Repeat("勇者の旅", 10)
+		m.snapshot.Files = []job.FileProgress{{Path: strings.Repeat("マップ/", 20), Status: "error", Message: strings.Repeat("失敗", 30)}}
+		m.reviewItems = []job.ReviewItem{{Source: strings.Repeat("こんにちは", 30), Target: "olá", File: "Map001.json"}}
+		for _, v := range []ViewState{ViewOpenGame, ViewConfigure, ViewTranslating, ViewReviewing, ViewResult} {
+			m.view = v
+			lines := strings.Split(m.View(), "\n")
+			for i, l := range lines {
+				if w := ansi.StringWidth(l); w > width {
+					t.Errorf("largura %d, view %v, linha %d com %d colunas: %q", width, v, i, w, ansi.Strip(l))
+				}
+			}
+			if v != ViewConfigure {
+				continue
+			}
+			// Bordas das caixas alinhadas: toda linha da caixa tem a mesma largura que o topo.
+			var boxW int
+			for _, l := range lines {
+				l = strings.TrimSpace(ansi.Strip(l))
+				switch {
+				case strings.HasPrefix(l, "╭"):
+					boxW = ansi.StringWidth(strings.SplitAfter(l, "╮")[0])
+				case boxW > 0 && strings.HasPrefix(l, "│"):
+					if got := ansi.StringWidth(l[:strings.Index(l[3:], "│")+3+len("│")]); got != boxW {
+						t.Errorf("largura %d: linha da caixa com %d colunas, topo com %d: %q", width, got, boxW, l)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestViewKeepsHeaderWhenTerminalIsShort(t *testing.T) {
+	game, _ := writeGame(t)
+	m := NewModel(game)
+	m.Update(tea.WindowSizeMsg{Width: 70, Height: 20})
+	m.view = ViewConfigure
+	m.selectedProvider = 2
+	out := m.View()
+	if n := len(strings.Split(out, "\n")); n > 20 {
+		t.Errorf("view com %d linhas num terminal de 20", n)
+	}
+	if !strings.Contains(out, "Slime") || !strings.Contains(out, "enter") {
+		t.Error("cabeçalho e rodapé precisam continuar visíveis")
 	}
 }
