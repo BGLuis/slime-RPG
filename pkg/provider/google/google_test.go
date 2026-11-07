@@ -33,6 +33,17 @@ func gtxFake(t *testing.T, translate func(string) string, requests *atomic.Int32
 	return ts
 }
 
+// offline aponta os fallbacks para um servidor local que sempre falha, evitando rede real.
+func offline(t *testing.T, tr *google.GoogleTranslator) {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	}))
+	t.Cleanup(ts.Close)
+	tr.SetWebEndpoint(ts.URL)
+	tr.SetMyMemoryEndpoint(ts.URL)
+}
+
 func TestGoogleTranslator_SendsBatchInOneRequest(t *testing.T) {
 	var requests atomic.Int32
 	dict := map[string]string{"Hello": "Olá", "World": "Mundo"}
@@ -109,6 +120,7 @@ func TestGoogleTranslator_RateLimitThroughProxyEvictsProxyNotDirect(t *testing.T
 
 	tr := google.NewGoogleTranslator(pm)
 	tr.SetEndpoint("http://translate.invalid/translate_a/single")
+	offline(t, tr)
 
 	_, err := tr.TranslateBatch(context.Background(), []string{"Hello"}, "en", "pt")
 	if !errors.Is(err, provider.ErrRateLimited) {
@@ -128,6 +140,7 @@ func TestGoogleTranslator_DirectRateLimitBlocksDirectIP(t *testing.T) {
 	pm := proxy.NewManager(true, nil)
 	tr := google.NewGoogleTranslator(pm)
 	tr.SetEndpoint(ts.URL)
+	offline(t, tr)
 
 	_, _ = tr.TranslateBatch(context.Background(), []string{"Hello"}, "en", "pt")
 	if !pm.DirectBlocked() {

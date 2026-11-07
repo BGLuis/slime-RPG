@@ -18,8 +18,10 @@ import (
 )
 
 const (
-	EndpointGTX = "https://translate.googleapis.com/translate_a/single"
-	UserAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+	EndpointGTX      = "https://translate.googleapis.com/translate_a/single"
+	EndpointWeb      = "https://translate.google.com/m"
+	EndpointMyMemory = "http://api.mymemory.translated.net/get"
+	UserAgent        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
 
 // Delimiter separa os textos de um lote numa única requisição. O Google preserva a
@@ -31,6 +33,8 @@ var mangledDelimiterRE = regexp.MustCompile(`\s*<span[^>]*>\s*</span>\s*`)
 // GoogleTranslator implementa o provedor de tradução via endpoint público Google GTX com suporte a proxies rotativos.
 type GoogleTranslator struct {
 	endpoint        string
+	webEndpoint     string
+	myMemoryURL     string
 	proxyManager    *proxy.Manager
 	pacingInterval  time.Duration
 	lastRequestTime time.Time
@@ -44,6 +48,8 @@ func NewGoogleTranslator(pm *proxy.Manager) *GoogleTranslator {
 	}
 	return &GoogleTranslator{
 		endpoint:       EndpointGTX,
+		webEndpoint:    EndpointWeb,
+		myMemoryURL:    EndpointMyMemory,
 		proxyManager:   pm,
 		pacingInterval: 200 * time.Millisecond,
 	}
@@ -74,6 +80,16 @@ func (g *GoogleTranslator) SetEndpoint(endpoint string) {
 	g.endpoint = endpoint
 }
 
+// SetWebEndpoint sobrescreve o endpoint web (fallback) para testes locais.
+func (g *GoogleTranslator) SetWebEndpoint(endpoint string) {
+	g.webEndpoint = endpoint
+}
+
+// SetMyMemoryEndpoint sobrescreve o endpoint do MyMemory (último fallback) para testes locais.
+func (g *GoogleTranslator) SetMyMemoryEndpoint(endpoint string) {
+	g.myMemoryURL = endpoint
+}
+
 // TranslateBatch envia o lote numa única requisição, unindo os textos com
 // Delimiter. Se o Google deformar o delimitador a ponto de a contagem não bater,
 // os textos são traduzidos um a um para não desalinhar as traduções.
@@ -94,7 +110,7 @@ func (g *GoogleTranslator) TranslateBatch(ctx context.Context, texts []string, s
 	for i, idx := range pending {
 		joined[i] = texts[idx]
 	}
-	translated, err := g.translateSingle(ctx, strings.Join(joined, Delimiter), srcLang, tgtLang)
+	translated, err := g.translateRaw(ctx, strings.Join(joined, Delimiter), srcLang, tgtLang)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +121,7 @@ func (g *GoogleTranslator) TranslateBatch(ctx context.Context, texts []string, s
 	}
 	if len(parts) != len(pending) {
 		for _, idx := range pending {
-			single, err := g.translateSingle(ctx, texts[idx], srcLang, tgtLang)
+			single, err := g.translateRaw(ctx, texts[idx], srcLang, tgtLang)
 			if err != nil {
 				return nil, err
 			}
@@ -120,7 +136,7 @@ func (g *GoogleTranslator) TranslateBatch(ctx context.Context, texts []string, s
 	return results, nil
 }
 
-func (g *GoogleTranslator) translateSingle(ctx context.Context, text, srcLang, tgtLang string) (string, error) {
+func (g *GoogleTranslator) translateGTX(ctx context.Context, text, srcLang, tgtLang string) (string, error) {
 	client, proxyURL := g.proxyManager.Client(10 * time.Second)
 	if proxyURL == "" {
 		// O pacing protege só o IP direto; cada proxy tem seu próprio limite.
