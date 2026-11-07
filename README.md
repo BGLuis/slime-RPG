@@ -24,7 +24,22 @@ Esta branch (`feat/go-port`) implementa a reescrita completa do projeto em **Go 
 
 ---
 
-## Pré-requisitos
+## Instalação no Arch Linux (`yay` / AUR)
+
+O pacote `slime-rpg-bin` instala a versão completa (**TUI + GUI + CLI**), atalhos de terminal (`slime`, `slm`, `slime-gui`), atalho no menu de aplicativos e menus de contexto ("Translate Game Folder") para Nemo e KDE Dolphin:
+
+```bash
+yay -S slime-rpg-bin
+```
+
+Com o pacote instalado:
+- **No terminal sem argumentos (`slime` ou `slm`)** → abre a **TUI** interativa (Bubble Tea).
+- **Pelo atalho do sistema, menu de contexto de pasta ou `slime-gui`** → abre a **GUI** desktop (MyGo + WebKitGTK).
+- **No terminal passando parâmetros (`slime -i ./Jogo -s ja -d pt`, `slime verify`, `slime tm`)** → executa a **CLI** em modo headless.
+
+---
+
+## Pré-requisitos (Compilação Manual)
 
 - [Go](https://go.dev/dl/) 1.27 ou superior
 - [Task](https://taskfile.dev) (gerenciador de tarefas em Go)

@@ -37,21 +37,55 @@ jobs:
             exit 1
           fi
 
+      - name: go mod verify
+        run: go mod verify
+
       - name: go vet
         run: go vet ./...
 
-      # O -race precisa de CGO; o binário distribuído continua sem CGO (passos abaixo).
+      # O -race precisa de CGO; o binario distribuido continua sem CGO (passos abaixo).
       - name: go test
         run: go test -race ./...
 
-      - name: build linux
+      - name: build linux amd64
         env:
           CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
         run: go build -trimpath -o /dev/null ./...
 
-      - name: build windows
+      - name: build linux arm64
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: arm64
+        run: go build -trimpath -o /dev/null ./cmd/slime
+
+      - name: build windows amd64
         env:
           CGO_ENABLED: "0"
           GOOS: windows
           GOARCH: amd64
         run: go build -trimpath -o /dev/null ./cmd/slime
+
+  # Testes no Windows rodam apenas uma vez por merge na main (1.7x preco de Linux).
+  test-windows:
+    name: test (windows-2025)
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: read # checkout do codigo do repositorio
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: go test
+        run: go test ./...

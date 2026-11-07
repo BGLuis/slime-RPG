@@ -52,7 +52,11 @@ func main() {
 	i18n.Set(settings.ResolveLanguage(langFlag, os.Getenv))
 	cmd := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		cmd, args = args[0], args[1:]
+		if isGUIExecutable(os.Args[0]) && !isKnownSubcommand(args[0]) {
+			// Quando invocado via atalho slime-gui <pasta>, o primeiro argumento posicional é a pasta do jogo.
+		} else {
+			cmd, args = args[0], args[1:]
+		}
 	}
 
 	switch cmd {
@@ -75,7 +79,7 @@ func main() {
 		return
 	case "lang":
 		os.Exit(runLang(args))
-	case "", "translate":
+	case "", "translate", "tui", "gui":
 	default:
 		fmt.Fprint(os.Stderr, i18n.T("unknown_command", cmd))
 		printUsage()
@@ -86,31 +90,96 @@ func main() {
 		return
 	}
 
-	var o translateOptions
-	fs := flag.NewFlagSet("slime", flag.ExitOnError)
-	fs.Usage = printUsage
-	o.register(fs)
-	_ = fs.Parse(args)
+	isTerminal := isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd())
+	mode, o, err := resolveDispatch(os.Args[0], cmd, args, isTerminal, flag.ExitOnError)
+	if err != nil {
+		os.Exit(2)
+	}
 
-	if o.gui {
+	switch mode {
+	case modeGUI:
 		if err := desktop.Run(o.input); err != nil {
 			fmt.Fprint(os.Stderr, i18n.T("err_gui_start", err))
 			os.Exit(1)
 		}
 		return
-	}
-
-	isTerminal := isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd())
-	if (o.tui || (isTerminal && len(args) == 0 && cmd == "")) && !o.dryRun {
+	case modeTUI:
 		p := tea.NewProgram(tui.NewModel(o.input), tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			fmt.Fprint(os.Stderr, i18n.T("err_tui_start", err))
 			os.Exit(1)
 		}
 		return
+	default:
+		os.Exit(runHeadless(o))
+	}
+}
+
+type uiMode int
+
+const (
+	modeCLI uiMode = iota
+	modeTUI
+	modeGUI
+)
+
+func isGUIExecutable(argv0 string) bool {
+	base := strings.TrimSuffix(strings.ToLower(filepath.Base(argv0)), ".exe")
+	return base == "slime-gui"
+}
+
+func isKnownSubcommand(s string) bool {
+	switch s {
+	case "version", "help", "verify", "adopt", "filenames", "tm", "list", "lang", "translate", "tui", "gui":
+		return true
+	default:
+		return false
+	}
+}
+
+// sanitizeTrailingInputFlag remove -i/--input solto no fim dos argumentos (caso um
+// arquivo .desktop legado use "Exec=slime --gui -i %f" e seja aberto sem arquivo).
+func sanitizeTrailingInputFlag(args []string) []string {
+	if len(args) == 0 {
+		return args
+	}
+	last := args[len(args)-1]
+	if last == "-i" || last == "--input" || last == "-input" {
+		return args[:len(args)-1]
+	}
+	return args
+}
+
+func resolveDispatch(argv0, cmd string, args []string, isTerminal bool, errorHandling flag.ErrorHandling) (uiMode, translateOptions, error) {
+	cleaned := sanitizeTrailingInputFlag(args)
+	var o translateOptions
+	fs := flag.NewFlagSet("slime", errorHandling)
+	fs.Usage = printUsage
+	o.register(fs)
+	if err := fs.Parse(cleaned); err != nil {
+		return modeCLI, o, err
 	}
 
-	os.Exit(runHeadless(o))
+	if cmd == "gui" || isGUIExecutable(argv0) {
+		o.gui = true
+	}
+	if cmd == "tui" {
+		o.tui = true
+	}
+	if o.input == "." && fs.NArg() > 0 {
+		o.input = fs.Arg(0)
+	}
+
+	if o.gui {
+		return modeGUI, o, nil
+	}
+	if (o.tui || (isTerminal && len(cleaned) == 0 && cmd == "")) && !o.dryRun {
+		return modeTUI, o, nil
+	}
+	if !isTerminal && len(cleaned) == 0 && cmd == "" && !o.dryRun {
+		return modeGUI, o, nil
+	}
+	return modeCLI, o, nil
 }
 
 func printVersion() {

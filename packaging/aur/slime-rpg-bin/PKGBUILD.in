@@ -1,0 +1,91 @@
+# Maintainer: luis henrique <luishenrique.gbarbosa21@gmail.com>
+pkgname=slime-rpg-bin
+_tag='@TAG@'
+_ver='@VERSION@'
+pkgver='@PKGVER@'
+pkgrel=1
+pkgdesc='Modular game localization and translation tool (CLI, TUI and Desktop GUI) for RPG Maker, WOLF RPG, CSV and JSON'
+arch=('x86_64' 'aarch64')
+url='https://github.com/BGLuis/slime-RPG'
+license=('MIT')
+depends=('gtk3' 'webkit2gtk-4.1')
+provides=('slime-rpg')
+conflicts=('slime-rpg')
+options=('!strip' '!debug')
+source_x86_64=("slime-${pkgver}-x86_64::https://github.com/BGLuis/slime-RPG/releases/download/${_tag}/slime-${_ver}-linux-amd64")
+source_aarch64=("slime-${pkgver}-aarch64::https://github.com/BGLuis/slime-RPG/releases/download/${_tag}/slime-${_ver}-linux-arm64")
+noextract=("slime-${pkgver}-x86_64" "slime-${pkgver}-aarch64")
+sha256sums_x86_64=('@SHA256_AMD64@')
+sha256sums_aarch64=('@SHA256_ARM64@')
+
+package() {
+	install -Dm755 "${srcdir}/slime-${pkgver}-${CARCH}" "${pkgdir}/usr/bin/slime"
+	ln -s slime "${pkgdir}/usr/bin/slm"
+	ln -s slime "${pkgdir}/usr/bin/slime-gui"
+
+	install -dm755 "${pkgdir}/usr/share/applications"
+	cat > "${pkgdir}/usr/share/applications/slime.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Name=Slime RPG
+GenericName=Game Translation Tool
+Comment=Extract, mask and translate games (RPG Maker, WOLF RPG, JSON, CSV)
+Exec=slime --gui %f
+Icon=text-x-generic
+Terminal=false
+Type=Application
+Categories=Utility;Development;Translation;
+MimeType=inode/directory;
+Keywords=rpg;translation;rpgmaker;wolfrpg;localization;
+EOF
+
+	install -dm755 "${pkgdir}/usr/share/nemo/actions"
+	cat > "${pkgdir}/usr/share/nemo/actions/translate-game.nemo_action" <<'EOF'
+[Nemo Action]
+Name=Translate Game Folder
+Comment=Automatic extraction and translation of game files
+Exec=slime --gui %F
+Icon-Name=text-x-generic
+Selection=dir
+Extensions=any;
+EOF
+
+	install -dm755 "${pkgdir}/usr/share/kio/servicemenus"
+	cat > "${pkgdir}/usr/share/kio/servicemenus/slime.desktop" <<'EOF'
+[Desktop Entry]
+Type=Service
+MimeType=inode/directory;
+Actions=translateGame;
+X-KDE-Priority=TopLevel
+
+[Desktop Action translateGame]
+Name=Translate Game Folder (Slime)
+Icon=text-x-generic
+Exec=slime --gui %f
+EOF
+
+	install -dm755 "${pkgdir}/usr/share/licenses/${pkgname}"
+	cat > "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE" <<'EOF'
+MIT License
+
+Copyright (c) 2025 BGLuis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+EOF
+}

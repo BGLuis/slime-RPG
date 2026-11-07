@@ -13,7 +13,7 @@ vars:
   DATE:
     sh: date -u +"%Y-%m-%dT%H:%M:%SZ"
   LOCAL_BIN: '{{.HOME}}/.local/bin'
-  ALIASES: slm sl
+  ALIASES: slm sl slime-gui
   LDFLAGS: -X main.version={{.VERSION}} -X main.commit={{.COMMIT}} -X main.date={{.DATE}}
 
 tasks:
@@ -28,19 +28,31 @@ tasks:
       - mkdir -p {{.BIN_DIR}}
       - go build -ldflags "{{.LDFLAGS}}" -o {{.BIN_DIR}}/{{.BINARY_NAME}} {{.MAIN_PKG}}
 
+  build:linux-arm64:
+    desc: Compila o binário para Linux ARM64 (aarch64) sem necessidade de CGO
+    env:
+      CGO_ENABLED: "0"
+      GOOS: linux
+      GOARCH: arm64
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o {{.BIN_DIR}}/{{.BINARY_NAME}}-linux-arm64 {{.MAIN_PKG}}
+
   build:windows:
     desc: Compila o binário para Windows (.exe) sem necessidade de CGO
     env:
+      CGO_ENABLED: "0"
       GOOS: windows
       GOARCH: amd64
     cmds:
       - mkdir -p {{.BIN_DIR}}
-      - go build -ldflags "{{.LDFLAGS}}" -o {{.BIN_DIR}}/{{.BINARY_NAME}}.exe {{.MAIN_PKG}}
+      - go build -trimpath -ldflags "{{.LDFLAGS}}" -o {{.BIN_DIR}}/{{.BINARY_NAME}}.exe {{.MAIN_PKG}}
 
   build:all:
-    desc: Compila binários para Linux e Windows
+    desc: Compila binários para Linux (amd64/arm64) e Windows
     deps:
       - build
+      - build:linux-arm64
       - build:windows
 
   run:
@@ -157,3 +169,14 @@ tasks:
     desc: Remove o atalho de aplicativo e os menus de contexto instalados
     cmds:
       - bash scripts/linux_integration.sh uninstall "{{.LOCAL_BIN}}/{{.BINARY_NAME}}"
+
+  aur:render:
+    desc: Renderiza PKGBUILD e .SRCINFO para o pacote AUR (slime-rpg-bin)
+    deps:
+      - build
+      - build:linux-arm64
+    cmds:
+      - |
+        sha_amd64=$(sha256sum "{{.BIN_DIR}}/{{.BINARY_NAME}}" | awk '{print $1}')
+        sha_arm64=$(sha256sum "{{.BIN_DIR}}/{{.BINARY_NAME}}-linux-arm64" | awk '{print $1}')
+        bash scripts/render_aur.sh "{{.VERSION}}" "$sha_amd64" "$sha_arm64"

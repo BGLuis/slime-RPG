@@ -29,7 +29,7 @@ install() {
 Version=1.0
 Name=Slime RPG
 Comment=Game Translation Tool (RPG Maker, WOLF RPG, JSON, CSV)
-Exec="$bin" --gui -i %f
+Exec="$bin" --gui %f
 Icon=text-x-generic
 Terminal=false
 Type=Application
@@ -46,14 +46,14 @@ EOF
 [Nemo Action]
 Name=Translate Game Folder
 Comment=Automatic extraction and translation of game files
-Exec="$bin" --gui -i %F
+Exec="$bin" --gui %F
 Icon-Name=text-x-generic
 Selection=dir
 Extensions=any;
 EOF
 
     mkdir -p "$(dirname "$nautilus_script")"
-    printf '#!/bin/bash\nexec "%s" --gui -i "$1"\n' "$bin" > "$nautilus_script"
+    printf '#!/bin/bash\nexec "%s" --gui "$1"\n' "$bin" > "$nautilus_script"
     chmod +x "$nautilus_script"
     echo "✓ Ações criadas para Nemo e Nautilus"
 
@@ -69,7 +69,7 @@ X-KDE-Priority=TopLevel
 [Desktop Action translateGame]
 Name=Translate Game Folder (Slime)
 Icon=text-x-generic
-Exec="$bin" --gui -i %f
+Exec="$bin" --gui %f
 EOF
     echo "✓ Menu de serviço criado para o Dolphin (KDE)"
     echo "Talvez seja preciso reiniciar o gerenciador de arquivos (nemo -q, nautilus -q) ou fazer logout."

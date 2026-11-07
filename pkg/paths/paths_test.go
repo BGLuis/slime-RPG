@@ -45,7 +45,7 @@ func TestDataDir_Override(t *testing.T) {
 }
 
 func TestMemoryDBPath_EnvOverride(t *testing.T) {
-	customDB := "/tmp/custom_test_memory.db"
+	customDB := filepath.Join(t.TempDir(), "custom_test_memory.db")
 	orig := os.Getenv("SLIME_MEMORY_DB")
 	defer os.Setenv("SLIME_MEMORY_DB", orig)
 

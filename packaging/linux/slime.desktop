@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Name=Slime RPG
+GenericName=Game Translation Tool
+Comment=Extract, mask and translate games (RPG Maker, WOLF RPG, JSON, CSV)
+Exec=slime --gui %f
+Icon=text-x-generic
+Terminal=false
+Type=Application
+Categories=Utility;Development;Translation;
+MimeType=inode/directory;
+Keywords=rpg;translation;rpgmaker;wolfrpg;localization;

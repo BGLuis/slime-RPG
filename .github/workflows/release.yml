@@ -1,0 +1,187 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - '[0-9]*.*.*'
+  workflow_dispatch:
+
+permissions: {}
+
+# Nunca cancela uma release pela metade.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    cache-mode: none # release: nunca restaura nem grava cache
+    permissions:
+      contents: read      # checkout do codigo do repositorio
+      id-token: write     # assina o atestado SLSA de proveniencia
+      attestations: write # grava o atestado de proveniencia
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false # release: nunca restaura cache gravado por outra execucao
+
+      - name: Verify and test before packaging
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Build release binaries and AUR metadata
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ]; then
+            tag="$REF_NAME"
+          else
+            tag="v0.0.0-snapshot"
+          fi
+          ver="${tag#v}"
+          commit="${SHA:0:7}"
+          build_date="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          ldflags="-s -w -X main.version=${ver} -X main.commit=${commit} -X main.date=${build_date}"
+
+          mkdir -p dist aur
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags "$ldflags" \
+            -o "dist/slime-${ver}-linux-amd64" ./cmd/slime
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -trimpath -ldflags "$ldflags" \
+            -o "dist/slime-${ver}-linux-arm64" ./cmd/slime
+
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+            go build -trimpath -ldflags "$ldflags" \
+            -o "dist/slime-${ver}-windows-amd64.exe" ./cmd/slime
+
+          (
+            cd dist
+            sha256sum "slime-${ver}-linux-amd64" "slime-${ver}-linux-arm64" "slime-${ver}-windows-amd64.exe" > SHA256SUMS
+          )
+
+          sha_amd64="$(awk '/linux-amd64$/ {print $1}' dist/SHA256SUMS)"
+          sha_arm64="$(awk '/linux-arm64$/ {print $1}' dist/SHA256SUMS)"
+          bash scripts/render_aur.sh "$tag" "$sha_amd64" "$sha_arm64" aur
+          cp aur/PKGBUILD dist/PKGBUILD
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/*
+          retention-days: 7
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: aur-package
+          path: |
+            aur/PKGBUILD
+            aur/.SRCINFO
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: error
+
+  github-release:
+    name: github-release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    cache-mode: none # possui permissao de escrita: sem cache
+    permissions:
+      contents: write # cria ou atualiza a GitHub Release e envia os binarios
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --draft=false
+          else
+            gh release create "$TAG" dist/* --verify-tag --generate-notes
+          fi
+
+  aur-publish:
+    name: aur-publish
+    needs: [build, github-release]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    cache-mode: none # publica no AUR: sem cache
+    environment:
+      name: aur
+      url: https://aur.archlinux.org/packages/slime-rpg-bin
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aur-package
+          path: aur/
+
+      - name: Push PKGBUILD and .SRCINFO to AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "### AUR Publish ignorado" >> "$GITHUB_STEP_SUMMARY"
+            echo "A secret \`AUR_SSH_PRIVATE_KEY\` ainda nao esta configurada no repositorio. O \`PKGBUILD\` foi anexado aos assets da GitHub Release." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          install -dm700 "$HOME/.ssh"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+
+          cat > "$HOME/.ssh/config" <<'EOF'
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            User aur
+            StrictHostKeyChecking accept-new
+          EOF
+          chmod 600 "$HOME/.ssh/config"
+
+          work="$(mktemp -d)"
+          git clone ssh://aur@aur.archlinux.org/slime-rpg-bin.git "$work/repo"
+          cp aur/PKGBUILD aur/.SRCINFO "$work/repo/"
+
+          cd "$work/repo"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "AUR ja esta atualizado para $TAG."
+            exit 0
+          fi
+          git commit -m "chore: release ${TAG}"
+          git push origin master
