@@ -295,18 +295,20 @@ func TestConfigureChangesReestimateAndReachTheJob(t *testing.T) {
 
 	p.key(tea.KeyMsg{Type: tea.KeyRight})
 	p.key(tea.KeyMsg{Type: tea.KeyRight}) // Ollama
+	p.until(func() bool { return !m.estimating })
+	seqBeforeTyping := m.estimateSeq
 	fields := m.configFields()
 	if len(fields) == 0 || fields[len(fields)-1].Key != "ollama_host" {
 		t.Fatalf("Ollama devia mostrar modelo e endereço: %+v", fields)
 	}
-	p.key(tea.KeyMsg{Type: tea.KeyTab})
+	for !m.editingText() {
+		p.key(tea.KeyMsg{Type: tea.KeyDown})
+	}
 	for _, r := range "llama3" {
 		p.key(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
-	p.key(tea.KeyMsg{Type: tea.KeyTab})
-	p.key(tea.KeyMsg{Type: tea.KeyTab})
-	if m.fieldFocus != -1 {
-		t.Fatalf("fieldFocus = %d", m.fieldFocus)
+	if m.estimateSeq != seqBeforeTyping {
+		t.Fatal("digitar num campo não deve disparar estimativas a cada tecla")
 	}
 	p.key(enter)
 	p.until(func() bool { return m.view == ViewResult })

@@ -25,6 +25,9 @@ import (
 // providerIDs acompanha Model.providers; o último item é o modo só-memória, sem provedor.
 var providerIDs = []string{"google", "deepl", "ollama", ""}
 
+// providerHints são as chaves i18n da dica de cada provedor, na mesma ordem de providerIDs.
+var providerHints = []string{"ui_hint_google", "ui_hint_deepl", "ui_hint_ollama", "tui_hint_memory"}
+
 // ProviderFactory cria o provedor escolhido na tela Configurar.
 type ProviderFactory func(p ProviderParams) (provider.Provider, error)
 

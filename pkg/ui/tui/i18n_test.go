@@ -57,9 +57,12 @@ func TestLanguageCyclePreservesOrder(t *testing.T) {
 	want := []string{"pt", "en", "es", "fr", "it", "ja", "auto", "pt"}
 	got := []string{"pt"}
 	for range want[1:] {
-		got = append(got, nextLang(got[len(got)-1]))
+		got = append(got, stepLang(got[len(got)-1], 1))
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("ciclo de idiomas = %v, quer %v", got, want)
+	}
+	if back := stepLang("pt", -1); back != "auto" {
+		t.Errorf("voltar de pt devia dar a volta até auto, deu %q", back)
 	}
 }
