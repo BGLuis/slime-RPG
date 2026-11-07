@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sort"
@@ -73,6 +75,7 @@ OPÇÕES DE TRADUÇÃO:
   --incremental      Traduz só arquivos novos ou alterados (padrão: true)
   --no-proxy         Não usar o pool de proxies quando o Google bloquear o IP
   --dry-run          Calcula a estimativa pré-voo sem alterar arquivos
+  --review           Pausa antes de gravar para inspecionar a pasta de processamento (só em terminal)
   --json             Emite eventos em JSON Lines para automação
   --tui / --gui      Força a interface de terminal ou desktop
   -h, --help         Exibe esta mensagem
@@ -171,7 +174,7 @@ type translateOptions struct {
 	synopsis, model                           string
 	noBackup, memoryOnly, switchEngine        bool
 	incremental, noProxy, dryRun, jsonOutput  bool
-	tui, gui                                  bool
+	tui, gui, review                          bool
 }
 
 func (o *translateOptions) register(fs *flag.FlagSet) {
@@ -199,6 +202,7 @@ func (o *translateOptions) register(fs *flag.FlagSet) {
 	boolean(&o.noProxy, !proxy.EnabledByEnv(), "Sem pool de proxies", "no-proxy")
 	boolean(&o.dryRun, false, "Estimativa sem alterar arquivos", "dry-run")
 	boolean(&o.jsonOutput, false, "Saída em JSON Lines", "json")
+	boolean(&o.review, false, "Pausa para revisar a pasta de processamento antes de gravar", "review")
 	boolean(&o.tui, false, "Forçar Terminal UI", "tui")
 	boolean(&o.gui, false, "Forçar Desktop UI", "gui")
 }
@@ -264,6 +268,7 @@ func runHeadless(o translateOptions) int {
 		OutputDir:     o.output,
 		MemoryOnly:    o.memoryOnly,
 		SwitchEngine:  o.switchEngine,
+		Review:        reviewHook(o),
 	}, bus, mem, prov)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -318,6 +323,24 @@ func runHeadless(o translateOptions) int {
 		printSummary(snap)
 	}
 	return snap.ExitCode
+}
+
+// reviewHook devolve a pausa de revisão manual, ativa só com --review e stdin em
+// terminal para não travar automações nem a saída --json.
+func reviewHook(o translateOptions) func(string) bool {
+	if !o.review || !(isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd())) {
+		return nil
+	}
+	return func(dir string) bool {
+		return confirmReview(os.Stdin, os.Stderr, dir)
+	}
+}
+
+func confirmReview(in io.Reader, out io.Writer, dir string) bool {
+	fmt.Fprintf(out, "\nRevise os arquivos traduzidos em: %s\nEnter para gravar no jogo, 'n' para abortar: ", dir)
+	line, _ := bufio.NewReader(in).ReadString('\n')
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer != "n" && answer != "no" && answer != "nao" && answer != "não"
 }
 
 func printEvent(env event.Envelope) {
