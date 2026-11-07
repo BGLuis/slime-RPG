@@ -124,3 +124,18 @@ func TestEnsureDirAndFileDir(t *testing.T) {
 		t.Fatalf("diretório pai do arquivo não foi criado")
 	}
 }
+
+func TestSettingsDBPath(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("SLIME_SETTINGS_DB", "")
+	t.Setenv("SLIME_CONFIG_DIR", cfg)
+	got, err := paths.SettingsDBPath()
+	if err != nil || got != filepath.Join(cfg, "settings.db") {
+		t.Errorf("SettingsDBPath = %q, %v", got, err)
+	}
+	override := filepath.Join(cfg, "outro.db")
+	t.Setenv("SLIME_SETTINGS_DB", override)
+	if got, _ := paths.SettingsDBPath(); got != override {
+		t.Errorf("override = %q, quer %q", got, override)
+	}
+}

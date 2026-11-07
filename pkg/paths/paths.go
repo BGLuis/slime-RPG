@@ -178,3 +178,20 @@ func EnsureFileDir(filePath string) error {
 	dir := filepath.Dir(filePath)
 	return EnsureDir(dir)
 }
+
+// SettingsDBPath resolve o caminho do settings.db (preferências do usuário),
+// compartilhado com a versão Python: SLIME_SETTINGS_DB ou ConfigDir()/settings.db.
+func SettingsDBPath() (string, error) {
+	if env := os.Getenv("SLIME_SETTINGS_DB"); env != "" {
+		abs, err := filepath.Abs(env)
+		if err != nil {
+			return "", fmt.Errorf("invalid SLIME_SETTINGS_DB: %w", err)
+		}
+		return abs, nil
+	}
+	dir, err := ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "settings.db"), nil
+}

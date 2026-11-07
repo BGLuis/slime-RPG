@@ -12,6 +12,36 @@
     return null;
   };
 
+  // Tabela de strings do idioma ativo, preenchida por loadLanguage()
+  let strings = {};
+  const t = (key, ...args) => {
+    let i = 0;
+    return (strings[key] || key).replace(/%[sd%]/g, m => (m === '%%' ? '%' : String(args[i++])));
+  };
+
+  function applyI18n() {
+    document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
+    document.querySelectorAll('[data-i18n-html]').forEach(el => { el.innerHTML = t(el.dataset.i18nHtml); });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach(el => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+    const sel = document.getElementById('uiLanguage');
+    sel.title = t('ui_label_language');
+    sel.setAttribute('aria-label', t('ui_label_language'));
+    document.title = t('ui_title');
+  }
+
+  async function loadLanguage() {
+    const info = await mygoCall('Slime.GetLanguage');
+    if (!info) return;
+    strings = info.strings || {};
+    const sel = document.getElementById('uiLanguage');
+    sel.replaceChildren(...info.options.map(o => new Option(o.name, o.code, false, o.code === info.current)));
+    sel.addEventListener('change', async () => {
+      const message = await mygoCall('Slime.SetLanguage', sel.value);
+      if (message) alert(message);
+    });
+    applyI18n();
+  }
+
   const appState = {
     step: 1, // 1: Jogo, 2: Configurar, 3: Traduzir, 3.5: Revisar, 4: Resultado
     gameDir: '.',
@@ -115,13 +145,18 @@
   // Inicialização e Detecção
   async function init() {
     try {
+      await loadLanguage();
+    } catch (e) {
+      console.error('Falha ao carregar idioma:', e);
+    }
+    try {
       const det = await mygoCall('Slime.DetectGame', appState.gameDir);
       if (det) {
         appState.detectedGame = det;
-        dom.detectedTitle.textContent = `› ${det.gameName || 'Jogo detectado aqui'}`;
+        dom.detectedTitle.textContent = `› ${det.gameName || t('ui_detected_here')}`;
         dom.detectedEngine.textContent = det.engine;
         dom.detectedPath.textContent = det.dataDir || 'www/data';
-        dom.detectedLang.textContent = `${det.probableLang === 'ja' ? 'Japonês' : det.probableLang} detectado`;
+        dom.detectedLang.textContent = t('ui_lang_detected', det.probableLang === 'ja' ? t('ui_lang_japanese') : det.probableLang);
       }
     } catch (e) {
       console.error('Falha na detecção inicial:', e);
@@ -182,8 +217,8 @@
       if (est) {
         dom.estToTranslate.textContent = est.toTranslate;
         dom.estCacheProgress.style.width = `${est.cacheHitPercent}%`;
-        dom.estCacheLabel.textContent = `${est.cachedSegments} de ${est.totalSegments} já na memória (${est.cacheHitPercent}%)`;
-        dom.estFiles.textContent = `${est.changedFiles} de ${est.totalFiles}`;
+        dom.estCacheLabel.textContent = t('ui_est_cache', est.cachedSegments, est.totalSegments, est.cacheHitPercent);
+        dom.estFiles.textContent = t('ui_files_of', est.changedFiles, est.totalFiles);
         dom.estTime.textContent = est.estimatedTimeLabel;
         dom.estCost.textContent = est.costLabel;
         dom.estBackup.textContent = est.backupPath;
@@ -209,13 +244,7 @@
         btn.classList.add('active');
         appState.provider = btn.getAttribute('data-provider');
 
-        if (appState.provider === 'google') {
-          dom.providerHint.textContent = 'Grátis e sem chave de API; pode limitar requisições em grandes lotes.';
-        } else if (appState.provider === 'deepl') {
-          dom.providerHint.textContent = 'Traduções neurais de alta fidelidade; requer chave da API (Free ou Pro).';
-        } else if (appState.provider === 'ollama') {
-          dom.providerHint.textContent = 'LLM local privada e offline (ex: llama3, qwen2.5, gemma2).';
-        }
+        dom.providerHint.textContent = t('ui_hint_' + appState.provider);
         dom.apiKeyGroup.style.display = appState.provider === 'deepl' ? '' : 'none';
         refreshEstimate();
       });
@@ -260,16 +289,16 @@
       if (appState.paused) {
         await mygoCall('Slime.ResumeJob');
         appState.paused = false;
-        dom.btnPauseResume.textContent = 'Pausar';
+        dom.btnPauseResume.textContent = t('ui_btn_pause');
       } else {
         await mygoCall('Slime.PauseJob');
         appState.paused = true;
-        dom.btnPauseResume.textContent = 'Retomar';
+        dom.btnPauseResume.textContent = t('ui_btn_resume');
       }
     });
 
     dom.btnCancelJob.addEventListener('click', async () => {
-      if (confirm('Deseja realmente cancelar o processo de tradução?')) {
+      if (confirm(t('ui_confirm_cancel'))) {
         await mygoCall('Slime.CancelJob');
         goToStep(2);
       }
@@ -293,7 +322,7 @@
       const text = dom.reviewDetailTarget.value;
       const locked = dom.checkLockSegment.checked;
       await mygoCall('Slime.ApplyCorrection', 'seg1', text, locked);
-      alert('Segmento atualizado com sucesso na memória!');
+      alert(t('ui_review_saved'));
     });
 
     // Step 4
@@ -337,7 +366,7 @@
     const percent = snap.TotalSegments > 0 ? Math.round((snap.ProcessedSegments * 100) / snap.TotalSegments) : 0;
     dom.runProgressBar.style.width = `${percent}%`;
     dom.runProgressPercent.textContent = `${percent}%`;
-    dom.runProgressText.textContent = `${snap.ProcessedSegments} de ${snap.TotalSegments} segmentos · ${snap.CachedSegments} da memória`;
+    dom.runProgressText.textContent = t('ui_progress', snap.ProcessedSegments, snap.TotalSegments, snap.CachedSegments);
 
     if (snap.Done) {
       setTimeout(() => goToStep(4), 1000);
