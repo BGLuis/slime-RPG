@@ -1,146 +1,179 @@
-# Slime RPG (Go Edition)
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/header/graph.svg?title=Slime+RPG&subtitle=Game+and+dataset+localization+toolkit+in+pure+Go&align=left&logo=go&mode=dark" /><img alt="Slime RPG" src="https://shieldcn.dev/header/graph.svg?title=Slime+RPG&subtitle=Game+and+dataset+localization+toolkit+in+pure+Go&align=left&logo=go&mode=light" /></picture>
+</p>
 
-[![Go Version](https://img.shields.io/badge/go-1.27+-00ADD8.svg)](https://golang.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center"><b>English</b> · <a href="README.pt-BR.md">Português (BR)</a></p>
 
-O **Slime RPG** é uma ferramenta de alta performance para extração, mascaramento de variáveis/tags, tradução assistida por IA/APIs e reinjeção de textos em jogos e datasets estruturados (RPG Maker, Wolf RPG, CSV, JSON).
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/stars/BGLuis/slime-RPG.svg?variant=secondary&size=sm&mode=dark" /><img alt="GitHub Stars" src="https://shieldcn.dev/github/stars/BGLuis/slime-RPG.svg?variant=secondary&size=sm&mode=light" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/forks/BGLuis/slime-RPG.svg?variant=secondary&size=sm&mode=dark" /><img alt="GitHub Forks" src="https://shieldcn.dev/github/forks/BGLuis/slime-RPG.svg?variant=secondary&size=sm&mode=light" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/watchers/BGLuis/slime-RPG.svg?variant=secondary&size=sm&mode=dark" /><img alt="Watchers" src="https://shieldcn.dev/github/watchers/BGLuis/slime-RPG.svg?variant=secondary&size=sm&mode=light" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/contributors/BGLuis/slime-RPG.svg?theme=emerald&size=sm&mode=dark" /><img alt="Contributors" src="https://shieldcn.dev/github/contributors/BGLuis/slime-RPG.svg?theme=emerald&size=sm&mode=light" /></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/license/BGLuis/slime-RPG.svg?variant=ghost&size=sm&mode=dark" /><img alt="License" src="https://shieldcn.dev/github/license/BGLuis/slime-RPG.svg?variant=ghost&size=sm&mode=light" /></picture>
+</p>
 
-Esta branch (`feat/go-port`) implementa a reescrita completa do projeto em **Go puro (Zero CGO)**:
-- **Executáveis leves e autocontidos** (~15MB a 25MB), sem necessidade de runtime Python ou dependências externas instaladas.
-- **Zero CGO**: compilação cruzada nativa instantânea para Linux e Windows.
-- **Interface Desktop moderna com MyGo** ([`egoist/mygo`](https://github.com/egoist/mygo)): webview integrada com IPC fortemente tipado, design system Figma (WCAG 2.2 AA) e stepper de 4 passos.
-- **Terminal User Interface (TUI) rica com Bubble Tea** ([`charmbracelet/bubbletea`](https://github.com/charmbracelet/bubbletea) + Lip Gloss).
-- **Motores & Formatos Suportados**:
-  - RPG Maker MV / MZ (`www/data/*.json`)
-  - RPG Maker VX Ace / VX / XP (`Data/*.rvdata2`, `*.rvdata`, `*.rxdata` via parser Ruby Marshal 4.8 em Go puro)
-  - WOLF RPG (`Data/BasicData`, `.mps` com LZ4 e criptografia LCG)
-  - Planilhas CSV tabulares com sniffing de delimitadores e CRLF/BOM
-  - JSON genérico com navegação via ponteiros RFC 6901
-- **Provedores de Tradução**:
-  - Google Translate (com controle de requisições e rotação inteligente de proxies)
-  - DeepL API (REST oficial, auto-detecção Free vs Pro)
-  - Ollama (LLM local privada e offline)
-- **Memória de Tradução SQLite**: persistência ultra-rápida via `modernc.org/sqlite` com WAL mode, FTS5 e precedência de estados (`locked` > `reviewed` > `machine`).
+<p align="center">
+  <img alt="Go" src="https://shieldcn.dev/badge/Language-Go-00ADD8.svg?logo=go&variant=branded&size=sm" />
+  <img alt="SQLite" src="https://shieldcn.dev/badge/Database-SQLite-003B57.svg?logo=sqlite&variant=branded&size=sm" />
+  <img alt="Docker" src="https://shieldcn.dev/badge/Tool-Docker-2496ED.svg?logo=docker&variant=branded&size=sm" />
+  <img alt="Ollama" src="https://shieldcn.dev/badge/Tool-Ollama-000000.svg?logo=ollama&variant=branded&size=sm" />
+  <img alt="DeepL" src="https://shieldcn.dev/badge/Tool-DeepL-0F2B46.svg?logo=deepl&variant=branded&size=sm" />
+  <img alt="Google Translate" src="https://shieldcn.dev/badge/Tool-Google_Translate-4285F4.svg?logo=googletranslate&variant=branded&size=sm" />
+</p>
 
----
+# 📖 About
 
-## Instalação no Arch Linux (`yay` / AUR)
+**Slime RPG** is a pure-Go (zero CGO) toolkit for extracting translatable text, masking control codes and variables (`__XTOK_<n>__`), automating AI/API translation, and safely reinjecting localized strings back into games and structured datasets. The retired Python implementation remains available on the `legacy/python` branch.
 
-O pacote `slime-rpg-bin` instala a versão completa (**TUI + GUI + CLI**), atalhos de terminal (`slime`, `slm`, `slime-gui`), atalho no menu de aplicativos e menus de contexto ("Translate Game Folder") para Nemo e KDE Dolphin:
+Key capabilities:
 
-```bash
-yay -S slime-rpg-bin
-```
+- **Single self-contained binary** with three built-in interfaces: interactive **Terminal UI** (`charmbracelet/bubbletea` + `lipgloss`), native **Desktop UI** (`egoist/mygo` system webview), and **headless CLI** (with `--dry-run` estimation and `--json` JSON Lines output).
+- **Supported engines and formats**:
+  - **RPG Maker MV / MZ** (`www/data/*.json`, `data/*.json`, and `js/plugins.js`)
+  - **RPG Maker VX Ace / VX / XP** (`Data/*.rvdata2`, `*.rvdata`, `*.rxdata` via a pure-Go Ruby Marshal 4.8 parser)
+  - **WOLF RPG Editor** (`Data/BasicData`, `.mps` maps, and `.wolf` archives)
+  - **CSV spreadsheets** (delimiter sniffing, BOM, and CRLF preservation) and **generic JSON** (RFC 6901 JSON Pointers)
+- **Translation providers**: **Google Translate** (with automatic proxy rotation), **DeepL API** (Free & Pro auto-detection), and **Ollama** (offline local LLMs with game synopsis context).
+- **SQLite Translation Memory**: local pure-Go persistence (`modernc.org/sqlite` with WAL mode and FTS5), TMX import/export, glossary term locking, and status precedence (`locked` > `reviewed` > `machine`).
+- **Lifecycle & integrity tracking (`.slime/meta.json`)**: atomic workspace writes, automatic backups, incremental updates (`--incremental`), offline cache reapplication (`--memory-only`), provider switching (`--switch-engine`), and pre-translated game adoption (`slime adopt`).
 
-Com o pacote instalado:
-- **No terminal sem argumentos (`slime` ou `slm`)** → abre a **TUI** interativa (Bubble Tea).
-- **Pelo atalho do sistema, menu de contexto de pasta ou `slime-gui`** → abre a **GUI** desktop (MyGo + WebKitGTK).
-- **No terminal passando parâmetros (`slime -i ./Jogo -s ja -d pt`, `slime verify`, `slime tm`)** → executa a **CLI** em modo headless.
+# 📋 Motivation
 
----
+I initially created this repository to translate RPG Maker games and later evolve the concept to also translate website JSON i18n files.
 
-## Pré-requisitos (Compilação Manual)
+# 💻 Getting Started
 
-- [Go](https://go.dev/dl/) 1.27 ou superior
-- [Task](https://taskfile.dev) (gerenciador de tarefas em Go)
-  ```bash
-  go install github.com/go-task/task/v3/cmd/task@latest
-  ```
+### Requirements
 
----
+- [Go](https://go.dev/dl/) 1.27.3+ (local execution)
+- [Task](https://taskfile.dev/installation/) v3 (local execution)
+- [Docker](https://docs.docker.com/get-docker/) & Docker Compose (Docker option)
+- [Ollama](https://ollama.com/download) (optional, for local LLM translation)
 
-## Comandos Principais (`Taskfile`)
+### Installation
 
-Utilizamos o **Taskfile** (alternativa ao `Make` e `Justfile` baseada em Go):
+1. Clone the repository:
 
-```bash
-# Listar todas as tarefas disponíveis
-task
+   ```sh
+   git clone https://github.com/BGLuis/slime-RPG.git
+   ```
 
-# Compilar o binário para o seu sistema operacional atual (bin/slime)
-task build
+2. Enter the project directory:
 
-# Compilar binários para Linux e Windows (.exe) sem CGO
-task build:all
+   ```sh
+   cd slime-RPG
+   ```
 
-# Executar a aplicação (abre a TUI interativa automaticamente no terminal)
-task run
+#### Option 1: Docker
 
-# Executar a interface de terminal interativa (TUI)
-task run:tui
+3. Build the image and run the CLI container against your game directory:
 
-# Executar a interface desktop nativa com webview (MyGo)
-task run:gui
+   ```sh
+   docker compose build
+   SLIME_GAMES_DIR=/path/to/games docker compose run --rm slime translate -i /games/MyGame -s ja -d pt
+   ```
 
-# Executar a suíte de testes unitários com detecção de corrida de dados
-task test
+#### Option 2: Local execution
 
-# Formatar o código-fonte
-task fmt
+3. Build and start the application (or install the binary and shortcuts globally):
 
-# Atualizar e limpar dependências do go.mod
-task tidy
+   ```sh
+   # Build and open the interactive Terminal UI (TUI)
+   task run
 
-# Limpar artefatos de build
-task clean
-```
+   # Build and open the native Desktop UI (GUI)
+   task run:gui
 
----
+   # Optional: install slime, slm, sl, and slime-gui into ~/.local/bin
+   task install-cli
+   ```
 
-## Uso via Linha de Comando (CLI)
+   On **Arch Linux (AUR)**, you can also install the prebuilt package with desktop shortcuts and Nemo/Dolphin context menus ("Translate Game Folder"):
 
-```bash
-# Iniciar a TUI interativa na pasta atual
+   ```sh
+   yay -S slime-rpg-bin
+   ```
+
+# 🚀 Usage
+
+### CLI & Lifecycle Commands
+
+```sh
+# Launch the interactive TUI in the current folder
 slime
 
-# Iniciar a janela desktop nativa
+# Launch the native Desktop UI
 slime --gui
 
-# Tradução headless automática
-slime translate -i ./Meujogo --service google --from ja --to pt --incremental
+# Headless translation (incremental by default)
+slime translate -i ./MyGame --service google --from ja --to pt
 
-# Simulação pré-voo (Dry-Run) sem alterar arquivos
-slime translate -i ./Meujogo --dry-run
+# Pre-flight estimation without modifying files, or structured JSON Lines output
+slime translate -i ./MyGame --dry-run
+slime translate -i ./MyGame --json
 
-# Saída estruturada em JSON Lines (para automação e pipelines)
-slime translate -i ./Meujogo --json
+# Reapply cached translations offline or switch providers keeping reviewed/locked entries
+slime translate -i ./MyGame --memory-only -s ja -d pt
+slime translate -i ./MyGame --switch-engine --service deepl -s ja -d pt
 
-# Verificar integridade dos arquivos traduzidos
-slime verify -i ./Meujogo
+# Verify translated game integrity or adopt an existing external translation
+slime verify ./MyGame --original ./MyGameOriginal
+slime adopt ./MyGame --original ./MyGameOriginal -e rpgmaker -s ja -d pt
 
-# Consultar estatísticas da Memória de Tradução SQLite
+# Translate asset filenames or manage the SQLite Translation Memory (TMX & glossary)
+slime filenames -i ./MyGame/www/img/pictures -s ja -d pt
 slime tm
+slime tm export --src ja --tgt pt --out backup.tmx
+slime tm import --file backup.tmx --status reviewed
+slime tm glossary --src ja --tgt pt --source "勇者" --target "Hero"
 ```
 
----
+### Taskfile Commands
 
-## Estrutura do Projeto
-
-```text
-├── cmd/
-│   └── slime/              # Ponto de entrada da aplicação (CLI, TUI, Desktop MyGo)
-├── pkg/
-│   ├── detector/           # Detecção automática de engine e idioma
-│   ├── event/              # Barramento de eventos desacoplado com envelopes
-│   ├── extractor/          # Extratores (JSON MV/MZ, Ruby Marshal, Wolf RPG, CSV)
-│   ├── job/                # Orquestrador central e snapshot thread-safe
-│   ├── memory/             # TranslationMemory (SQLite pure-go, FTS5)
-│   ├── model/              # Modelos imutáveis de domínio (Segment)
-│   ├── paths/              # Caminhos XDG/AppData nativos e portáteis
-│   ├── pipeline/           # Pipeline de mascaramento (__XTOK_<n>__) e integridade
-│   ├── provider/           # Provedores (Google, DeepL, Ollama, Proxies)
-│   ├── ui/                 # Interfaces de Usuário
-│   │   ├── desktop/        # Desktop UI nativa com MyGo (HTML/CSS/JS embutido)
-│   │   ├── theme/          # Tokens e paleta WCAG 2.2 AA (Lip Gloss)
-│   │   └── tui/            # Terminal UI interativa (Bubble Tea)
-│   └── workspace/          # Workspace atômico (os.Rename, os.Link)
-├── Taskfile.yml            # Automação de tarefas
-├── go.mod / go.sum         # Módulos Go gerenciados
-└── GEMINI.md               # Diretrizes e arquitetura para agentes de IA
+```sh
+task              # Build bin/slime for the current OS
+task build:all    # Cross-compile Linux (amd64/arm64) and Windows (.exe) with CGO_ENABLED=0
+task test         # Run the unit test suite with the race detector (-race)
+task fmt          # Format Go source files
+task tidy         # Tidy go.mod and go.sum
+task clean        # Remove compiled artifacts
 ```
 
----
+### Technical Documentation
 
-## Licença
+- [Go Architecture](docs/ARCHITECTURE_GO.md) & [System Architecture Overview](ARCHITECTURE.md)
+- [Python-to-Go Feature Parity](docs/PYTHON_PARITY.md)
+- [Product Scope & Compatibility](PRODUCT.md)
+- [RPG Maker Event Codes Reference](docs/engines/rpg_maker.md)
 
-Distribuído sob a licença [MIT](LICENSE).
+# ⚙️ Environment Variables
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `OLLAMA_HOST` | HTTP endpoint of the local or remote Ollama server | `http://localhost:11434` |
+| `OLLAMA_MODEL` | Ollama model used for translation | `qwen2.5` |
+| `OLLAMA_MAX_REQUESTS` | Maximum concurrent requests sent to Ollama | `10` |
+| `OLLAMA_CONTEXT_FUNCTION` | Custom primary system prompt sent to Ollama | `-` |
+| `OLLAMA_CONTEXT_ADDITIONAL` | Custom style and tag-preservation instructions for Ollama | `-` |
+| `DEEPL_API_KEY` | Official DeepL API key (Free `:fx` or Pro) | `-` |
+| `USE_PROXY_POOL` | Enables automatic rotating proxy pool for Google Translate | `true` |
+| `DISABLE_PROXY_POOL` | Forces disabling the rotating proxy pool when `true` | `false` |
+| `HTTP_PROXY` / `HTTPS_PROXY` | Optional custom HTTP/HTTPS proxy read by the Go runtime | `-` |
+| `SLIME_LANG` | UI and CLI language override (`pt-BR` or `en`) | System locale |
+| `SLIME_DATA_DIR` | Custom base directory for persistent application data | XDG / AppData `slime-rpg` |
+| `SLIME_CONFIG_DIR` | Custom directory for user preferences (`settings.db`) | XDG / AppData `slime-rpg` |
+| `SLIME_CACHE_DIR` | Custom directory for cache files | XDG / AppData `slime-rpg` |
+| `SLIME_LOG_DIR` | Custom directory for log files | XDG State / `logs` |
+| `SLIME_MEMORY_DB` | Explicit file path override for SQLite `memory.db` | `<SLIME_DATA_DIR>/memory.db` |
+| `SLIME_SETTINGS_DB` | Explicit file path override for SQLite `settings.db` | `<SLIME_CONFIG_DIR>/settings.db` |
+| `SLIME_LOG_FILE` | Explicit file path override for `processamento.log` | `<SLIME_LOG_DIR>/processamento.log` |
+
+# 🤝 Contributors
+
+<a href="https://github.com/BGLuis/slime-RPG/graphs/contributors">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/contributors/BGLuis/slime-RPG.svg?title=false&preset=transparent&border=false&mode=dark" /><img alt="Contributors" src="https://shieldcn.dev/contributors/BGLuis/slime-RPG.svg?title=false&preset=transparent&border=false&mode=light" /></picture>
+</a>
+
+# 📄 License
+
+Distributed under the [MIT](LICENSE) license.
