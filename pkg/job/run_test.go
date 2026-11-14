@@ -145,7 +145,7 @@ func TestRunTranslatesGameInPlaceWithBackupAndMeta(t *testing.T) {
 	}
 
 	snap := j.Snapshot()
-	if snap.ExitCode != 0 || snap.SegmentsTotal != 5 || snap.FilesTotal != 3 {
+	if snap.ExitCode != 0 || snap.SegmentsTotal != 5 || snap.SegmentsNew != 5 || snap.FilesTotal != 3 {
 		t.Errorf("snapshot = %+v", snap)
 	}
 	if snap.Files[1].Status != event.StatusIgnore {

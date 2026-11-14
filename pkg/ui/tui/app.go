@@ -47,6 +47,7 @@ type Model struct {
 	runErr      error
 	finished    bool
 	paused      bool
+	phaseMsg    string
 	throttleMsg string
 
 	// Estado da Etapa 1 (Abrir Jogo)

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BGLuis/slime-rpg/pkg/event"
+	"github.com/BGLuis/slime-rpg/pkg/job"
 	"github.com/BGLuis/slime-rpg/pkg/memory"
 	"github.com/BGLuis/slime-rpg/pkg/provider"
 	tea "github.com/charmbracelet/bubbletea"
@@ -323,4 +325,42 @@ func TestConfigureChangesReestimateAndReachTheJob(t *testing.T) {
 		t.Errorf("idioma de destino do job = %q, esperava en", m.snapshot.TargetLang)
 	}
 	m.stopJob()
+}
+
+func TestHandleEventDrainsBufferedEventsAndOrdersProcessedFiles(t *testing.T) {
+	bus := event.NewBus()
+	defer bus.Close()
+
+	j := job.NewJob(job.Config{SourceLang: "ja", TargetLang: "pt"}, bus, nil, nil)
+	ch := make(chan event.Envelope, 8)
+	m := &Model{job: j, eventChan: ch}
+
+	ch <- event.Envelope{Type: event.EventPhaseChanged, Data: event.PhaseChangedEvent{Phase: event.PhaseTranslating, Message: "Traduzindo..."}}
+	ch <- event.Envelope{Type: event.EventProviderThrottled, Data: event.ProviderThrottledEvent{Message: "HTTP 429"}}
+
+	first := event.Envelope{Type: event.EventPhaseChanged, Data: event.PhaseChangedEvent{Phase: event.PhasePrescan, Message: "Backup"}}
+	cmd := m.handleEvent(eventMsg{ch: ch, env: first})
+	if cmd == nil {
+		t.Fatal("esperava comando para aguardar próximo evento enquanto canal está aberto")
+	}
+	if len(ch) != 0 {
+		t.Fatalf("esperava canal drenado em lote, sobraram %d eventos", len(ch))
+	}
+	if m.phaseMsg != "Traduzindo..." || m.throttleMsg != "HTTP 429" {
+		t.Errorf("mensagens não atualizadas após dreno: phaseMsg=%q throttleMsg=%q", m.phaseMsg, m.throttleMsg)
+	}
+
+	ordered := orderedFiles([]job.FileProgress{
+		{Path: "wait.json", Status: event.StatusWaiting},
+		{Path: "ok.json", Status: event.StatusSuccess},
+		{Path: "proc.json", Status: event.StatusProcessing},
+		{Path: "part.json", Status: event.StatusPartial},
+	})
+	got := []string{ordered[0].Path, ordered[1].Path, ordered[2].Path, ordered[3].Path}
+	want := []string{"proc.json", "part.json", "ok.json", "wait.json"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("orderedFiles = %v, esperava %v", got, want)
+		}
+	}
 }

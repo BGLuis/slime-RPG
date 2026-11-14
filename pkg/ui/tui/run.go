@@ -158,7 +158,7 @@ func (m *Model) startJob() (tea.Cmd, error) {
 	ch := bus.SubscribeEvents(4096)
 
 	m.job, m.mem, m.cancel, m.eventChan = j, mem, cancel, ch
-	m.snapshot, m.runErr, m.paused, m.throttleMsg, m.statusMsg = j.Snapshot(), nil, false, "", ""
+	m.snapshot, m.runErr, m.paused, m.phaseMsg, m.throttleMsg, m.statusMsg = j.Snapshot(), nil, false, "", "", ""
 
 	run := func() tea.Msg { return runDoneMsg{job: j, err: j.Run(ctx)} }
 	return tea.Batch(run, waitEvent(ch)), nil
@@ -174,15 +174,36 @@ func waitEvent(ch <-chan event.Envelope) tea.Cmd {
 	}
 }
 
+func (m *Model) applyEvent(env event.Envelope) {
+	switch e := env.Data.(type) {
+	case event.PhaseChangedEvent:
+		m.phaseMsg = e.Message
+	case event.ProviderThrottledEvent:
+		m.throttleMsg = e.Message
+	}
+}
+
 func (m *Model) handleEvent(msg eventMsg) tea.Cmd {
 	if msg.ch != m.eventChan {
 		return nil
 	}
-	m.snapshot = m.job.Snapshot()
-	if e, ok := msg.env.Data.(event.ProviderThrottledEvent); ok {
-		m.throttleMsg = e.Message
+	m.applyEvent(msg.env)
+	closed := false
+	for !closed {
+		select {
+		case env, ok := <-msg.ch:
+			if !ok {
+				closed = true
+				break
+			}
+			m.applyEvent(env)
+		default:
+			m.snapshot = m.job.Snapshot()
+			return waitEvent(msg.ch)
+		}
 	}
-	return waitEvent(msg.ch)
+	m.snapshot = m.job.Snapshot()
+	return nil
 }
 
 func (m *Model) handleRunDone(msg runDoneMsg) {

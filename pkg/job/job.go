@@ -500,6 +500,7 @@ func (j *Job) Run(ctx context.Context) (err error) {
 	j.mu.Lock()
 	j.detection = det
 	j.mu.Unlock()
+	j.initFiles(plan.Files)
 
 	ws, err := workspace.New(plan.Root, j.cfg.OutputDir)
 	if err != nil {
@@ -509,6 +510,7 @@ func (j *Job) Run(ctx context.Context) (err error) {
 
 	backupDir := ""
 	if j.cfg.BackupEnabled {
+		j.setPhase(event.PhasePrescan, "Criando backup dos arquivos originais...")
 		backupDir = j.backupDirFor(plan)
 		if _, err := ws.EnsureBackup(backupDir, plan.Includes); err != nil {
 			return fmt.Errorf("failed to create backup at %s: %w", backupDir, err)
@@ -521,21 +523,24 @@ func (j *Job) Run(ctx context.Context) (err error) {
 	files := plan.Files
 	if j.cfg.Incremental {
 		files = j.incrementalFiles(plan, ws.OutputDir(), backupDir)
+		if len(files) != len(plan.Files) {
+			j.initFiles(files)
+		}
 	}
-	j.initFiles(files)
 
+	j.setPhase(event.PhasePrescan, "Extraindo textos...")
 	extracted := j.extractAll(ctx, ws.InputDir(), backupDir, files)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	j.setPhase(event.PhaseTranslating, "Tradução iniciada")
+	j.setPhase(event.PhaseTranslating, "Consultando Memória de Tradução...")
 	translations, cached, eng, err := j.translate(ctx, plan, det, extracted)
 	if err != nil {
 		return err
 	}
 
-	j.setPhase(event.PhaseCommitting, "Gravando arquivos traduzidos")
+	j.setPhase(event.PhaseCommitting, "Preparando arquivos traduzidos...")
 	statuses := j.inject(ws, extracted, translations, cached)
 	j.repack(plan, ws)
 
@@ -543,10 +548,12 @@ func (j *Job) Run(ctx context.Context) (err error) {
 		return ErrReviewRejected
 	}
 
+	j.setPhase(event.PhaseCommitting, "Gravando arquivos na pasta de destino...")
 	if _, err := ws.Commit(); err != nil {
 		return fmt.Errorf("failed to commit translated files: %w", err)
 	}
 
+	j.setPhase(event.PhaseCommitting, "Atualizando metadado (.slime/meta.json)...")
 	j.recordMetadata(ws, plan, det, backupDir, statuses)
 
 	if eng.Stats().RateLimited {
@@ -655,6 +662,7 @@ func (j *Job) extractAll(ctx context.Context, inputDir, backupDir string, files 
 			defer func() { <-sem }()
 			ef := &extractedFile{file: f}
 			out[i] = ef
+			j.updateFile(f.Rel, event.StatusProcessing, "Extraindo textos...", 0, 0)
 			if f.Read != nil {
 				ef.data, ef.err = f.Read()
 				if ef.err == nil {
@@ -668,6 +676,8 @@ func (j *Job) extractAll(ctx context.Context, inputDir, backupDir string, files 
 			}
 			if ef.err != nil {
 				j.updateFile(f.Rel, event.StatusError, "Erro na extração: "+ef.err.Error(), 0, 0)
+			} else {
+				j.updateFile(f.Rel, event.StatusWaiting, fmt.Sprintf("%d texto(s) extraído(s)", len(ef.segments)), 0, len(ef.segments))
 			}
 		}()
 	}
@@ -754,13 +764,22 @@ func (j *Job) translate(ctx context.Context, plan *formats.Plan, det *detector.D
 		bypass = b.CanBypassRateLimit
 	}
 	var throttleOnce sync.Once
+	var uncachedTotal int
 	eng := engine.New(j.prov, engine.Options{
 		MemoryOnly:         j.cfg.MemoryOnly,
 		CanBypassRateLimit: bypass,
 		Wait:               j.waitIfPaused,
-		OnProgress: func(done, _ int) {
+		OnProgress: func(done, totalUnique int) {
 			j.mu.Lock()
-			j.newCount = done
+			if totalUnique > 0 && uncachedTotal > 0 {
+				if done >= totalUnique {
+					j.newCount = uncachedTotal
+				} else {
+					j.newCount = (done * uncachedTotal) / totalUnique
+				}
+			} else {
+				j.newCount = done
+			}
 			j.mu.Unlock()
 			j.publishProgress()
 		},
@@ -818,8 +837,16 @@ func (j *Job) translate(ctx context.Context, plan *formats.Plan, det *detector.D
 	}
 	j.mu.Lock()
 	j.cachedCount = cachedSegs
+	uncachedTotal = max(total-cachedSegs, 0)
 	j.mu.Unlock()
 	j.publishProgress()
+
+	uncachedUnique := len(unique) - len(cachedUnique)
+	if uncachedUnique > 0 {
+		j.setPhase(event.PhaseTranslating, fmt.Sprintf("Traduzindo %d texto(s) único(s)...", uncachedUnique))
+	} else {
+		j.setPhase(event.PhaseTranslating, "Aplicando Memória de Tradução...")
+	}
 
 	rest := pipeline.NewPipeline(
 		&pipeline.PatternDetectionStep{},
@@ -827,9 +854,15 @@ func (j *Job) translate(ctx context.Context, plan *formats.Plan, det *detector.D
 		&pipeline.TranslationStep{},
 		&pipeline.UnmaskingStep{},
 		&pipeline.FixingStep{},
-		&pipeline.CacheStoreStep{},
 	)
 	if err := rest.Execute(ctx, pctx); err != nil {
+		return nil, nil, eng, err
+	}
+
+	if j.mem != nil && uncachedUnique > 0 {
+		j.setPhase(event.PhaseTranslating, "Salvando na Memória de Tradução...")
+	}
+	if err := pipeline.NewPipeline(&pipeline.CacheStoreStep{}).Execute(ctx, pctx); err != nil {
 		return nil, nil, eng, err
 	}
 
@@ -1015,11 +1048,14 @@ func (j *Job) setPhase(phase event.PhaseType, msg string) {
 
 func (j *Job) updateFile(rel string, status event.StatusType, msg string, done, total int) {
 	j.mu.Lock()
-	if i, ok := j.fileIndex[rel]; ok {
+	i, ok := j.fileIndex[rel]
+	if ok {
 		j.files[i] = FileProgress{Path: rel, Status: status, Message: msg, Done: done, Total: total}
 	}
 	j.mu.Unlock()
-	j.bus.PublishEvent(event.EventFileStatus, event.FileStatusEvent{File: rel, Status: status, Message: msg, Current: done, Total: total})
+	if ok {
+		j.bus.PublishEvent(event.EventFileStatus, event.FileStatusEvent{File: rel, Status: status, Message: msg, Current: done, Total: total})
+	}
 }
 
 func (j *Job) publishProgress() {

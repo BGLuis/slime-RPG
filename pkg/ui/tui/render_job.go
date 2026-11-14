@@ -26,6 +26,8 @@ func (m *Model) renderTranslating() string {
 	phase := string(snap.Phase)
 	if m.paused {
 		phase = i18n.T("tui_trans_paused", phase)
+	} else if m.phaseMsg != "" {
+		phase += " · " + truncate(m.phaseMsg, max(12, w-20))
 	}
 	mode := fmt.Sprintf("%s · %s → %s", m.providers[m.selectedProvider], snap.SourceLang, snap.TargetLang)
 	lines := []string{
@@ -72,7 +74,7 @@ func (m *Model) renderTranslating() string {
 	return indentLines(lines)
 }
 
-// orderedFiles põe os arquivos em andamento ou com problema à frente dos demais.
+// orderedFiles põe os arquivos em andamento, com problema ou recém-processados à frente dos demais.
 func orderedFiles(files []job.FileProgress) []job.FileProgress {
 	rank := func(st event.StatusType) int {
 		switch st {
@@ -80,13 +82,15 @@ func orderedFiles(files []job.FileProgress) []job.FileProgress {
 			return 0
 		case event.StatusError, event.StatusPartial:
 			return 1
-		case event.StatusWaiting:
+		case event.StatusSuccess, event.StatusCached:
 			return 2
+		case event.StatusWaiting:
+			return 3
 		}
-		return 3
+		return 4
 	}
 	out := make([]job.FileProgress, 0, len(files))
-	for r := 0; r <= 3; r++ {
+	for r := 0; r <= 4; r++ {
 		for _, f := range files {
 			if rank(f.Status) == r {
 				out = append(out, f)
