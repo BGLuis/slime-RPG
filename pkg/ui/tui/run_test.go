@@ -63,8 +63,14 @@ func (f *fakeProvider) TranslateBatch(ctx context.Context, texts []string, _, _ 
 
 func testMemory(t *testing.T) MemoryOpener {
 	t.Helper()
+	dir := t.TempDir()
 	return func() (*memory.TranslationMemory, error) {
-		return memory.New(filepath.Join(t.TempDir(), "memory.db"))
+		mem, err := memory.New(filepath.Join(dir, "memory.db"))
+		if err != nil {
+			return nil, err
+		}
+		t.Cleanup(func() { _ = mem.Close() })
+		return mem, nil
 	}
 }
 
@@ -219,7 +225,15 @@ func TestMemoryOnlyModeNeverCreatesProvider(t *testing.T) {
 			t.Error("o modo só-memória não deve criar provedor")
 			return nil, errors.New("não deveria ser chamado")
 		}),
-		WithMemoryOpener(func() (*memory.TranslationMemory, error) { return memory.New(dbPath) }))
+		WithMemoryOpener(func() (*memory.TranslationMemory, error) {
+			opened, err := memory.New(dbPath)
+			if err != nil {
+				return nil, err
+			}
+			t.Cleanup(func() { _ = opened.Close() })
+			return opened, nil
+		}))
+	t.Cleanup(m.stopJob)
 	m.view = ViewConfigure
 	m.selectedProvider = len(m.providers) - 1
 	p := newPump(t, m)

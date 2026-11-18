@@ -21,9 +21,7 @@ jobs:
     timeout-minutes: 15
     cache-mode: none # release: nunca restaura nem grava cache
     permissions:
-      contents: read      # checkout do codigo do repositorio
-      id-token: write     # assina o atestado SLSA de proveniencia
-      attestations: write # grava o atestado de proveniencia
+      contents: read # checkout do codigo do repositorio
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,8 +34,16 @@ jobs:
 
       - name: Verify and test before packaging
         run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::Arquivos fora do gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+          go mod verify
           go vet ./...
-          go test ./...
+          bash -n scripts/*.sh
+          go test -race ./...
 
       - name: Build release binaries and AUR metadata
         env:
@@ -80,10 +86,6 @@ jobs:
           bash scripts/render_aur.sh "$tag" "$sha_amd64" "$sha_arm64" aur
           cp aur/PKGBUILD dist/PKGBUILD
 
-      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: dist/*
-
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
@@ -101,9 +103,30 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # Assinatura isolada: codigo de dependencias em `build` nao pode emitir token OIDC.
+  attest:
+    name: attest
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    cache-mode: none # possui permissao de assinatura OIDC: sem cache
+    permissions:
+      id-token: write     # assina o atestado SLSA de proveniencia
+      attestations: write # grava o atestado de proveniencia
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+
   github-release:
     name: github-release
-    needs: build
+    needs: attest
     if: github.ref_type == 'tag'
     runs-on: ubuntu-slim
     timeout-minutes: 5
@@ -127,16 +150,23 @@ jobs:
             gh release upload "$TAG" dist/* --clobber
             gh release edit "$TAG" --draft=false
           else
-            gh release create "$TAG" dist/* --verify-tag --generate-notes
+            prerelease_flag=()
+            if [[ "$TAG" == *-* ]]; then
+              prerelease_flag+=(--prerelease)
+            fi
+            gh release create "$TAG" dist/* --verify-tag --generate-notes "${prerelease_flag[@]}"
           fi
 
   aur-publish:
     name: aur-publish
     needs: [build, github-release]
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' && !contains(github.ref_name, '-')
     runs-on: ubuntu-slim
     timeout-minutes: 5
     cache-mode: none # publica no AUR: sem cache
+    concurrency:
+      group: aur-publish
+      cancel-in-progress: false
     environment:
       name: aur
       url: https://aur.archlinux.org/packages/slime-rpg-bin
