@@ -1,0 +1,77 @@
+name: package-preview
+
+on:
+  pull_request:
+    types: [labeled, synchronize]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Apenas sincronizacao de commit ou adicao da label alvo cancela uma execucao em andamento.
+  cancel-in-progress: ${{ github.event.action == 'synchronize' || github.event.label.name == 'build-binaries' }}
+
+jobs:
+  package-preview:
+    name: package-preview
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'build-binaries') &&
+      (github.event.action == 'synchronize' || github.event.label.name == 'build-binaries')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # checkout do codigo do repositorio
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build preview binaries and AUR metadata
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="v0.0.0-pr.${PR_NUMBER}"
+          ver="${tag#v}"
+          commit="${SHA:0:7}"
+          build_date="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          ldflags="-s -w -X main.version=${ver} -X main.commit=${commit} -X main.date=${build_date}"
+
+          mkdir -p dist aur
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags "$ldflags" \
+            -o "dist/slime-${ver}-linux-amd64" ./cmd/slime
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -trimpath -ldflags "$ldflags" \
+            -o "dist/slime-${ver}-linux-arm64" ./cmd/slime
+
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+            go build -trimpath -ldflags "$ldflags" \
+            -o "dist/slime-${ver}-windows-amd64.exe" ./cmd/slime
+
+          (
+            cd dist
+            sha256sum "slime-${ver}-linux-amd64" "slime-${ver}-linux-arm64" "slime-${ver}-windows-amd64.exe" > SHA256SUMS
+          )
+
+          sha_amd64="$(awk '/linux-amd64$/ {print $1}' dist/SHA256SUMS)"
+          sha_arm64="$(awk '/linux-arm64$/ {print $1}' dist/SHA256SUMS)"
+          bash scripts/render_aur.sh "$tag" "$sha_amd64" "$sha_arm64" aur
+          cp aur/PKGBUILD dist/PKGBUILD
+          cp aur/.SRCINFO dist/.SRCINFO
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: slime-preview-pr-${{ github.event.pull_request.number }}
+          path: dist/*
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
