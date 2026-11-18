@@ -1,6 +1,7 @@
 package langcode_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/BGLuis/slime-rpg/pkg/langcode"
@@ -56,7 +57,7 @@ func TestTargetFilename(t *testing.T) {
 		{"loc_en.csv", "es", "loc_es.csv"},
 		{"text_en_US.csv", "pt", "text_pt.csv"},
 		{"items.csv", "pt", "items_pt.csv"},
-		{"lang/en.csv", "pt", "lang/pt.csv"},
+		{"lang/en.csv", "pt", filepath.Join("lang", "pt.csv")},
 	}
 	for _, c := range cases {
 		if got := langcode.TargetFilename(c.source, c.lang); got != c.want {
