@@ -8,6 +8,7 @@ USO:
 
 COMANDOS:
   translate       Extrai, traduz e reinjeta textos no jogo (padrão)
+  check           Valida JSON/JS/assets e simula o boot do jogo (MV/MZ) antes de jogar
   verify          Confere a pasta traduzida contra o .slime/meta.json
   adopt           Registra o metadado de um jogo já traduzido
   filenames       Traduz os nomes dos arquivos de uma pasta
@@ -33,6 +34,8 @@ OPÇÕES DE TRADUÇÃO:
   --no-proxy         Não usar o pool de proxies quando o Google bloquear o IP
   --dry-run          Calcula a estimativa pré-voo sem alterar arquivos
   --review           Pausa antes de gravar para inspecionar a pasta de processamento (só em terminal)
+  --check            Executa verificação estática + smoke test headless após traduzir
+  --tour             Durante --check, testa carregamento de mapas e cenas comuns
   --json             Emite eventos em JSON Lines para automação
   --tui / --gui      Força a interface de terminal ou desktop
   --lang pt|en       Idioma da interface nesta execução (ou SLIME_LANG); 'slime lang en' grava a preferência
@@ -59,6 +62,7 @@ NOMES DE ARQUIVO:
   slime filenames -i <pasta> [-o <saída>] [-t google -s ja -d pt] [--keep-original]
 
 VERIFICAÇÃO E ADOÇÃO:
+  slime check <pasta-traduzida> [--original <pasta>] [--fix] [--tour] [--runtime=false]
   slime verify <pasta-traduzida> [--original <pasta>]
   slime adopt <pasta-traduzida> --original <pasta> -e <extrator> [-s en -d pt]
 
@@ -256,6 +260,7 @@ EXEMPLOS:
 	"tui_cfg_target":           "Idioma de destino (d)",
 	"tui_cfg_incremental":      "Só o que mudou (espaço)",
 	"tui_cfg_proxies":          "Usar proxies se o Google bloquear o IP (x)",
+	"tui_cfg_check":            "Verificar jogo após traduzir (headless)",
 	"tui_cfg_backup":           "Backup ligado · saída na própria pasta",
 	"tui_provider_memory":      "Só memória",
 	"tui_filter_all":           "Todos",
@@ -296,7 +301,9 @@ EXEMPLOS:
 	"tui_foot_translating":     "  p pausar/retomar · c cancelar · ctrl+c sair",
 	"tui_foot_edit":            "  digite a tradução · enter salvar · esc cancelar",
 	"tui_foot_review":          "  ↑↓ segmento · tab filtro · e editar · b bloquear · esc/enter voltar ao resultado",
-	"tui_foot_result":          "  r revisar · n outro jogo · q sair",
+	"tui_foot_result":          "  r revisar · v verificar · n outro jogo · q sair",
+	"tui_check_ok":             "Verificação concluída: 0 erros (%d aviso(s)).",
+	"tui_check_err":            "Verificação encontrou %d erro(s): %s",
 	"tui_foot_default":         "  q sair",
 	"tui_err_deepl_key":        "informe a chave da API do DeepL ou defina DEEPL_API_KEY",
 	"tui_err_ollama_model":     "informe o modelo do Ollama ou defina OLLAMA_MODEL",

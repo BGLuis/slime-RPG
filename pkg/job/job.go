@@ -19,6 +19,7 @@ import (
 	"github.com/BGLuis/slime-rpg/pkg/model"
 	"github.com/BGLuis/slime-rpg/pkg/pipeline"
 	"github.com/BGLuis/slime-rpg/pkg/provider"
+	"github.com/BGLuis/slime-rpg/pkg/validator"
 	"github.com/BGLuis/slime-rpg/pkg/workspace"
 )
 
@@ -73,6 +74,11 @@ type Config struct {
 	// Review, se definido, é chamado com a pasta de processamento depois da
 	// tradução e antes de gravar no jogo. Retornar false aborta sem gravar nada.
 	Review func(processDir string) bool `json:"-"`
+
+	// ValidateRuntime executa um smoke test headless após gravar a tradução (MV/MZ).
+	ValidateRuntime bool `json:"validate_runtime,omitempty"`
+	// SceneTour exercita carregamento de mapas e cenas comuns durante ValidateRuntime.
+	SceneTour bool `json:"scene_tour,omitempty"`
 }
 
 // Validate aplica as mesmas regras do JobConfig da versão Python.
@@ -436,6 +442,8 @@ func (j *Job) SegmentsForReviewFiltered(filter string) []ReviewItem {
 		filePath := s.ID()
 		if f, ok := s.ContextValue("file"); ok {
 			filePath = fmt.Sprintf("%v", f)
+		} else if before, _, hasHash := strings.Cut(filePath, "#"); hasHash && before != "" {
+			filePath = before
 		}
 		items = append(items, ReviewItem{
 			ID:     s.ID(),
@@ -555,6 +563,40 @@ func (j *Job) Run(ctx context.Context) (err error) {
 
 	j.setPhase(event.PhaseCommitting, "Atualizando metadado (.slime/meta.json)...")
 	j.recordMetadata(ws, plan, det, backupDir, statuses)
+
+	if j.cfg.ValidateRuntime {
+		j.setPhase(event.PhaseCommitting, "Executando verificação pós-tradução e auto-correção...")
+		var candidates []string
+		for _, f := range files {
+			candidates = append(candidates, f.Rel)
+		}
+		healRes, valErr := validator.Heal(ctx, ws.OutputDir(), validator.Options{
+			OriginalDir: backupDir,
+			RunRuntime:  true,
+			SceneTour:   j.cfg.SceneTour,
+		}, candidates, func(msg string) {
+			j.bus.PublishEvent(event.EventPhaseChanged, event.PhaseChangedEvent{
+				Phase:   event.PhaseCommitting,
+				Message: msg,
+			})
+		})
+		if valErr != nil {
+			j.bus.PublishEvent(event.EventPhaseChanged, event.PhaseChangedEvent{
+				Phase:   event.PhaseCommitting,
+				Message: "Aviso: verificação pós-tradução falhou: " + valErr.Error(),
+			})
+		} else {
+			if len(healRes.Actions) > 0 {
+				for _, act := range healRes.Actions {
+					statuses[act.File] = metadata.StatusPartial
+				}
+				j.recordMetadata(ws, plan, det, backupDir, statuses)
+			}
+			if healRes.Report.HasErrors() && !onlyPreexistingRuntimeErrors(ctx, backupDir, healRes.Report) {
+				return fmt.Errorf("verificação pós-tradução encontrou %d erro(s) (ex.: %s)", healRes.Report.ErrorCount(), healRes.Report.Issues[0].Message)
+			}
+		}
+	}
 
 	if eng.Stats().RateLimited {
 		j.mu.Lock()
@@ -882,6 +924,10 @@ func (j *Job) translate(ctx context.Context, plan *formats.Plan, det *detector.D
 func (j *Job) inject(ws *workspace.Workspace, files []*extractedFile, translations map[uniqueKey]string, cached map[uniqueKey]bool) map[string]string {
 	statuses := make(map[string]string)
 	var all []*model.Segment
+	var assets *validator.AssetIndex
+	if webRoot := validator.FindWebRootForGame(ws.InputDir()); webRoot != "" {
+		assets = validator.NewAssetIndex(webRoot)
+	}
 
 	for _, f := range files {
 		rel := f.file.Rel
@@ -927,6 +973,14 @@ func (j *Job) inject(ws *workspace.Workspace, files []*extractedFile, translatio
 					missing++
 				}
 			}
+		}
+		var guardWarnings []string
+		resolved, guardWarnings = validator.GuardSegments(ws.InputDir(), rel, resolved, assets)
+		for _, w := range guardWarnings {
+			j.bus.PublishEvent(event.EventPhaseChanged, event.PhaseChangedEvent{
+				Phase:   event.PhaseCommitting,
+				Message: "Proteção pré-injeção: " + w,
+			})
 		}
 		all = append(all, resolved...)
 
@@ -1133,4 +1187,33 @@ func isDir(path string) bool {
 	}
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// onlyPreexistingRuntimeErrors verifica se os únicos erros restantes no relatório são
+// erros de runtime que já aconteciam no backup original (ex.: plugin DRM fora do NW.js).
+func onlyPreexistingRuntimeErrors(ctx context.Context, backupDir string, rep *validator.Report) bool {
+	if !isDir(backupDir) || rep == nil || !rep.RuntimeRan {
+		return false
+	}
+	for _, it := range rep.Issues {
+		if it.Severity == validator.SeverityError && it.Category != validator.CategoryRuntime {
+			return false
+		}
+	}
+	origRep, err := validator.Validate(ctx, backupDir, validator.Options{RunRuntime: true})
+	if err != nil || !origRep.RuntimeRan || !origRep.HasErrors() {
+		return false
+	}
+	origMsgs := make(map[string]bool)
+	for _, it := range origRep.Issues {
+		if it.Severity == validator.SeverityError {
+			origMsgs[it.Message] = true
+		}
+	}
+	for _, it := range rep.Issues {
+		if it.Severity == validator.SeverityError && !origMsgs[it.Message] {
+			return false
+		}
+	}
+	return true
 }

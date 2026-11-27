@@ -119,14 +119,15 @@ func (m *Model) startJob() (tea.Cmd, error) {
 	}
 	id := providerIDs[m.selectedProvider]
 	cfg := job.Config{
-		GamePath:      m.gamePath,
-		ProviderName:  "google",
-		SourceLang:    m.sourceLang,
-		TargetLang:    m.targetLang,
-		Incremental:   m.incremental,
-		EnableProxies: m.enableProxies,
-		BackupEnabled: true,
-		MemoryOnly:    m.memoryOnly(),
+		GamePath:        m.gamePath,
+		ProviderName:    "google",
+		SourceLang:      m.sourceLang,
+		TargetLang:      m.targetLang,
+		Incremental:     m.incremental,
+		EnableProxies:   m.enableProxies,
+		BackupEnabled:   true,
+		MemoryOnly:      m.memoryOnly(),
+		ValidateRuntime: m.validateCheck,
 
 		ExtractorOptions: opts,
 	}

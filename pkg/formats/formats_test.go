@@ -52,6 +52,40 @@ func TestRPGMakerPlanIncludesPluginsJS(t *testing.T) {
 	}
 }
 
+func TestRPGMakerPlanIncludesKRDExternalFilesAndSkipsCopies(t *testing.T) {
+	game := t.TempDir()
+	for _, f := range []string{
+		"data/System.json",
+		"data/msg_0.json",
+		"data/msg_1.json",
+		"data/db_1.json",
+		"data/word_1.json",
+		"data/CommonEvents.json",
+		"data/CommonEvents - コピー.json",
+	} {
+		touch(t, filepath.Join(game, f))
+	}
+	det, err := detector.Detect(game)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := ForDetection(det, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"data/CommonEvents.json",
+		"data/System.json",
+		"data/db_1.json",
+		"data/msg_0.json",
+		"data/msg_1.json",
+		"data/word_1.json",
+	}
+	if got := rels(plan); !slices.Equal(got, want) {
+		t.Errorf("arquivos = %v, esperava %v", got, want)
+	}
+}
+
 // Na detecção do WOLF a pasta de dados pode ser Data/MapData; os eventos comuns
 // e bancos de Data/BasicData precisam entrar no plano.
 func TestWolfPlanCoversBasicDataAndMapData(t *testing.T) {

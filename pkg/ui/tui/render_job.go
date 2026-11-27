@@ -129,12 +129,15 @@ func (m *Model) renderResult() string {
 	lines = append(append(lines, wrapJoin(strings.Split(summary, "   "), "   ", w)...), "")
 
 	listed := 0
+	extraIssues := 0
+	maxResultRows := max(maxFileRows, min(16, m.height-16))
 	for _, f := range snap.Files {
 		if f.Status != event.StatusError && f.Status != event.StatusPartial {
 			continue
 		}
-		if listed == maxFileRows {
-			break
+		if listed == maxResultRows {
+			extraIssues++
+			continue
 		}
 		listed++
 		tag := theme.StyleTagWarning.Render(theme.SymWarning + " " + i18n.T("tui_tag_partial"))
@@ -142,6 +145,9 @@ func (m *Model) renderResult() string {
 			tag = theme.StyleTagError.Render(theme.SymCross + " " + i18n.T("tui_tag_error"))
 		}
 		lines = append(lines, truncate(" "+tag+" "+f.Path+": "+f.Message, w))
+	}
+	if extraIssues > 0 {
+		lines = append(lines, theme.StyleMuted.Render(" + "+i18n.T("tui_trans_more", extraIssues)))
 	}
 	if listed > 0 {
 		lines = append(lines, "")
@@ -169,13 +175,17 @@ func (m *Model) renderReviewing() string {
 			chips[i] = theme.StyleAccent.Render("[" + f + "]")
 		}
 	}
-	lines = append(lines, strings.Join(chips, " "), "")
+	counter := ""
+	if len(m.reviewItems) > 0 {
+		counter = theme.StyleMuted.Render(fmt.Sprintf("   %d/%d", m.selectedSegmentIdx+1, len(m.reviewItems)))
+	}
+	lines = append(lines, strings.Join(chips, " ")+counter, "")
 
 	if len(m.reviewItems) == 0 {
 		return indentLines(append(lines, i18n.T("tui_review_empty")))
 	}
 
-	const window = 8
+	window := max(3, min(10, m.height-14))
 	start := max(0, min(m.selectedSegmentIdx-window/2, len(m.reviewItems)-window))
 	for i := start; i < min(start+window, len(m.reviewItems)); i++ {
 		it := m.reviewItems[i]
@@ -185,9 +195,14 @@ func (m *Model) renderReviewing() string {
 		}
 		tag := theme.StyleMuted.Render(fit(theme.SymBullet+" ok", 10))
 		if it.Status == "partial" {
-			tag = theme.StyleTagWarning.Render(fit(theme.SymBullet+" "+i18n.T("tui_tag_partial"), 8))
+			tag = theme.StyleTagWarning.Render(fit(theme.SymBullet+" "+i18n.T("tui_tag_partial"), 9))
 		}
-		lines = append(lines, cursor+tag+"  "+truncate(oneLine(it.Source), w-14))
+		fileHint := ""
+		if it.File != "" {
+			fileHint = theme.StyleMuted.Render("[" + truncate(it.File, 18) + "] ")
+		}
+		avail := max(w-14-ansi.StringWidth(fileHint), 10)
+		lines = append(lines, cursor+tag+" "+fileHint+truncate(oneLine(it.Source), avail))
 	}
 
 	it := m.reviewItems[m.selectedSegmentIdx]

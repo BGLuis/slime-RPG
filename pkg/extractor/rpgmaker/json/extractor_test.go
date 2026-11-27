@@ -331,3 +331,121 @@ func TestInjectIgnoresSegmentsFromOtherFiles(t *testing.T) {
 		t.Errorf("segmento de outro arquivo não pode ser aplicado: %s", out)
 	}
 }
+
+func TestSkipsNestedControlCodesAndMZTechArgs(t *testing.T) {
+	raw := mapWithCommands(
+		`{"code":401,"parameters":["\\M[\\V[31]]"]},` +
+			`{"code":401,"parameters":["『\\V[19]』\\UTERMS[eventReplay]"]},` +
+			`{"code":357,"parameters":["UskPlugin","cmd","desc",{"armorIds":"[\"82\",\"106\"]","name":"voice/redlight/system_5","label":"Texto visível"}]}`)
+	got := extractSources(t, "Map001.json", raw)
+	if !slices.Equal(got, []string{"Texto visível"}) {
+		t.Errorf("esperava apenas [Texto visível], obteve %v", got)
+	}
+}
+
+func TestExtractsEventNoticeCommentTagAndStrScripts(t *testing.T) {
+	raw := mapWithCommands(
+		`{"code":108,"parameters":["<eventType:good><eventTier:1 2>"]},` +
+			`{"code":408,"parameters":["<eventNotice:水の流れる音がする……>"]},` +
+			`{"code":355,"parameters":["let str = \"泉が凍っている\";"]},` +
+			`{"code":655,"parameters":["str = str + \"匂いもしない\";"]}`)
+	got := extractSources(t, "Map001.json", raw)
+	want := []string{"水の流れる音がする……", "泉が凍っている", "匂いもしない"}
+	if !slices.Equal(got, want) {
+		t.Errorf("esperava %v, obteve %v", want, got)
+	}
+}
+
+func TestKRDExternalFilesAndInlineLangRoundtrip(t *testing.T) {
+	ext := json.NewMVExtractor()
+	for _, f := range []string{"data/msg_0.json", "data/msg_1.json", "data/db_1.json", "data/word_1.json"} {
+		if !ext.CanHandle(f) {
+			t.Errorf("CanHandle(%q) deveria ser true", f)
+		}
+	}
+	if ext.CanHandle("CommonEvents - コピー.json") {
+		t.Error("não deveria tratar cópia de editor")
+	}
+
+	// msg_0.json preservando \\n literal e entradas vazias
+	msgRaw := `{
+  "S0005_01": "",
+  "S0008_01": "今日はもう終わりにする？",
+  "S0031_01": "回想を全オープン\\n（※戻せません）\\n"
+}`
+	msgSegs, err := ext.Extract("data/msg_0.json", []byte(msgRaw))
+	if err != nil {
+		t.Fatalf("Extract msg_0: %v", err)
+	}
+	if len(msgSegs) != 2 {
+		t.Fatalf("esperava 2 segmentos em msg_0, obteve %d", len(msgSegs))
+	}
+	msgSegs = replaceTarget(msgSegs, msgSegs[0].ID(), "Terminar por hoje?")
+	msgSegs = replaceTarget(msgSegs, msgSegs[1].ID(), `Abrir tudo\n(*Irreversível)\n`)
+	msgOut, err := ext.Inject("data/msg_0.json", []byte(msgRaw), msgSegs)
+	if err != nil {
+		t.Fatalf("Inject msg_0: %v", err)
+	}
+	var msgParsed map[string]string
+	if err := json_std.Unmarshal(msgOut, &msgParsed); err != nil {
+		t.Fatalf("msg_0 JSON inválido: %v", err)
+	}
+	if msgParsed["S0008_01"] != "Terminar por hoje?" || msgParsed["S0031_01"] != `Abrir tudo\n(*Irreversível)\n` {
+		t.Errorf("msg_0 injetado incorreto: %v", msgParsed)
+	}
+
+	// db_1.json
+	dbRaw := `{"actor":[{"id":1,"name":"Hero","nickname":"Brave","profile_1st":"Line 1","profile_2nd":"Line 2"}],"item":[{"id":1,"name":"Potion","description_1st":"Heals HP"}]}`
+	dbSegs, err := ext.Extract("data/db_1.json", []byte(dbRaw))
+	if err != nil || len(dbSegs) != 6 {
+		t.Fatalf("Extract db_1 = (%d segs, %v)", len(dbSegs), err)
+	}
+	for _, s := range dbSegs {
+		dbSegs = replaceTarget(dbSegs, s.ID(), "PT_"+s.Source())
+	}
+	dbOut, err := ext.Inject("data/db_1.json", []byte(dbRaw), dbSegs)
+	if err != nil || !strings.Contains(string(dbOut), `"PT_Hero"`) || !strings.Contains(string(dbOut), `"PT_Heals HP"`) {
+		t.Errorf("Inject db_1 = %s (%v)", dbOut, err)
+	}
+
+	// word_1.json
+	wordRaw := `{"gameTitle":"Title EN","terms":{"commands":["Fight","Cancel"]}}`
+	wordSegs, err := ext.Extract("data/word_1.json", []byte(wordRaw))
+	if err != nil || len(wordSegs) != 3 {
+		t.Fatalf("Extract word_1 = (%d segs, %v)", len(wordSegs), err)
+	}
+
+	// CommonEvents.json com \LANGF e escolhas \LANG
+	ceRaw := `[null,{"id":8,"list":[` +
+		`{"code":401,"parameters":["\\LANGF[S0005_01]\\LANGFEND"]},` +
+		`{"code":401,"parameters":["\\LANGF[S0008_01]今日は終わり？\\LANGFEND"]},` +
+		`{"code":102,"parameters":[["\\LANG[0]はい\\LANGEND\\LANG[1]Yes\\LANGEND"],1,0,2,2]},` +
+		`{"code":402,"parameters":[0,"\\LANG[0]はい\\LANGEND\\LANG[1]Yes\\LANGEND"]}` +
+		`]}]`
+	ceSegs, err := ext.Extract("data/CommonEvents.json", []byte(ceRaw))
+	if err != nil {
+		t.Fatalf("Extract CommonEvents: %v", err)
+	}
+	var ceSources []string
+	for i, s := range ceSegs {
+		ceSources = append(ceSources, s.Source())
+		switch s.Source() {
+		case "今日は終わり？":
+			ceSegs[i] = s.WithTarget("Terminar por hoje?")
+		case "はい", "Yes":
+			ceSegs[i] = s.WithTarget("Sim")
+		}
+	}
+	wantCE := []string{"今日は終わり？", "はい", "Yes", "はい", "Yes"}
+	if !slices.Equal(ceSources, wantCE) {
+		t.Fatalf("CommonEvents sources = %v, want %v", ceSources, wantCE)
+	}
+	ceOut, err := ext.Inject("data/CommonEvents.json", []byte(ceRaw), ceSegs)
+	if err != nil {
+		t.Fatalf("Inject CommonEvents: %v", err)
+	}
+	wantOut := strings.NewReplacer("今日は終わり？", "Terminar por hoje?", "はい", "Sim", "Yes", "Sim").Replace(ceRaw)
+	if string(ceOut) != wantOut {
+		t.Errorf("CommonEvents inject:\n got: %s\nwant: %s", ceOut, wantOut)
+	}
+}

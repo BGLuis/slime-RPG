@@ -210,3 +210,146 @@ func TestPluginsJsPythonFixture(t *testing.T) {
 		t.Error("plugin inativo não pode ser alterado")
 	}
 }
+
+func TestPluginsJsSkipsAssetsAndScripts(t *testing.T) {
+	ext := NewMVExtractor()
+	sampleJS := `var $plugins = [
+		{
+			"name": "UskMessageSceneEx",
+			"status": true,
+			"parameters": {
+				"list": "[\"{\\\"skin\\\":\\\"Window\\\",\\\"title\\\":\\\"Nova Mensagem\\\"}\"]"
+			}
+		},
+		{
+			"name": "SceneCustomMenu",
+			"status": true,
+			"parameters": {
+				"WindowSkin": "Window",
+				"ListScript": "null; // なし(単項目表示ウィンドウ用)",
+				"SortScript": "a.id - b.id; // ID順",
+				"StartWidth": "Graphics.width + 100",
+				"width": "width * 0.8",
+				"baseBgm": "Town",
+				"displacementImage": "DisplacementMap",
+				"SkillNameWindowSkin": "WindowHonor",
+				"Label": "Configurações Gerais"
+			}
+		}
+	];`
+
+	segs, err := ext.Extract("plugins.js", []byte(sampleJS))
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+	got := map[string]bool{}
+	for _, s := range segs {
+		got[s.Source()] = true
+	}
+	for _, want := range []string{"Nova Mensagem", "Configurações Gerais"} {
+		if !got[want] {
+			t.Errorf("esperava extrair %q, got=%v", want, got)
+		}
+	}
+	for _, unwanted := range []string{
+		"Window", "WindowHonor", "Town", "DisplacementMap",
+		"null; // なし(単項目表示ウィンドウ用)", "a.id - b.id; // ID順",
+		"Graphics.width + 100", "width * 0.8",
+	} {
+		if got[unwanted] {
+			t.Errorf("não deveria extrair técnico/asset %q", unwanted)
+		}
+	}
+}
+
+func TestPluginsJsKRDMultilingualAndInlineLang(t *testing.T) {
+	ext := NewMVExtractor()
+	sampleJS := `var $plugins = [
+  {
+    "name": "KRD_MZ_Multilingual",
+    "status": true,
+    "parameters": {
+      "FORCE_LANGUAGE": "-1",
+      "argLanguage": "[\"日本語\",\"English\"]",
+      "argOptionText": "[\"言語\",\"Language\"]",
+      "argCommands": "[\"{\\\"commands\\\":\\\"[\\\\\\\"Fight\\\\\\\",\\\\\\\"Cancel\\\\\\\",\\\\\\\"null\\\\\\\"]\\\"}\"]",
+      "argMessages": "[\"{\\\"possession\\\":\\\"Possession\\\",\\\"file\\\":\\\"File\\\",\\\"autosave\\\":\\\"Autosave\\\"}\"]"
+    }
+  },
+  {
+    "name": "TorigoyaMZ_CommonMenu",
+    "status": true,
+    "parameters": {
+      "baseItems": "[\"{\\\"name\\\":\\\"\\\\\\\\LANG[0]チュートリアル\\\\\\\\LANGEND\\\\\\\\LANG[1]Tutorial\\\\\\\\LANGEND\\\",\\\"commonEvent\\\":\\\"5\\\"}\"]"
+    }
+  }
+];`
+
+	segs, err := ext.Extract("plugins.js", []byte(sampleJS))
+	if err != nil {
+		t.Fatalf("Extract failed: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, s := range segs {
+		got[s.Source()] = true
+	}
+	for _, want := range []string{"日本語", "English", "言語", "Language", "Fight", "Cancel", "Possession", "File", "Autosave", "チュートリアル", "Tutorial"} {
+		if !got[want] {
+			t.Errorf("faltou extrair %q; obteve %v", want, got)
+		}
+	}
+	if got["null"] || got["-1"] || got["5"] {
+		t.Errorf("valor técnico extraído indevidamente: %v", got)
+	}
+
+	dict := map[string]string{
+		"日本語":        "Japonês",
+		"English":    "Inglês",
+		"言語":         "Idioma",
+		"Language":   "Idioma",
+		"Fight":      "Lutar",
+		"Cancel":     "Cancelar",
+		"Possession": "Posse",
+		"File":       "Arquivo",
+		"Autosave":   "Salvamento automático",
+		"チュートリアル":    "Tutorial",
+		"Tutorial":   "Tutorial",
+	}
+	var resolved []*model.Segment
+	for _, s := range segs {
+		resolved = append(resolved, s.WithTarget(dict[s.Source()]))
+	}
+	out, err := ext.Inject("plugins.js", []byte(sampleJS), resolved)
+	if err != nil {
+		t.Fatalf("Inject failed: %v", err)
+	}
+
+	start, end, err := pluginsArray(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plugins []map[string]any
+	if err := json.Unmarshal(out[start:end], &plugins); err != nil {
+		t.Fatalf("plugins.js inválido após injeção: %v", err)
+	}
+
+	krdParams := plugins[0]["parameters"].(map[string]any)
+	var cmdsWrap []string
+	_ = json.Unmarshal([]byte(krdParams["argCommands"].(string)), &cmdsWrap)
+	var cmdsObj map[string]string
+	_ = json.Unmarshal([]byte(cmdsWrap[0]), &cmdsObj)
+	var cmds []string
+	_ = json.Unmarshal([]byte(cmdsObj["commands"]), &cmds)
+	if cmds[0] != "Lutar" || cmds[1] != "Cancelar" || cmds[2] != "null" {
+		t.Errorf("argCommands = %v", cmds)
+	}
+
+	var commonItems []string
+	_ = json.Unmarshal([]byte(plugins[1]["parameters"].(map[string]any)["baseItems"].(string)), &commonItems)
+	var item0 map[string]string
+	_ = json.Unmarshal([]byte(commonItems[0]), &item0)
+	if item0["name"] != `\LANG[0]Tutorial\LANGEND\LANG[1]Tutorial\LANGEND` {
+		t.Errorf("TorigoyaMZ_CommonMenu name = %q", item0["name"])
+	}
+}

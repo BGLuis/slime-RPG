@@ -18,14 +18,47 @@ import (
 var (
 	rxPluginsFile = regexp.MustCompile(`(?i)^plugins\.js$`)
 
-	// Chaves de parâmetros técnicos que nunca contêm texto visível (as mesmas do Python).
+	// Chaves de parâmetros técnicos que nunca contêm texto visível.
 	ignoreParamKeys = map[string]struct{}{
 		"script": {}, "filterscript": {}, "datascript": {}, "mappingscript": {},
 		"itemdrawscript": {}, "isenablescript": {}, "decisionscript": {},
-		"filename": {}, "image": {}, "imagename": {}, "bgm": {}, "se": {},
+		"listscript": {}, "sortscript": {},
+		"filename": {}, "image": {}, "imagename": {}, "bgm": {}, "basebgm": {}, "se": {},
+		"bgs": {}, "me": {}, "skin": {}, "windowskin": {}, "displacementimage": {},
 		"variableid": {}, "switchid": {}, "defaultvalue": {}, "hiddenflag": {},
-		"addposition": {}, "paddingtop": {},
+		"addposition": {}, "paddingtop": {}, "hidebutton": {},
+		"width": {}, "height": {}, "startwidth": {}, "startheight": {},
 	}
+
+	ignoreParamSuffixes = []string{
+		"script", "formula", "eval",
+		"skin", "image", "imagename", "picture", "picturename",
+		"bgm", "bgs", "parallax", "battleback", "filename", "fontfilename",
+		"width", "height", "button", "hotkey",
+	}
+
+	textParamKeyHints = []string{
+		"name", "title", "label", "text", "message", "messages", "desc", "description",
+		"help", "caption", "tooltip", "hint", "word", "command", "commands",
+		"list", "items", "options", "choices",
+	}
+
+	krdTextParams = map[string]bool{
+		"arglanguage":     true,
+		"argoptiontext":   true,
+		"arggametitle":    true,
+		"argcurrencyunit": true,
+		"argelements":     true,
+		"argskilltypes":   true,
+		"argequiptypes":   true,
+		"argbasic":        true,
+		"argparams":       true,
+		"argcommands":     true,
+		"argmessages":     true,
+	}
+
+	jsCommentOrCodeRE = regexp.MustCompile(`(?://|/\*|\bGraphics\.|\bSceneManager\.|\bDataManager\.|\bAudioManager\.|\bBattleManager\.|\$game[A-Z]|\bES\.[a-z])`)
+	jsExprRE          = regexp.MustCompile(`^[A-Za-z_$][\w$.]*\s*[+\-*/%]\s*[A-Za-z0-9_$.]+(?:\s*[+\-*/%]\s*[A-Za-z0-9_$.]+)*$`)
 
 	cjkRE = regexp.MustCompile(`[\x{3040}-\x{30ff}\x{3400}-\x{4dbf}\x{4e00}-\x{9fff}\x{f900}-\x{faff}\x{ac00}-\x{d7af}]`)
 
@@ -72,11 +105,13 @@ func (e *MVExtractor) extractPluginsJs(base string, data []byte) ([]*model.Segme
 			name = strconv.Itoa(idx)
 		}
 		w := pluginWalker{base: base, plugin: name, index: idx}
+		isKRD := strings.EqualFold(name, "KRD_MZ_Multilingual")
 		for _, key := range sortedKeys(params) {
 			if ignoredParam(key) {
 				continue
 			}
-			w.walk(nil, fmt.Sprintf("/%d/parameters/%s", idx, jsonedit.EscapePointer(key)), key, key, params[key])
+			forceText := isKRD && krdTextParams[strings.ToLower(key)]
+			w.walk(nil, fmt.Sprintf("/%d/parameters/%s", idx, jsonedit.EscapePointer(key)), key, key, params[key], forceText)
 		}
 		segments = append(segments, w.segments...)
 	}
@@ -90,37 +125,64 @@ type pluginWalker struct {
 	segments []*model.Segment
 }
 
-func (w *pluginWalker) walk(chain []string, ptr, key, path string, val any) {
+func (w *pluginWalker) walk(chain []string, ptr, key, path string, val any, forceText bool) {
 	switch v := val.(type) {
 	case string:
 		if sub, ok := nestedJSON(v); ok {
-			w.walk(appendChain(chain, ptr), "", key, path, sub)
+			w.walk(appendChain(chain, ptr), "", key, path, sub, forceText)
 			return
 		}
-		if !isTranslatablePluginText(v, key) {
+		if spans, ok := rpgtext.KRDLangSpans(v); ok {
+			for i, sp := range spans {
+				if !w.acceptPluginString(sp.Source, key, forceText) {
+					continue
+				}
+				spanID := fmt.Sprintf("%s#plugin:%d:%s/param:%s", w.base, w.index, w.plugin, path)
+				if len(spans) > 1 {
+					spanID = fmt.Sprintf("%s/%d", spanID, i)
+				}
+				w.appendSegment(spanID, sp.Source, appendChain(chain, ptr), path, &sp)
+			}
 			return
 		}
-		pointers := appendChain(chain, ptr)
+		if !w.acceptPluginString(v, key, forceText) {
+			return
+		}
 		id := fmt.Sprintf("%s#plugin:%d:%s/param:%s", w.base, w.index, w.plugin, path)
-		seg, err := model.NewSegment(id, v, model.KindMenu, map[string]any{
-			"plugin":   w.plugin,
-			"param":    path,
-			"pointers": pointers,
-		}, nil)
-		if err == nil {
-			w.segments = append(w.segments, seg)
-		}
+		w.appendSegment(id, v, appendChain(chain, ptr), path, nil)
 	case map[string]any:
 		for _, k := range sortedKeys(v) {
 			if ignoredParam(k) {
 				continue
 			}
-			w.walk(chain, ptr+"/"+jsonedit.EscapePointer(k), k, path+"/"+k, v[k])
+			w.walk(chain, ptr+"/"+jsonedit.EscapePointer(k), k, path+"/"+k, v[k], forceText)
 		}
 	case []any:
 		for i, item := range v {
-			w.walk(chain, fmt.Sprintf("%s/%d", ptr, i), key, fmt.Sprintf("%s/%d", path, i), item)
+			w.walk(chain, fmt.Sprintf("%s/%d", ptr, i), key, fmt.Sprintf("%s/%d", path, i), item, forceText)
 		}
+	}
+}
+
+func (w *pluginWalker) acceptPluginString(v, key string, forceText bool) bool {
+	if forceText {
+		return !rpgtext.IsTechnicalOrCode(v, rpgtext.Dialogue) && isTranslatableText(v)
+	}
+	return isTranslatablePluginText(v, key)
+}
+
+func (w *pluginWalker) appendSegment(id, source string, pointers []string, path string, sp *rpgtext.Span) {
+	ctx := map[string]any{
+		"plugin":   w.plugin,
+		"param":    path,
+		"pointers": pointers,
+	}
+	if sp != nil {
+		ctx["span"] = *sp
+	}
+	seg, err := model.NewSegment(id, source, model.KindMenu, ctx, nil)
+	if err == nil {
+		w.segments = append(w.segments, seg)
 	}
 }
 
@@ -150,6 +212,7 @@ func nestedJSON(s string) (any, bool) {
 type pluginEdit struct {
 	pointers []string
 	target   string
+	sp       *rpgtext.Span
 }
 
 // injectPluginsJs reescreve só as strings traduzidas, preservando o cabeçalho,
@@ -170,7 +233,13 @@ func (e *MVExtractor) injectPluginsJs(base string, originalData []byte, segments
 			continue
 		}
 		if pointers, ok := raw.([]string); ok && len(pointers) > 0 {
-			edits = append(edits, pluginEdit{pointers: pointers, target: s.Target()})
+			ed := pluginEdit{pointers: pointers, target: s.Target()}
+			if spRaw, hasSp := s.ContextValue("span"); hasSp {
+				if sp, ok := spRaw.(rpgtext.Span); ok {
+					ed.sp = &sp
+				}
+			}
+			edits = append(edits, ed)
 		}
 	}
 	if len(edits) == 0 {
@@ -191,16 +260,25 @@ func (e *MVExtractor) injectPluginsJs(base string, originalData []byte, segments
 // primeiro no documento interno, que então substitui a string que o contém.
 func applyPluginEdits(doc []byte, edits []pluginEdit) ([]byte, error) {
 	direct := make(map[string]string)
+	directSpans := make(map[string][]pluginEdit)
 	nested := make(map[string][]pluginEdit)
 	for _, ed := range edits {
 		if len(ed.pointers) == 1 {
-			direct[ed.pointers[0]] = ed.target
+			if ed.sp != nil {
+				directSpans[ed.pointers[0]] = append(directSpans[ed.pointers[0]], ed)
+			} else {
+				direct[ed.pointers[0]] = ed.target
+			}
 		} else {
-			nested[ed.pointers[0]] = append(nested[ed.pointers[0]], pluginEdit{pointers: ed.pointers[1:], target: ed.target})
+			nested[ed.pointers[0]] = append(nested[ed.pointers[0]], pluginEdit{
+				pointers: ed.pointers[1:],
+				target:   ed.target,
+				sp:       ed.sp,
+			})
 		}
 	}
 
-	if len(nested) > 0 {
+	if len(nested) > 0 || len(directSpans) > 0 {
 		values, err := jsonedit.Strings(doc)
 		if err != nil {
 			return nil, err
@@ -208,6 +286,20 @@ func applyPluginEdits(doc []byte, edits []pluginEdit) ([]byte, error) {
 		byPointer := make(map[string]string, len(values))
 		for _, v := range values {
 			byPointer[v.Pointer] = v.Value
+		}
+		for ptr, list := range directSpans {
+			value, ok := byPointer[ptr]
+			if !ok {
+				continue
+			}
+			sort.Slice(list, func(i, j int) bool { return list[i].sp.Start > list[j].sp.Start })
+			for _, ed := range list {
+				if ed.sp.End > len(value) || ed.sp.Start > ed.sp.End {
+					continue
+				}
+				value = value[:ed.sp.Start] + ed.sp.Encode(ed.target) + value[ed.sp.End:]
+			}
+			direct[ptr] = value
 		}
 		for ptr, sub := range nested {
 			inner, ok := byPointer[ptr]
@@ -225,29 +317,70 @@ func applyPluginEdits(doc []byte, edits []pluginEdit) ([]byte, error) {
 }
 
 func ignoredParam(key string) bool {
-	_, ignored := ignoreParamKeys[strings.ToLower(key)]
-	return ignored
+	k := strings.ToLower(strings.TrimSpace(key))
+	if _, ignored := ignoreParamKeys[k]; ignored {
+		return true
+	}
+	for _, sfx := range ignoreParamSuffixes {
+		if strings.HasSuffix(k, sfx) {
+			return true
+		}
+	}
+	return false
 }
 
-// isTranslatablePluginText segue PluginParametersProcessor.is_translatable do Python.
+// isTranslatablePluginText filtra parâmetros de plugins para extrair apenas texto visível,
+// evitando nomes de assets, expressões JavaScript e identificadores técnicos.
 func isTranslatablePluginText(text, keyName string) bool {
-	if strings.TrimSpace(text) == "" || ignoredParam(keyName) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || ignoredParam(keyName) {
 		return false
 	}
 	if rpgtext.IsTechnicalOrCode(text, rpgtext.Param) {
 		return false
 	}
+	if strings.ContainsAny(text, "{};()$=<>") || jsCommentOrCodeRE.MatchString(text) || jsExprRE.MatchString(trimmed) {
+		return false
+	}
 	if cjkRE.MatchString(text) {
 		return true
-	}
-	if strings.ContainsAny(text, "{};()$=<>") {
-		return false
 	}
 	if strings.Contains(text, " ") {
 		return true
 	}
 	runes := []rune(text)
-	return len(runes) > 2 && unicode.IsUpper(runes[0]) && isAlpha(runes)
+	if len(runes) <= 2 || !unicode.IsUpper(runes[0]) || !isAlpha(runes) || hasInternalUpper(runes) {
+		return false
+	}
+	return hasNonASCII(runes) || isTextParamKey(keyName)
+}
+
+func hasNonASCII(runes []rune) bool {
+	for _, r := range runes {
+		if r > 127 {
+			return true
+		}
+	}
+	return false
+}
+
+func hasInternalUpper(runes []rune) bool {
+	for _, r := range runes[1:] {
+		if unicode.IsUpper(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTextParamKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	for _, h := range textParamKeyHints {
+		if k == h || strings.HasSuffix(k, h) {
+			return true
+		}
+	}
+	return false
 }
 
 func isAlpha(runes []rune) bool {

@@ -42,3 +42,39 @@ func TestMaskMatchesPythonReference(t *testing.T) {
 		}
 	}
 }
+
+func TestMaskPreservesKRDAndLiteralNewlines(t *testing.T) {
+	m := masking.NewMaskerWith(MaskMatchers()...)
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{
+			in:   `\LANG[0]はい\LANGEND\LANG[1]Yes\LANGEND`,
+			want: "__XTOK_0__はい__XTOK_2____XTOK_1__Yes__XTOK_3__",
+		},
+		{
+			in:   `\LANGF[S0031_01_None]回想\n（※戻せません）\LANGFEND`,
+			want: "__XTOK_0__回想__XTOK_1__（※戻せません）__XTOK_2__",
+		},
+		{
+			in:   `\LANGF[battle_1]Test/LANGFEND`,
+			want: "__XTOK_0__Test__XTOK_1__",
+		},
+		{
+			in:   `Hello\nbut not \N[1]`,
+			want: "Hello__XTOK_1__but not __XTOK_0__",
+		},
+	}
+
+	for _, c := range cases {
+		masked, mapping := m.Mask(c.in)
+		if masked != c.want {
+			t.Errorf("Mask(%q) = %q, want %q", c.in, masked, c.want)
+		}
+		restored, err := m.Unmask(masked, mapping)
+		if err != nil || restored != c.in {
+			t.Errorf("Unmask(%q) = (%q, %v), want %q", masked, restored, err, c.in)
+		}
+	}
+}

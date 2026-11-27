@@ -16,10 +16,12 @@ import (
 )
 
 // OpCodes do RPG Maker MV/MZ tratados pelo extrator (os mesmos da versão Python).
-// Comentários (108/408) e rótulos (118) ficam de fora de propósito: são anotações
-// de desenvolvedor e diretivas de plugins, nunca texto visível.
+// Comentários (108/408) e rótulos (118) ficam de fora por padrão (anotações de
+// desenvolvedor e saltos), exceto tags de texto conhecidas em 108/408 (ex.: <EventNotice:...>).
 const (
 	CodeShowText        = 401
+	CodeComment         = 108
+	CodeCommentMore     = 408
 	CodeScrollTextLine  = 405
 	CodeShowChoices     = 102
 	CodeShowName        = 101 // MZ adicionou nome do locutor no parâmetro índice 4
@@ -39,13 +41,16 @@ const (
 )
 
 var (
-	rxMapFile    = regexp.MustCompile(`(?i)^Map\d+\.json$`)
-	rxActorsFile = regexp.MustCompile(`(?i)^Actors\.json$`)
-	rxTroopsFile = regexp.MustCompile(`(?i)^Troops\.json$`)
-	rxCommonFile = regexp.MustCompile(`(?i)^CommonEvents\.json$`)
-	rxSystemFile = regexp.MustCompile(`(?i)^System\.json$`)
-	rxDbFiles    = regexp.MustCompile(`(?i)^(Classes|Skills|Items|Weapons|Armors|Enemies|States)\.json$`)
-	rxMapInfos   = regexp.MustCompile(`(?i)^MapInfos\.json$`)
+	rxMapFile     = regexp.MustCompile(`(?i)^Map\d+\.json$`)
+	rxActorsFile  = regexp.MustCompile(`(?i)^Actors\.json$`)
+	rxTroopsFile  = regexp.MustCompile(`(?i)^Troops\.json$`)
+	rxCommonFile  = regexp.MustCompile(`(?i)^CommonEvents\.json$`)
+	rxSystemFile  = regexp.MustCompile(`(?i)^System\.json$`)
+	rxDbFiles     = regexp.MustCompile(`(?i)^(Classes|Skills|Items|Weapons|Armors|Enemies|States)\.json$`)
+	rxMapInfos    = regexp.MustCompile(`(?i)^MapInfos\.json$`)
+	rxKRDMsgFile  = regexp.MustCompile(`(?i)^msg_\d+\.json$`)
+	rxKRDDBFile   = regexp.MustCompile(`(?i)^db_\d+\.json$`)
+	rxKRDWordFile = regexp.MustCompile(`(?i)^word_\d+\.json$`)
 
 	formatCodePatterns = masking.DefaultRPGPatterns()
 )
@@ -57,7 +62,8 @@ func NewMVExtractor() *MVExtractor {
 	return &MVExtractor{}
 }
 
-// CanHandle verifica se o arquivo é um formato JSON ou plugins.js suportado pelo RPG Maker MV/MZ.
+// CanHandle verifica se o arquivo é um formato JSON, plugins.js ou CSV de eventos
+// suportado pelo RPG Maker MV/MZ.
 func (e *MVExtractor) CanHandle(filePath string) bool {
 	base := filepath.Base(filePath)
 	return rxMapFile.MatchString(base) ||
@@ -67,7 +73,11 @@ func (e *MVExtractor) CanHandle(filePath string) bool {
 		rxMapInfos.MatchString(base) ||
 		rxTroopsFile.MatchString(base) ||
 		rxSystemFile.MatchString(base) ||
-		rxPluginsFile.MatchString(base)
+		rxKRDMsgFile.MatchString(base) ||
+		rxKRDDBFile.MatchString(base) ||
+		rxKRDWordFile.MatchString(base) ||
+		rxPluginsFile.MatchString(base) ||
+		isCSVFile(base)
 }
 
 // collector acumula segmentos guardando no contexto o JSON Pointer do texto,
@@ -113,20 +123,26 @@ func (c *collector) addSpan(id, pointer string, sp rpgtext.Span, kind model.Segm
 }
 
 // isTranslatableText descarta textos vazios ou compostos só de códigos de
-// formato (ex.: escolhas "\picture[yes]"), que não têm nada a traduzir.
+// formato (ex.: escolhas "\picture[yes]" ou "\M[\V[31]]"), que não têm nada a traduzir.
 func isTranslatableText(text string) bool {
-	rest := text
+	if rpgtext.IsPureControlCodes(text) {
+		return false
+	}
+	rest := rpgtext.StripNestedControlCodes(text)
 	for _, p := range formatCodePatterns {
 		rest = p.ReplaceAllString(rest, "")
 	}
 	return strings.TrimSpace(rest) != ""
 }
 
-// Extract extrai os segmentos traduzíveis do arquivo JSON.
+// Extract extrai os segmentos traduzíveis do arquivo JSON, plugins.js ou CSV.
 func (e *MVExtractor) Extract(filePath string, data []byte) ([]*model.Segment, error) {
 	base := filepath.Base(filePath)
 	if rxPluginsFile.MatchString(base) {
 		return e.extractPluginsJs(base, data)
+	}
+	if isCSVFile(base) {
+		return e.extractUskCSV(filePath, data)
 	}
 
 	var raw any
@@ -148,8 +164,12 @@ func (e *MVExtractor) Extract(filePath string, data []byte) ([]*model.Segment, e
 		e.extractDB(c, raw, dbFields)
 	case rxMapInfos.MatchString(base):
 		e.extractDB(c, raw, mapInfoFields)
-	case rxSystemFile.MatchString(base):
+	case rxSystemFile.MatchString(base), rxKRDWordFile.MatchString(base):
 		e.extractSystem(c, raw)
+	case rxKRDMsgFile.MatchString(base):
+		e.extractKRDMsg(c, raw)
+	case rxKRDDBFile.MatchString(base):
+		e.extractKRDDB(c, raw)
 	}
 	return c.segments, nil
 }
@@ -161,6 +181,9 @@ func (e *MVExtractor) Inject(filePath string, originalData []byte, segments []*m
 	base := filepath.Base(filePath)
 	if rxPluginsFile.MatchString(base) {
 		return e.injectPluginsJs(base, originalData, segments)
+	}
+	if isCSVFile(base) {
+		return e.injectUskCSV(filePath, originalData, segments)
 	}
 
 	type edit struct {
@@ -344,6 +367,10 @@ func (e *MVExtractor) extractCommandList(c *collector, idPrefix, ptrPrefix strin
 			if text, ok := param(0); ok {
 				c.addSpans(id, ptr+"/0", rpgtext.ShowTextSpans(text), model.KindDialogue, ctx)
 			}
+		case CodeComment, CodeCommentMore:
+			if text, ok := param(0); ok {
+				c.addSpans(id, ptr+"/0", rpgtext.NoteSpans(text), model.KindDialogue, ctx)
+			}
 		case CodeShowName:
 			// O parâmetro 0 é o arquivo da face; o MZ guarda o locutor no índice 4.
 			for i := 1; i < len(params); i++ {
@@ -363,17 +390,13 @@ func (e *MVExtractor) extractCommandList(c *collector, idPrefix, ptrPrefix strin
 			if choices, ok := params[0].([]any); ok {
 				for cIdx, cRaw := range choices {
 					if text, ok := cRaw.(string); ok {
-						if sp, ok := rpgtext.ChoiceSpan(text); ok {
-							c.addSpan(fmt.Sprintf("%s/choice:%d", id, cIdx), fmt.Sprintf("%s/0/%d", ptr, cIdx), sp, model.KindChoice, ctx())
-						}
+						c.addSpans(fmt.Sprintf("%s/choice:%d", id, cIdx), fmt.Sprintf("%s/0/%d", ptr, cIdx), rpgtext.ChoiceSpans(text), model.KindChoice, ctx)
 					}
 				}
 			}
 		case CodeChoiceBranch:
 			if text, ok := param(1); ok {
-				if sp, ok := rpgtext.ChoiceSpan(text); ok {
-					c.addSpan(id, ptr+"/1", sp, model.KindChoice, ctx())
-				}
+				c.addSpans(id, ptr+"/1", rpgtext.ChoiceSpans(text), model.KindChoice, ctx)
 			}
 		case CodeScript, CodeScriptMore:
 			if text, ok := param(0); ok {
@@ -526,6 +549,73 @@ func (e *MVExtractor) extractSystem(c *collector, raw any) {
 				c.add("terms/messages/"+k, "/terms/messages/"+jsonedit.EscapePointer(k), msg, model.KindMenu, nil)
 			}
 		})
+	}
+}
+
+var (
+	krdDBSections = []string{"actor", "class", "item", "skill", "weapon", "armor", "enemy", "state"}
+	krdDBFields   = []dbField{
+		{"name", model.KindDB},
+		{"nickname", model.KindDB},
+		{"description", model.KindDB},
+		{"description_1st", model.KindDB},
+		{"description_2nd", model.KindDB},
+		{"profile_1st", model.KindDialogue},
+		{"profile_2nd", model.KindDialogue},
+		{"message1", model.KindDialogue},
+		{"message2", model.KindDialogue},
+		{"message3", model.KindDialogue},
+		{"message4", model.KindDialogue},
+	}
+)
+
+// extractKRDMsg extrai as mensagens externas (msg_0.json, msg_1.json...) usadas pelo KRD_MZ_Multilingual.
+func (e *MVExtractor) extractKRDMsg(c *collector, raw any) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return
+	}
+	for _, k := range sortedKeys(m) {
+		val, ok := m[k].(string)
+		if !ok {
+			continue
+		}
+		c.addSpans("msg:"+k, "/"+jsonedit.EscapePointer(k), rpgtext.ShowTextSpans(val), model.KindDialogue, func() map[string]any {
+			return map[string]any{"key": k}
+		})
+	}
+}
+
+// extractKRDDB extrai os registros de banco de dados externos (db_0.json, db_1.json...) do KRD_MZ_Multilingual.
+func (e *MVExtractor) extractKRDDB(c *collector, raw any) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return
+	}
+	for _, section := range krdDBSections {
+		items, ok := m[section].([]any)
+		if !ok {
+			continue
+		}
+		for i, itemRaw := range items {
+			item, ok := itemRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, f := range krdDBFields {
+				val, ok := item[f.key].(string)
+				if !ok {
+					continue
+				}
+				c.add(
+					fmt.Sprintf("krd:%s:%d/field:%s", section, i, f.key),
+					fmt.Sprintf("/%s/%d/%s", section, i, f.key),
+					val,
+					f.kind,
+					map[string]any{"section": section, "field": f.key},
+				)
+			}
+		}
 	}
 }
 

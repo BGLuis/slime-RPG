@@ -28,7 +28,7 @@ func MaskMatchers() []masking.Matcher {
 		codeOnly{regexp.MustCompile(`(?:&&|\|\||>=|<=|!==|===|!=|==)`)},
 		regexp.MustCompile(`\$\s*[a-z]+[A-Z][a-zA-Z]*`),
 		regexp.MustCompile(`(?i)</?[a-zA-Z][a-zA-Z0-9]*(?:\s+[^>]*)?/?>`),
-		regexp.MustCompile(`\\[.|!^${}G#+\-]`),
+		regexp.MustCompile(`(?:(?i)\\LANGF?END|(?i)/LANGFEND|\\[n.|!^${}G#+\-])`),
 	}
 }
 

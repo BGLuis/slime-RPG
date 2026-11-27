@@ -395,7 +395,7 @@ func (p *Plan) addPluginsJS(det *detector.DetectionResult) {
 type rpgMaker struct{ x *rpgjson.MVExtractor }
 
 func (rpgMaker) Name() string              { return "rpgmaker" }
-func (rpgMaker) Extensions() []string      { return []string{"json", "js"} }
+func (rpgMaker) Extensions() []string      { return []string{"json", "js", "csv"} }
 func (f rpgMaker) Handles(rel string) bool { return f.x.CanHandle(rel) }
 func (f rpgMaker) Extract(rel string, data []byte, _, _ string) ([]*model.Segment, error) {
 	return f.x.Extract(rel, data)

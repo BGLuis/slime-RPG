@@ -6,7 +6,11 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.9
+	github.com/chromedp/cdproto v0.160.1
+	github.com/chromedp/chromedp v0.24.0
+	github.com/dop251/goja v0.0.0-20261122185237-35fdc4b88e39
 	github.com/egoist/mygo v0.7.4
+	github.com/mattn/go-isatty v0.0.24
 	golang.org/x/text v0.43.0
 	modernc.org/sqlite v1.61.1
 )
@@ -21,9 +25,10 @@ require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/ebitengine/purego v0.11.3 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
+	github.com/go-json-experiment/json v0.0.0-20260213210345-44df1a37e875 // indirect
+	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
-	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.31 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect

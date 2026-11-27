@@ -8,6 +8,7 @@ USAGE:
 
 COMMANDS:
   translate       Extract, translate and reinject game text (default)
+  check           Validate JSON/JS/assets and run headless boot smoke test (MV/MZ)
   verify          Check the translated folder against .slime/meta.json
   adopt           Register the metadata of an already translated game
   filenames       Translate the file names of a folder
@@ -33,6 +34,8 @@ TRANSLATION OPTIONS:
   --no-proxy         Do not use the proxy pool when Google blocks the IP
   --dry-run          Compute the pre-flight estimate without changing files
   --review           Pause before writing to inspect the processing folder (terminal only)
+  --check            Run static validation + headless smoke test after translating
+  --tour             During --check, test map loading and common scenes
   --json             Emit events as JSON Lines for automation
   --tui / --gui      Force the terminal or desktop interface
   --lang pt|en       Interface language for this run (or SLIME_LANG); 'slime lang en' saves the preference
@@ -59,6 +62,7 @@ FILE NAMES:
   slime filenames -i <folder> [-o <output>] [-t google -s ja -d pt] [--keep-original]
 
 VERIFY AND ADOPT:
+  slime check <translated-folder> [--original <folder>] [--fix] [--tour] [--runtime=false]
   slime verify <translated-folder> [--original <folder>]
   slime adopt <translated-folder> --original <folder> -e <extractor> [-s en -d pt]
 
@@ -256,6 +260,7 @@ EXAMPLES:
 	"tui_cfg_target":           "Target language (d)",
 	"tui_cfg_incremental":      "Only what changed (space)",
 	"tui_cfg_proxies":          "Use proxies if Google blocks the IP (x)",
+	"tui_cfg_check":            "Check game after translating (headless)",
 	"tui_cfg_backup":           "Backup on · output in the same folder",
 	"tui_provider_memory":      "Memory only",
 	"tui_filter_all":           "All",
@@ -296,7 +301,9 @@ EXAMPLES:
 	"tui_foot_translating":     "  p pause/resume · c cancel · ctrl+c quit",
 	"tui_foot_edit":            "  type the translation · enter save · esc cancel",
 	"tui_foot_review":          "  ↑↓ segment · tab filter · e edit · b lock · esc/enter back to result",
-	"tui_foot_result":          "  r review · n another game · q quit",
+	"tui_foot_result":          "  r review · v check · n another game · q quit",
+	"tui_check_ok":             "Check finished: 0 errors (%d warning(s)).",
+	"tui_check_err":            "Check found %d error(s): %s",
 	"tui_foot_default":         "  q quit",
 	"tui_err_deepl_key":        "enter the DeepL API key or set DEEPL_API_KEY",
 	"tui_err_ollama_model":     "enter the Ollama model or set OLLAMA_MODEL",

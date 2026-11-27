@@ -180,7 +180,73 @@ func IsTechnicalOrCode(text string, ctx Context) bool {
 			return true
 		}
 	}
-	return pureEscape.MatchString(text)
+	return IsPureControlCodes(text)
+}
+
+// StripNestedControlCodes remove códigos de controle do RPG Maker (inclusive com
+// colchetes aninhados, como "\M[\V[31]]" ou "\UTERMS[eventReplay]").
+func StripNestedControlCodes(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] == '\\' && i+1 < len(s) && isASCIIAlpha(s[i+1]) {
+			j := i + 1
+			for j < len(s) && isASCIIAlpha(s[j]) {
+				j++
+			}
+			wordEnd := j
+			for j < len(s) && s[j] == ' ' {
+				j++
+			}
+			if j < len(s) && s[j] == '[' {
+				depth := 0
+				for j < len(s) {
+					if s[j] == '[' {
+						depth++
+					} else if s[j] == ']' {
+						depth--
+						if depth == 0 {
+							j++
+							break
+						}
+					}
+					j++
+				}
+				if depth == 0 {
+					i = j
+					continue
+				}
+			}
+			// Delimitadores de bloco do KRD_MZ_Multilingual (\LANGEND, \LANGFEND)
+			if word := strings.ToUpper(s[i+1 : wordEnd]); word == "LANGEND" || word == "LANGFEND" {
+				i = wordEnd
+				continue
+			}
+			// Código sem colchetes (\G, \!, \., \|, \<, \>, \^, \{, \})
+			if wordEnd == i+2 && wordEnd <= len(s) {
+				i = wordEnd
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// IsPureControlCodes indica se s contém apenas códigos de controle do RPG Maker,
+// espaços ou delimitadores vazios (como "『\V[19]』\UTERMS[eventReplay]").
+func IsPureControlCodes(s string) bool {
+	if pureEscape.MatchString(s) {
+		return true
+	}
+	rest := StripNestedControlCodes(s)
+	rest = strings.NewReplacer("『", "", "』", "", "「", "", "」", "", "(", "", ")", "", " ", "", "\t", "", "\r", "", "\n", "").Replace(rest)
+	return rest == "" && strings.Contains(s, `\`)
+}
+
+func isASCIIAlpha(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 // isDigits imita str.isdigit() do Python para o texto já sem separadores.

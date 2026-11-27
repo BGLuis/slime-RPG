@@ -33,6 +33,7 @@ import (
 	"github.com/BGLuis/slime-rpg/pkg/settings"
 	"github.com/BGLuis/slime-rpg/pkg/ui/desktop"
 	"github.com/BGLuis/slime-rpg/pkg/ui/tui"
+	"github.com/BGLuis/slime-rpg/pkg/validator"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-isatty"
 )
@@ -68,6 +69,8 @@ func main() {
 		return
 	case "verify":
 		os.Exit(runVerify(args))
+	case "check":
+		os.Exit(runCheck(args))
 	case "adopt":
 		os.Exit(runAdopt(args))
 	case "filenames":
@@ -130,7 +133,7 @@ func isGUIExecutable(argv0 string) bool {
 
 func isKnownSubcommand(s string) bool {
 	switch s {
-	case "version", "help", "verify", "adopt", "filenames", "tm", "list", "lang", "translate", "tui", "gui":
+	case "version", "help", "verify", "check", "adopt", "filenames", "tm", "list", "lang", "translate", "tui", "gui":
 		return true
 	default:
 		return false
@@ -191,7 +194,7 @@ type translateOptions struct {
 	synopsis, model                           string
 	noBackup, memoryOnly, switchEngine        bool
 	incremental, noProxy, dryRun, jsonOutput  bool
-	tui, gui, review                          bool
+	tui, gui, review, check, tour             bool
 	extractor                                 string
 	extOpts                                   optionList
 }
@@ -241,6 +244,8 @@ func (o *translateOptions) register(fs *flag.FlagSet) {
 	boolean(&o.dryRun, false, "Estimativa sem alterar arquivos", "dry-run")
 	boolean(&o.jsonOutput, false, "Saída em JSON Lines", "json")
 	boolean(&o.review, false, "Pausa para revisar a pasta de processamento antes de gravar", "review")
+	boolean(&o.check, false, "Executa verificação estática + smoke test headless após traduzir", "check")
+	boolean(&o.tour, false, "Durante --check, exercita carregamento de mapas e cenas comuns", "tour")
 	boolean(&o.tui, false, "Forçar Terminal UI", "tui")
 	boolean(&o.gui, false, "Forçar Desktop UI", "gui")
 }
@@ -306,17 +311,19 @@ func runHeadless(o translateOptions) int {
 
 	bus := event.NewBus()
 	j := job.NewJob(job.Config{
-		GamePath:      o.input,
-		ProviderName:  memory.NormalizeEngine(o.translator),
-		SourceLang:    o.source,
-		TargetLang:    o.target,
-		Incremental:   o.incremental,
-		EnableProxies: !o.noProxy,
-		BackupEnabled: !o.noBackup,
-		OutputDir:     o.output,
-		MemoryOnly:    o.memoryOnly,
-		SwitchEngine:  o.switchEngine,
-		Review:        reviewHook(o),
+		GamePath:        o.input,
+		ProviderName:    memory.NormalizeEngine(o.translator),
+		SourceLang:      o.source,
+		TargetLang:      o.target,
+		Incremental:     o.incremental,
+		EnableProxies:   !o.noProxy,
+		BackupEnabled:   !o.noBackup,
+		OutputDir:       o.output,
+		MemoryOnly:      o.memoryOnly,
+		SwitchEngine:    o.switchEngine,
+		Review:          reviewHook(o),
+		ValidateRuntime: o.check,
+		SceneTour:       o.tour,
 
 		Extractor:        o.extractor,
 		ExtractorOptions: o.extOpts,
@@ -473,6 +480,107 @@ func runVerify(args []string) int {
 	}
 	fmt.Print(i18n.T("verify_summary", formatSummary(metadata.Summarize(report))))
 	return 0
+}
+
+// runCheck executa validação estática (JSON/JS/assets) e smoke test headless (MV/MZ)
+// para detectar traduções que quebram o jogo antes de o jogador abrir o executável.
+func runCheck(args []string) int {
+	fs := flag.NewFlagSet("check", flag.ExitOnError)
+	original := fs.String("original", "", i18n.T("flag_original"))
+	runtimeCheck := fs.Bool("runtime", true, "Executa smoke test em navegador headless (RPG Maker MV/MZ)")
+	tour := fs.Bool("tour", false, "Exercita mapas e cenas comuns após o boot")
+	timeout := fs.Duration("timeout", 10*time.Second, "Tempo limite do teste headless")
+	browser := fs.String("browser", "", "Caminho para Chromium/Chrome (ou SLIME_BROWSER)")
+	fix := fs.Bool("fix", false, "Tenta auto-corrigir partes com erro revertendo apenas os trechos culpados do backup")
+	jsonOut := fs.Bool("json", false, "Saída em JSON")
+	dir, rest := splitPositional(args)
+	_ = fs.Parse(rest)
+	if dir == "" {
+		dir = "."
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	opts := validator.Options{
+		OriginalDir: *original,
+		RunRuntime:  *runtimeCheck,
+		SceneTour:   *tour,
+		Timeout:     *timeout,
+		BrowserPath: *browser,
+	}
+
+	var report *validator.Report
+	var actions []validator.HealAction
+	var err error
+	if *fix {
+		res, herr := validator.Heal(ctx, dir, opts, nil, func(msg string) {
+			if !*jsonOut {
+				fmt.Println("  →", msg)
+			}
+		})
+		err = herr
+		if res != nil {
+			report = res.Report
+			actions = res.Actions
+		}
+	} else {
+		report, err = validator.Validate(ctx, dir, opts)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if *fix {
+			_ = enc.Encode(map[string]any{"actions": actions, "report": report})
+		} else {
+			_ = enc.Encode(report)
+		}
+	} else {
+		printCheckReport(report)
+	}
+	if report.HasErrors() {
+		return 1
+	}
+	return 0
+}
+
+func printCheckReport(r *validator.Report) {
+	fmt.Printf("Verificação: %s (%s)\n", r.GamePath, r.Engine)
+	if r.OriginalDir != "" {
+		fmt.Printf("Original:    %s\n", r.OriginalDir)
+	}
+	if r.RuntimeRan {
+		fmt.Printf("Headless:    executado (cena alcançada: %s)\n", valueOrDash(r.SceneReached))
+		if len(r.TourScenesTested) > 0 {
+			fmt.Printf("Tour cenas:  %s\n", strings.Join(r.TourScenesTested, ", "))
+		}
+	} else if r.RuntimeSkippedReason != "" {
+		fmt.Printf("Headless:    ignorado (%s)\n", r.RuntimeSkippedReason)
+	}
+	if len(r.Issues) == 0 {
+		fmt.Printf("OK: nenhum problema encontrado em %s.\n", r.Duration.Round(time.Millisecond))
+		return
+	}
+	fmt.Printf("\nProblemas encontrados: %d erro(s), %d aviso(s)\n", r.ErrorCount(), r.WarningCount())
+	for _, it := range r.Issues {
+		loc := it.File
+		if it.Location != "" {
+			loc += " [" + it.Location + "]"
+		}
+		fmt.Printf("  [%s/%s] %s: %s\n", strings.ToUpper(string(it.Severity)), it.Category, loc, it.Message)
+	}
+}
+
+func valueOrDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // runAdopt equivale ao --adopt da versão Python: registra uma tradução feita

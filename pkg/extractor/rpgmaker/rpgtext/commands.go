@@ -30,15 +30,54 @@ func sub(s string, start, end int) Span { return Span{Start: start, End: end, So
 // --- Mostrar texto (101, 401, 405) e mudanças de nome/perfil (320, 324, 325) ---
 
 var (
-	titleRE  = regexp.MustCompile(`^(?:<<([^<>]*)>>|<([^<>]*)>)(\s*)`)
-	textKeys = []string{"icon:", "secret:", "title:", "name:", "text:", "message:", "text1:", "text2:", "secretText:", "id:"}
+	titleRE    = regexp.MustCompile(`^(?:<<([^<>]*)>>|<([^<>]*)>)(\s*)`)
+	krdBlockRE = regexp.MustCompile(`(?is)\\LANG\[\d+\](.*?)\\LANGEND|\\LANGF\[[^\]]+\](.*?)(?:\\|/)LANGFEND`)
+	textKeys   = []string{"icon:", "secret:", "title:", "name:", "text:", "message:", "text1:", "text2:", "secretText:", "id:"}
 )
+
+// KRDLangSpans isola os trechos de texto dentro de blocos \LANG[n]...\LANGEND e
+// \LANGF[key]...\LANGFEND do plugin KRD_MZ_Multilingual quando não há prosa
+// traduzível fora dos blocos.
+func KRDLangSpans(s string) ([]Span, bool) {
+	matches := krdBlockRE.FindAllStringSubmatchIndex(s, -1)
+	if len(matches) == 0 {
+		return nil, false
+	}
+
+	var outside strings.Builder
+	pos := 0
+	for _, m := range matches {
+		outside.WriteString(s[pos:m[0]])
+		pos = m[1]
+	}
+	outside.WriteString(s[pos:])
+	rem := StripNestedControlCodes(outside.String())
+	rem = strings.NewReplacer("『", "", "』", "", "「", "", "」", "", "(", "", ")", "").Replace(rem)
+	if strings.TrimSpace(rem) != "" {
+		return nil, false
+	}
+
+	var spans []Span
+	for _, m := range matches {
+		is, ie := m[2], m[3]
+		if is < 0 {
+			is, ie = m[4], m[5]
+		}
+		if is < ie && !IsTechnicalOrCode(s[is:ie], Dialogue) {
+			spans = append(spans, sub(s, is, ie))
+		}
+	}
+	return spans, true
+}
 
 // ShowTextSpans segue o ShowTextStrategy do Python: "<Nome>fala" separa título e
 // fala; "name: valor" traduz só o valor; o resto é traduzido inteiro.
 func ShowTextSpans(s string) []Span {
 	if IsTechnicalOrCode(s, Dialogue) {
 		return nil
+	}
+	if spans, ok := KRDLangSpans(s); ok {
+		return spans
 	}
 	if m := titleRE.FindStringSubmatchIndex(s); m != nil && !isMarkupTitle(s, m) {
 		ts, te := m[2], m[3]
@@ -120,6 +159,24 @@ func ChoiceSpan(s string) (Span, bool) {
 	return sub(s, start, start+len(body)), true
 }
 
+// ChoiceSpans devolve os trechos traduzíveis de uma escolha, preservando
+// condições inline e separando blocos \LANG[n]...\LANGEND / \LANGF[k]...\LANGFEND.
+func ChoiceSpans(s string) []Span {
+	prefix, body := ParseChoiceCondition(s)
+	if IsTechnicalOrCode(body, Dialogue) {
+		return nil
+	}
+	offset := len(prefix)
+	if spans, ok := KRDLangSpans(body); ok {
+		for i := range spans {
+			spans[i].Start += offset
+			spans[i].End += offset
+		}
+		return spans
+	}
+	return []Span{sub(s, offset, offset+len(body))}
+}
+
 // --- Scripts (355, 655, passo de rota 45) ---
 
 var (
@@ -127,7 +184,7 @@ var (
 	safeCallRE        = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(?:\$gameMessage\.add|this\.addCommand|this\.setHelpWindowText|TickerManager\.show)\s*\(\s*`),
 		regexp.MustCompile(`(?i)BattleManager\._logWindow\.push\s*\(\s*['"]addText['"]\s*,\s*`),
-		regexp.MustCompile(`(?i)(?:mes|text)\s*=\s*`),
+		regexp.MustCompile(`(?i)(?:mes|text|str)\s*(?:\+?=|\+)\s*`),
 	}
 	commaRE     = regexp.MustCompile(`^\s*,\s*`)
 	closeCallRE = regexp.MustCompile(`^\s*\)`)
@@ -412,7 +469,7 @@ func mzIsTextKey(key string) bool {
 func MZPluginTextKeys(args map[string]any) []string {
 	var keys []string
 	for _, key := range sortedKeys(args) {
-		if mzTechnicalKeys[key] {
+		if mzTechnicalKeys[key] || isTechnicalMZKey(key) {
 			continue
 		}
 		val, ok := args[key].(string)
@@ -423,7 +480,7 @@ func MZPluginTextKeys(args map[string]any) []string {
 		if mzIsTextKey(key) {
 			ctx = Dialogue
 		}
-		if IsTechnicalOrCode(val, ctx) {
+		if IsTechnicalOrCode(val, ctx) || isTechnicalMZValue(val) {
 			continue
 		}
 		if mzIsTextKey(key) || strings.Contains(val, " ") || strings.ContainsAny(val, ".,;:!?　、。！？") || mzCJKRE.MatchString(val) {
@@ -431,6 +488,48 @@ func MZPluginTextKeys(args map[string]any) []string {
 		}
 	}
 	return keys
+}
+
+func isTechnicalMZKey(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	if k == "id" || k == "ids" || strings.HasSuffix(k, "id") || strings.HasSuffix(k, "ids") {
+		return true
+	}
+	for _, sfx := range []string{"filename", "imagename", "skin", "bgm", "bgs", "se", "me", "script", "formula", "switch", "variable"} {
+		if strings.HasSuffix(k, sfx) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTechnicalMZValue(val string) bool {
+	t := strings.TrimSpace(val)
+	if t == "" {
+		return true
+	}
+	// Array JSON de IDs/números (ex.: "[\"82\",\"106\",\"360\"]")
+	if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") && !mzCJKRE.MatchString(t) {
+		return true
+	}
+	if mzCJKRE.MatchString(t) || strings.Contains(t, " ") {
+		return false
+	}
+	// Paths ("voice/redlight/system_5") ou identificadores snake/camelCase ("onaniFuta")
+	if strings.Contains(t, "/") || strings.Contains(t, "_") {
+		return true
+	}
+	hasUpper, hasLower := false, false
+	for i, r := range t {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				hasUpper = true
+			}
+		} else if r >= 'a' && r <= 'z' {
+			hasLower = true
+		}
+	}
+	return hasUpper && hasLower
 }
 
 // --- Controle de variáveis (122) com script ---
@@ -490,7 +589,7 @@ func isASCII(s string) bool {
 
 // --- Notas do banco de dados ---
 
-var noteTagRE = regexp.MustCompile(`(?i)<(Desc|Help|Text|Profile|Message|Info[^:>]*):\s*([^>]+)>`)
+var noteTagRE = regexp.MustCompile(`(?i)<(Desc|Help|Text|Profile|Message|EventNotice|Notice|Info[^:>]*|(?:Name|Nickname|Profile|Desc|Message[1-4])_\d+):\s*([^>]+)>`)
 
 // NoteSpans traduz só o conteúdo de tags de nota de texto (<Desc: ...>, <Help: ...>);
 // o resto da nota são diretivas de plugin.

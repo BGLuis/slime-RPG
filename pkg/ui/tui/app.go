@@ -14,6 +14,7 @@ import (
 	"github.com/BGLuis/slime-rpg/pkg/job"
 	"github.com/BGLuis/slime-rpg/pkg/memory"
 	"github.com/BGLuis/slime-rpg/pkg/ui/theme"
+	"github.com/BGLuis/slime-rpg/pkg/validator"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -64,6 +65,7 @@ type Model struct {
 	targetLang       string
 	incremental      bool
 	enableProxies    bool
+	validateCheck    bool
 	fieldValues      map[string]string // opções do extrator e chave do DeepL, por ConfigSchemaField.Key
 	focus            int               // índice em configRows()
 	estimate         *event.EstimateEvent
@@ -277,6 +279,7 @@ const (
 	rowTarget
 	rowIncremental
 	rowProxies
+	rowCheck
 	rowField
 )
 
@@ -291,6 +294,7 @@ func (m *Model) configRows() []configRow {
 	if providerIDs[m.selectedProvider] == "google" {
 		rows = append(rows, configRow{kind: rowProxies})
 	}
+	rows = append(rows, configRow{kind: rowCheck})
 	for _, f := range m.configFields() {
 		rows = append(rows, configRow{kind: rowField, field: f})
 	}
@@ -341,6 +345,8 @@ func (m *Model) changeRow(r configRow, delta int) {
 		m.incremental = !m.incremental
 	case rowProxies:
 		m.enableProxies = !m.enableProxies
+	case rowCheck:
+		m.validateCheck = !m.validateCheck
 	case rowField:
 		if r.field.Type == "bool" {
 			m.fieldValues[r.field.Key] = strconv.FormatBool(!m.fieldBool(r.field))
@@ -365,7 +371,7 @@ func (m *Model) updateConfigure(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "right", "l":
 		m.changeRow(row, 1)
 	case " ":
-		if row.kind == rowProxies || row.kind == rowField {
+		if row.kind == rowProxies || row.kind == rowCheck || row.kind == rowField {
 			m.changeRow(row, 1)
 		} else {
 			m.incremental = !m.incremental
@@ -488,8 +494,29 @@ func (m *Model) updateResult(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		if m.job != nil && m.finished {
 			m.selectedSegmentIdx = 0
+			m.selectedFilter = 0
+			if len(m.job.SegmentsForReviewFiltered("partial")) > 0 {
+				m.selectedFilter = 1
+			}
 			m.loadReview()
 			m.view = ViewReviewing
+		}
+	case "v":
+		if m.job != nil && m.finished {
+			snap := m.job.Snapshot()
+			res, err := validator.Heal(context.Background(), snap.GamePath, validator.Options{
+				OriginalDir: snap.BackupPath,
+				RunRuntime:  true,
+			}, nil, nil)
+			if err != nil {
+				m.statusMsg = err.Error()
+			} else if res.Report.HasErrors() {
+				m.statusMsg = i18n.T("tui_check_err", res.Report.ErrorCount(), res.Report.Issues[0].Message)
+			} else if len(res.Actions) > 0 {
+				m.statusMsg = fmt.Sprintf("Auto-correção aplicada em %d arquivo(s); 0 erros.", len(res.Actions))
+			} else {
+				m.statusMsg = i18n.T("tui_check_ok", res.Report.WarningCount())
+			}
 		}
 	}
 	return m, nil
@@ -642,12 +669,14 @@ func (m *Model) renderConfigRows(inner int) []string {
 			return i18n.T("tui_cfg_incremental")
 		case rowProxies:
 			return i18n.T("tui_cfg_proxies")
+		case rowCheck:
+			return i18n.T("tui_cfg_check")
 		}
 		return r.field.Label
 	}
 	labelW := 0
 	for _, r := range rows {
-		if r.kind != rowIncremental && r.kind != rowProxies {
+		if r.kind != rowIncremental && r.kind != rowProxies && r.kind != rowCheck {
 			labelW = max(labelW, ansi.StringWidth(labelOf(r)))
 		}
 	}
@@ -675,6 +704,8 @@ func (m *Model) renderConfigRows(inner int) []string {
 			label = checkbox(m.incremental) + " " + label
 		case rowProxies:
 			label = checkbox(m.enableProxies) + " " + label
+		case rowCheck:
+			label = checkbox(m.validateCheck) + " " + label
 		case rowField:
 			switch v := m.fieldValues[r.field.Key]; {
 			case r.field.Type == "bool":

@@ -200,6 +200,10 @@ func TestConfigureNavigatesByFocusedRow(t *testing.T) {
 		t.Error("atalhos s/d/x não podem agir enquanto se digita num campo")
 	}
 
+	key(tea.KeyUp) // verificação pós-tradução
+	if m.focusedRow().kind != rowCheck {
+		t.Fatalf("esperava foco em rowCheck, está em %v", m.focusedRow().kind)
+	}
 	key(tea.KeyUp) // incremental: proxies não aparece fora do Google
 	if m.focusedRow().kind != rowIncremental {
 		t.Fatalf("esperava foco em incremental, está em %v", m.focusedRow().kind)
@@ -269,5 +273,28 @@ func TestViewKeepsHeaderWhenTerminalIsShort(t *testing.T) {
 	}
 	if !strings.Contains(out, "Slime") || !strings.Contains(out, "enter") {
 		t.Error("cabeçalho e rodapé precisam continuar visíveis")
+	}
+}
+
+func TestReviewShowsDetailsInShortTerminal(t *testing.T) {
+	game, _ := writeGame(t)
+	m := NewModel(game)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 22})
+	m.view = ViewReviewing
+	m.selectedFilter = 1
+	for i := 0; i < 15; i++ {
+		m.reviewItems = append(m.reviewItems, job.ReviewItem{
+			ID:     "Armors.json#item:" + string(rune('a'+i)),
+			File:   "Armors.json",
+			Source: "大盾",
+			Target: "大盾",
+			Status: "partial",
+		})
+	}
+	out := ansi.Strip(m.View())
+	for _, want := range []string{"1/15", "[Armors.json]", "Arquivo:", "Origem:", "Tradução:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("esperava %q na tela de revisão:\n%s", want, out)
+		}
 	}
 }
